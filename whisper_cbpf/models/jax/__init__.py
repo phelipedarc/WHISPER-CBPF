@@ -57,9 +57,18 @@ def _guarded(fn, name):
 
 def __getattr__(name):
     """Resolve a factory on first access, naming the extra if JAX is absent."""
-    if name not in __all__:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
+
+    if name not in __all__:
+        # Submodule access: `whisper_cbpf.models.jax.tde`. Lazy for the same reason.
+        if name in ("flare", "_flare_spec", "kilonova", "kilonova_two", "supernova", "tde"):
+            try:
+                return importlib.import_module(f".{name}", __name__)
+            except ImportError as exc:
+                raise ImportError(
+                    f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
+                ) from exc
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
     try:
         mod = importlib.import_module("._factories", __name__)

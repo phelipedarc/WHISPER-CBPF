@@ -50,3 +50,8 @@ __all__ = [
     "SNPESampler", "fit_SNPE", "fit",
     "register_sampler", "get_sampler", "list_samplers",
 ]
+
+# Bind the JAX subpackage as an attribute so `whisper_cbpf.samplers.jax.<module>` resolves.
+# Its __init__ imports nothing heavier than the standard library -- every JAX name inside
+# it is lazy -- so this costs nothing on a CPU-only install.
+from . import jax  # noqa: E402,F401

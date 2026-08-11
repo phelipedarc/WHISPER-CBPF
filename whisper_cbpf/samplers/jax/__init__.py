@@ -44,10 +44,20 @@ def __getattr__(name):
     subpackage does not drag in jax/numpyro/torch. Without the extra installed the failure names
     the extra rather than surfacing a bare ImportError from deep inside a sampler.
     """
+    import importlib
+
     mod_name = _MODULE_OF.get(name)
     if mod_name is None:
+        # Submodule access: `whisper_cbpf.samplers.jax.abc_gpu`. Import it lazily too, so the
+        # module objects stay reachable without eagerly importing every sampler (and jax with them).
+        if name in set(_MODULE_OF.values()):
+            try:
+                return importlib.import_module(f".{name}", __name__)
+            except ImportError as exc:
+                raise ImportError(
+                    f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
+                ) from exc
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
 
     try:
         mod = importlib.import_module(f".{mod_name}", __name__)

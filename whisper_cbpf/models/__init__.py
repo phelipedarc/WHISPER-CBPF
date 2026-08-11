@@ -71,3 +71,8 @@ register_model("mck19", mck19.mck19_flux, mck19.PARAMETERS,
 register_model("two_component_kilonova", two_component_kilonova.two_component_kilonova_flux,
                two_component_kilonova.PARAMETERS, prior=two_component_kilonova.PRIOR,
                description=two_component_kilonova.DESCRIPTION)
+
+# Bind the JAX subpackage as an attribute so `whisper_cbpf.models.jax.<module>` resolves.
+# Its __init__ imports nothing heavier than the standard library -- every JAX name inside
+# it is lazy -- so this costs nothing on a CPU-only install.
+from . import jax  # noqa: E402,F401

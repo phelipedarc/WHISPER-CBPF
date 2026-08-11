@@ -100,10 +100,14 @@ from .backends import _registration as _gpu_registration  # noqa: E402,F401
 # rescales every fitted mass. Resolved lazily -- naming one without the [gpu] extra installed
 # raises a message naming the extra.
 from .models.jax import (  # noqa: E402
+    flare_model,
+    kilonova_model,
     register_kilonova,
     register_supernova,
     register_tde,
+    supernova_model,
     supernova_models,
+    tde_model,
 )
 
 __all__ += [
@@ -111,4 +115,5 @@ __all__ += [
     "check_gpu", "require_jax", "x64_enabled", "gpu_list", "n_jobs", "env_script", "env_report",
     # JAX model binding factories
     "register_kilonova", "register_tde", "register_supernova", "supernova_models",
+    "flare_model", "kilonova_model", "tde_model", "supernova_model",
 ]
