@@ -52,6 +52,12 @@ source at that commit; import rewrites land in later commits and are measured ag
 | `whisper_cbpf/samplers/abc.py` | WHISPER_AI | `whisper_labia/samplers/abc.py` | `8ba3843` | `e983cdf50b61` |
 | `whisper_cbpf/samplers/abc_smc.py` | WHISPER_AI | `whisper_labia/samplers/abc_smc.py` | `8ba3843` | `400499d229a9` |
 | `whisper_cbpf/samplers/base.py` | WHISPER_AI | `whisper_labia/samplers/base.py` | `8ba3843` | `45dcb6b571e7` |
+| `whisper_cbpf/samplers/jax/abc_gpu.py` | whisper-GPU | `samplers/abc_gpu.py` | `10796a0` | `be65774ff761` |
+| `whisper_cbpf/samplers/jax/abc_smc_gpu.py` | whisper-GPU | `samplers/abc_smc_gpu.py` | `10796a0` | `bd760effa31a` |
+| `whisper_cbpf/samplers/jax/emcee_jax.py` | whisper-GPU | `samplers/emcee_jax.py` | `10796a0` | `bc79229f4201` |
+| `whisper_cbpf/samplers/jax/nuts_gpu.py` | whisper-GPU | `samplers/nuts_gpu.py` | `10796a0` | `244072ee2155` |
+| `whisper_cbpf/samplers/jax/pymc_gpu.py` | whisper-GPU | `samplers/pymc_gpu.py` | `10796a0` | `8d2e92db9828` |
+| `whisper_cbpf/samplers/jax/snpe_gpu.py` | whisper-GPU | `samplers/snpe_gpu.py` | `10796a0` | `8eb3fe76f286` |
 | `whisper_cbpf/samplers/mcmc.py` | WHISPER_AI | `whisper_labia/samplers/mcmc.py` | `8ba3843` | `f608d6904c6c` |
 | `whisper_cbpf/samplers/snpe.py` | WHISPER_AI | `whisper_labia/samplers/snpe.py` | `8ba3843` | `12e1902281c1` |
 | `whisper_cbpf/validation.py` | WHISPER_AI | `whisper_labia/validation.py` | `8ba3843` | `a864918017b0` |
