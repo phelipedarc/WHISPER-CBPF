@@ -29,6 +29,32 @@ __all__ = ["flare_model", "kilonova_model", "register_kilonova",
            "supernova_model", "supernova_models", "register_supernova"]
 
 
+def _guarded(fn, name):
+    """Wrap a factory so a missing ``[gpu]`` extra is reported by name, not as a bare ImportError.
+
+    ``_factories`` itself imports cleanly without JAX -- it defers ``from . import tde`` and friends
+    to inside each factory -- so the failure would otherwise surface as a raw
+    ``ModuleNotFoundError: No module named 'jax'`` from deep inside a model module, with nothing to
+    tell the user which install fixes it.
+
+    ``functools.wraps`` copies ``__name__``/``__doc__`` and sets ``__wrapped__``, so
+    ``help()`` and ``inspect.signature()`` still see the real factory.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            import jax  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
+            ) from exc
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 def __getattr__(name):
     """Resolve a factory on first access, naming the extra if JAX is absent."""
     if name not in __all__:
@@ -41,7 +67,7 @@ def __getattr__(name):
         raise ImportError(
             f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
         ) from exc
-    value = getattr(mod, name)
+    value = _guarded(getattr(mod, name), name)
     globals()[name] = value
     return value
 
