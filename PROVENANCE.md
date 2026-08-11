@@ -172,3 +172,26 @@ Byte-identical at copy time; imports rewritten in the next commit.
 references in the JAX models are docstrings citing redback's own installed prior files, which come
 from the `[models]` extra, not from this package. Only `py.typed` needs shipping, and
 `[tool.setuptools.package-data]` covers it.
+
+## Documentation, examples and notebooks
+
+Byte-identical at copy time; imports rewritten in the next commit. Notebook **source cells only** are rewritten -- stored outputs are never touched and nothing is re-executed.
+
+| Destination | Source repo | Original path | Source commit | sha256 (12) |
+|---|---|---|---|---|
+| `CHANGELOG.md` | WHISPER_AI | `CHANGELOG.md` | `8ba3843` | `ab7e0b03e421` |
+| `docs/API_REFERENCE.md` | WHISPER_AI | `docs/API_REFERENCE.md` | `8ba3843` | `9bd2d8ec74cb` |
+| `docs/DESIGN.md` | WHISPER_AI | `docs/DESIGN.md` | `8ba3843` | `79fd9b46244e` |
+| `docs/EXTENDING.md` | WHISPER_AI | `docs/EXTENDING.md` | `8ba3843` | `ac34725d2ea7` |
+| `docs/PHYSICS_NOTES.md` | whisper-GPU | `PHYSICS_NOTES.md` | `10796a0` | `a1b1a6e0aae0` |
+| `docs/REPORT_at2017gfo.md` | WHISPER_AI | `docs/REPORT_at2017gfo.md` | `8ba3843` | `60fcb2a91118` |
+| `docs/REPORT_ingestion_upgrade.md` | WHISPER_AI | `docs/REPORT_ingestion_upgrade.md` | `8ba3843` | `1b62a0378770` |
+| `docs/TUTORIAL.md` | WHISPER_AI | `docs/TUTORIAL.md` | `8ba3843` | `6c149d7a0d59` |
+| `examples/at2017gfo_quickstart.ipynb` | WHISPER_AI | `examples/at2017gfo_quickstart.ipynb` | `8ba3843` | `33d80d1a55a1` |
+| `notebooks/01_lightcurves.ipynb` | WHISPER_AI | `notebooks/01_lightcurves.ipynb` | `8ba3843` | `4f650020eaa1` |
+| `notebooks/02_models.ipynb` | WHISPER_AI | `notebooks/02_models.ipynb` | `8ba3843` | `8be6de455325` |
+| `notebooks/03_samplers.ipynb` | WHISPER_AI | `notebooks/03_samplers.ipynb` | `8ba3843` | `df82e7bb7f9a` |
+| `notebooks/04_visualizing.ipynb` | WHISPER_AI | `notebooks/04_visualizing.ipynb` | `8ba3843` | `32dd5ddb2f80` |
+| `notebooks/05_bayesian_model_comparison.ipynb` | WHISPER_AI | `notebooks/05_bayesian_model_comparison.ipynb` | `8ba3843` | `281da3988b1a` |
+| `notebooks/README.md` | WHISPER_AI | `notebooks/README.md` | `8ba3843` | `a92778e0e780` |
+| `notebooks/_build_notebooks.py` | WHISPER_AI | `notebooks/_build_notebooks.py` | `8ba3843` | `07e8b60407fb` |
