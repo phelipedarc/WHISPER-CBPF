@@ -22,6 +22,7 @@ def test_registers_into_whispers_own_registries():
 
 
 def test_sampler_constructs_with_zero_arguments():
+    pytest.importorskip("jax")   # nuts_gpu imports jax at module scope
     # whisper's get_sampler does _SAMPLERS[name]() -- a sampler that needs constructor arguments
     # is unreachable through the registry, so all config must go through fit(**kwargs).
     s = get_sampler("nuts_gpu")
@@ -36,6 +37,11 @@ def test_reimport_is_idempotent():
     assert "nuts_gpu" in list_samplers()
 
 
+@pytest.mark.skip(reason="The whisper-version guard it asserts on cannot exist after the merge: "
+                         "it verified an EXTERNAL whisper_labia checkout was importable and new "
+                         "enough, and the CPU core is now this same package, so the skew it "
+                         "guarded against is not expressible. Kept, not deleted, so the decision "
+                         "stays visible and reversible.")
 def test_version_guard_names_the_symbols_it_needs():
     # the guard must enumerate what it requires, so a stale whisper gives an actionable error
     required = whisper_cbpf._REQUIRED_WHISPER_SYMBOLS
@@ -44,6 +50,7 @@ def test_version_guard_names_the_symbols_it_needs():
 
 
 def test_flare_model_satisfies_the_predict_contract():
+    pytest.importorskip("jax")   # flare_jax's deferred predict resolves the JAX module
     m = wp.get_model("flare_jax")
     t = np.linspace(0.0, 30.0, 25)
     f = m.predict({"log_amp": 1.0, "log_sigma": 0.3, "log_tau": 1.2, "t0": 12.0}, t, None)
@@ -61,6 +68,7 @@ def test_kilonova_is_not_auto_registered_and_says_why():
 
 
 def test_kilonova_factory_uses_redback_default_priors():
+    pytest.importorskip("jax")   # builds a JAX model
     kn = whisper_cbpf.kilonova_model(["sdssg", "sdssr"], redshift=0.01, dl_cm=1.3e26, n_wave=400)
     b = {k: v.bounds for k, v in kn.default_prior.distributions.items()}
     # verbatim from redback/priors/one_component_kilonova_model.prior
@@ -72,6 +80,7 @@ def test_kilonova_factory_uses_redback_default_priors():
 
 
 def test_kilonova_predict_returns_flux_and_rejects_unbound_bands():
+    pytest.importorskip("jax")   # builds a JAX model
     kn = whisper_cbpf.kilonova_model(["sdssg", "sdssr"], redshift=0.01, dl_cm=1.3e26, n_wave=400)
     t = np.array([1.0, 3.0, 7.0, 15.0])
     p = {"mej": 0.03, "vej": 0.2, "kappa": 1.0, "temperature_floor": 3000.0}
@@ -94,6 +103,7 @@ def test_tde_is_not_auto_registered_and_says_why():
 
 
 def test_tde_factory_names_itself_after_the_rise_it_was_given():
+    pytest.importorskip("jax")   # builds a JAX model
     a = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200)
     b = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200, rise="none")
     assert a.name == "tde_gaussianrise_jax" and b.name == "tde_cooling_envelope_jax"
@@ -116,6 +126,7 @@ def test_tde_factory_names_itself_after_the_rise_it_was_given():
 
 
 def test_tde_factory_uses_redbacks_prior_including_what_redback_pins():
+    pytest.importorskip("jax")   # builds a JAX model
     """redback's prior, read from redback -- deltas and all -- not a transcription of it.
 
     `gaussianrise_cooling_envelope.prior` pins nothing in 1.15.1, so all seven are free.
@@ -185,7 +196,7 @@ def test_env_helpers_never_import_jax_at_module_scope():
     import ast
     import inspect
 
-    from whisper_cbpf import _env
+    from whisper_cbpf.backends import _env
 
     # AST, not a substring search: the module docstring legitimately contains the words
     # "import jax" while describing when NOT to do it.
