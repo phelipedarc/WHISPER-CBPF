@@ -43,7 +43,7 @@ save("01_lightcurves.ipynb", [
        "This notebook uses the bundled **AT2017GFO** (GW170817 kilonova) g/r/i data."),
     code("import numpy as np\n"
          "from pathlib import Path\n"
-         "import whisper_labia as wp\n\n"
+         "import whisper_cbpf as wp\n\n"
          "wp.__version__"),
     md("## Load\n\n"
        "`load_lightcurve` detects time / magnitude (or flux) / error / band / system columns, normalises "
@@ -95,7 +95,7 @@ save("02_models.ipynb", [
        "contract; the samplers call it."),
     code("import numpy as np\n"
          "import matplotlib.pyplot as plt\n"
-         "import whisper_labia as wp\n\n"
+         "import whisper_cbpf as wp\n\n"
          "wp.list_models()"),
     md("## Evaluate a built-in model\n\n"
        "`get_model` returns a `Model`; `.predict` evaluates it. `bazin` is an empirical supernova "
@@ -149,7 +149,7 @@ save("03_samplers.ipynb", [
        "| `fit_SNPE` | neural (sbi) | amortized; GPU-capable |\n\n"
        "We fit synthetic data from a known truth so recovery is checkable."),
     code("import numpy as np\n"
-         "import whisper_labia as wp\n\n"
+         "import whisper_cbpf as wp\n\n"
          "MODEL = 'gaussian_rise'\n"
          "truth = {'amplitude': 5.0, 't0': 8.0, 'sigma_rise': 3.0, 'tau_decay': 15.0}\n"
          "t = np.linspace(0.1, 30, 60)\n"
@@ -192,7 +192,7 @@ save("04_visualizing.ipynb", [
        "(`recovery_metrics`, `waic`), and posterior-predictive checks. We reuse the synthetic fit from "
        "notebook 3."),
     code("import numpy as np\n"
-         "import whisper_labia as wp\n\n"
+         "import whisper_cbpf as wp\n\n"
          "MODEL = 'gaussian_rise'\n"
          "truth = {'amplitude': 5.0, 't0': 8.0, 'sigma_rise': 3.0, 'tau_decay': 15.0}\n"
          "t = np.linspace(0.1, 30, 60)\n"
@@ -240,9 +240,9 @@ save("05_bayesian_model_comparison.ipynb", [
     code("import numpy as np\n"
          "import pandas as pd\n"
          "from pathlib import Path\n"
-         "import whisper_labia as wp\n"
+         "import whisper_cbpf as wp\n"
          "from redback.model_library import all_models_dict\n"
-         "from whisper_labia.models.two_component_kilonova import _redback_band\n\n"
+         "from whisper_cbpf.models.two_component_kilonova import _redback_band\n\n"
          "wp.__version__"),
     md("## Data — preprocessed AT2017GFO\n\n"
        "The preprocessed UVOIR reduction (Swift-UVOT `uvw1` dropped, SNR > 5, one point per band per "

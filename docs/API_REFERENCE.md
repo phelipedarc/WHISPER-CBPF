@@ -1,15 +1,15 @@
-# Whisper (`whisper_labia`) — API Reference
+# Whisper (`whisper_cbpf`) — API Reference
 
 Generated for **v0.0.1.dev0**. Covers data ingestion + plotting and the inference layer — four pluggable
 axes (models, samplers, likelihoods, distances) with the ABC / ABC-SMC / MCMC / SNPE samplers.
 
 - **Environment:** Docker container `phe_sbi`, Python 3.11.
-- **Run tests:** `docker exec phe_sbi bash -lc 'cd /tf/astrodados2/phelipedata2/WHISPER/whisper-labia && python -m pytest tests -q'` (219 tests, [§8](#8-test-coverage) for the per-file breakdown; `-m "not slow"` runs 212 — it skips the SNPE training/GPU + mck19 / kilonova fit + benchmark tests).
+- **Run tests:** `docker exec phe_sbi bash -lc 'cd /tf/astrodados2/phelipedata2/WHISPER/whisper-cbpf && python -m pytest tests -q'` (219 tests, [§8](#8-test-coverage) for the per-file breakdown; `-m "not slow"` runs 212 — it skips the SNPE training/GPU + mck19 / kilonova fit + benchmark tests).
 
 ## Package map
 
 ```
-whisper_labia/
+whisper_cbpf/
   __init__.py          # public API exports
   plotting.py          # plot_light_curve, plot_ppc, plot_calibration, plot_corner
   metrics.py           # waic, per_band_metrics, predictive_metrics (RMSE/LPD/ELPD-LOO/coverage)
@@ -23,7 +23,7 @@ whisper_labia/
   io/                  # LightCurve, load_lightcurve, bands, photometry, units, svo
 ```
 
-Top-level (`import whisper_labia as wp`): `LightCurve`, `load_lightcurve`, `plot_light_curve`,
+Top-level (`import whisper_cbpf as wp`): `LightCurve`, `load_lightcurve`, `plot_light_curve`,
 `plot_ppc`, `plot_calibration`, `plot_corner`, `CORNER_PALETTE`, `waic`, `per_band_metrics`, `predictive_metrics`, `recovery_metrics`, `posterior_predictive_check`, `sbc_rank`,
 `sbc_ranks`, `group_bands`, `FILTER_LOOKUP`, `resolve_band`, `resolve_bands`, `LSST_BAND_INFO`, `SvoUnavailable`,
 `register_manual_band`, `unregister_manual_band`, `clear_manual_bands`, `Prior`, `Uniform`, `LogUniform`,
@@ -186,7 +186,7 @@ of point estimates cannot.
 
 ## 6. Inference: priors, models, distance, samplers
 
-### 6.1 Priors  (`whisper_labia.priors`)
+### 6.1 Priors  (`whisper_cbpf.priors`)
 Small, **picklable** distributions (so they cross process boundaries in parallel ABC).
 
 | Class | Constructor | Methods |
@@ -200,7 +200,7 @@ prior = wp.Prior({"amplitude": wp.Uniform(0, 10), "rise_time": wp.Uniform(1, 10)
 prior.sample(np.random.default_rng(0))   # {'amplitude': ..., 'rise_time': ...}
 ```
 
-### 6.2 Models  (`whisper_labia.models`)
+### 6.2 Models  (`whisper_cbpf.models`)
 A model maps parameters to predicted flux: `predict(params: dict, times: np.ndarray, bands) -> np.ndarray`.
 
 | Function | Signature | Description |
@@ -244,7 +244,7 @@ disk constants (`mdot=0.05` Edd, `alpha=0.1`) do not enter the light-curve *shap
 > For **parallel** ABC (`n_jobs>1`) the `predict` function must be picklable (module-level, not a
 > closure/lambda). Closures work with `n_jobs=1`.
 
-**Built-in model module contract.** Every module in `whisper_labia/models/` exposes the four names that
+**Built-in model module contract.** Every module in `whisper_cbpf/models/` exposes the four names that
 `models/__init__.py` feeds to `register_model`, and a custom model file is expected to follow suit:
 
 | Name | Type | Role |
@@ -255,10 +255,10 @@ disk constants (`mdot=0.05` Edd, `alpha=0.1`) do not enter the light-curve *shap
 | `<name>_flux` | callable | The `predict(params, times, bands) -> flux (Jy)` implementation, e.g. `flare_flux`, `bazin_flux`, `gaussian_rise_flux`, `mck19_flux`, `two_component_kilonova_flux`. |
 
 `two_component_kilonova` additionally exposes `REDBACK_MODEL` (the redback function it wraps). Import
-these directly (`from whisper_labia.models import flare; flare.PRIOR`) to reuse or widen a built-in
+these directly (`from whisper_cbpf.models import flare; flare.PRIOR`) to reuse or widen a built-in
 prior instead of retyping its bounds.
 
-### 6.3 Distance  (`whisper_labia.distance`)
+### 6.3 Distance  (`whisper_cbpf.distance`)
 `chi2_distance(obs_flux, obs_flux_err, sim_flux, bands=None) -> float` = `sum(((obs-sim)/err)**2)`.
 Any `f(obs_flux, obs_flux_err, sim_flux, bands) -> float` can be passed as a custom distance.
 
@@ -273,7 +273,7 @@ Distances are also a **name registry**, so a custom distance can be selected by 
 
 Names are matched **case-insensitively**.
 
-### 6.4 Samplers  (`whisper_labia.samplers`)
+### 6.4 Samplers  (`whisper_cbpf.samplers`)
 
 `fit_ABC(lc, model="flare", ...)`, `fit_ABC_SMC(lc, model="flare", ...)`, `fit_MCMC(lc, model="flare",
 ...)`, and `fit_SNPE(lc, model="flare", ...)` → `SamplerResult`. `fit(lc, model,
@@ -379,10 +379,10 @@ keeps out-of-prior draws out of the returned posterior. `num_rounds=1` is amorti
 - **Density estimator + embeddings:** `density_estimator` is an estimator name **or** a pre-built
   `posterior_nn(...)` factory. **`embedding_net`** is `None`, a built-in name — **`"mlp"`** or
   **`"tcn"`** (Temporal Convolutional Network: dilated causal convolutions for time series; see
-  `whisper_labia.embeddings`), compressed to `embedding_latent` features and trained jointly — or any
+  `whisper_cbpf.embeddings`), compressed to `embedding_latent` features and trained jointly — or any
   `torch.nn.Module`; `hidden_features` / `num_transforms` / `num_bins` build a custom architecture.
   The built-ins come from **`build_embedding(spec, n_points, n_channels=1, latent_dim=32)`**
-  (`whisper_labia.embeddings`), which returns `MLPEmbedding(n_points*n_channels, latent_dim=...)` or
+  (`whisper_cbpf.embeddings`), which returns `MLPEmbedding(n_points*n_channels, latent_dim=...)` or
   `TCNEmbedding(n_points, n_channels=..., latent_dim=...)` and raises `ValueError` for any other name.
   `fit` calls it for you with `n_channels` set by `x_format` (1 for `"value"`, 3 for `"stacked"`) and
   `latent_dim=embedding_latent`; call it directly only to build/inspect a net outside a fit.
@@ -427,7 +427,7 @@ every field above (`band_metrics` and `predictive_metrics` included) is serialis
 to `path` when given and always returned as a string; `indent=None` emits compact one-line JSON for
 machine-read outputs.
 
-**Writing a sampler that produces the standard output** (`whisper_labia.samplers.base`): the two hooks
+**Writing a sampler that produces the standard output** (`whisper_cbpf.samplers.base`): the two hooks
 below are what every built-in sampler calls, and a custom sampler should call them too so its JSON
 carries the same metric blocks as the rest. Both are **best-effort** — they swallow any exception, so a
 slow or failing forward model degrades the metrics instead of breaking an otherwise-successful fit.
@@ -450,7 +450,7 @@ res.to_json("fit.json")
 
 ---
 
-### 6.5 Likelihoods  (`whisper_labia.likelihood`)
+### 6.5 Likelihoods  (`whisper_cbpf.likelihood`)
 
 Models predict **flux**; a likelihood compares it to the data in a chosen **space** —
 `space='flux'` (residuals/errors in Jy; upper limits usable), `space='magnitude'` (model flux → AB
@@ -489,7 +489,7 @@ scatter level is **not identifiable by distance-based ABC** — fit σ with MCMC
 Each Gaussian likelihood also exposes **`log_likelihood_pointwise(model_flux) -> array`** (the per-data-
 point log-likelihood, summing to `log_likelihood`) — the ingredient WAIC needs.
 
-### 6.6 Metrics  (`whisper_labia.metrics`)
+### 6.6 Metrics  (`whisper_cbpf.metrics`)
 
 **`waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=None, max_samples=2000, seed=0)`**
 — the **Widely Applicable Information Criterion** (Watanabe 2010; Gelman et al. 2014): a fully-Bayesian
@@ -528,7 +528,7 @@ posterior samples once and returns:
 - **`scatter_param`** — the posterior column used as the extra-scatter σ (or `null`).
 
 `levels` defaults to **`DEFAULT_COVERAGE_LEVELS = (0.5, 0.68, 0.8, 0.9, 0.95, 0.99)`** — import it from
-`whisper_labia.metrics` to extend rather than retype the set (e.g.
+`whisper_cbpf.metrics` to extend rather than retype the set (e.g.
 `levels=DEFAULT_COVERAGE_LEVELS + (0.999,)`). Note `plot_calibration` does **not** read the stored
 block: it takes its own `levels=` (same values, and recomputes the coverage), so a custom set must be
 passed to both.
@@ -549,7 +549,7 @@ Every sampler attaches this to **`result.info["predictive_metrics"]`** (with `n_
 in `to_json()`. Note that broad tolerance/under-converged posteriors (ABC, un-converged SNPE) inflate
 `p_waic`/`p_loo` and their information criteria — a known, useful diagnostic, not a bug.
 
-### 6.7 Validation — recovery, PPC, SBC  (`whisper_labia.validation`)
+### 6.7 Validation — recovery, PPC, SBC  (`whisper_cbpf.validation`)
 
 Sampler-agnostic checks that a fit **recovered the truth** with **reliable uncertainties** (used by
 `sanity_check/sanity_check.py`); all take a `SamplerResult` (or its `.samples`) so they work for every sampler.
@@ -640,7 +640,7 @@ All SVO/network calls are **mocked** — no live network in CI. See
 ## 9. End-to-end example
 
 ```python
-import whisper_labia as wp
+import whisper_cbpf as wp
 
 lc = wp.load_lightcurve("at2017gfo.csv", explosion_date=57982.0, min_snr=3)
 r  = lc.select_bands("r")

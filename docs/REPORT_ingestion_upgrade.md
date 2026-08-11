@@ -39,8 +39,8 @@ fixed → **133 tests pass**.
 
 | File | Lines | Purpose |
 |---|---|---|
-| `whisper_labia/io/units.py` | ~165 | astropy unit validation/conversion (`to_canonical`, `to_flux_density_jy`, `check_magnitude_unit`, …) |
-| `whisper_labia/io/svo.py` | ~230 | SVO fallback — lazy/mockable network boundary, disk+memory cache, `register_manual_band`, `get_transmission_data` |
+| `whisper_cbpf/io/units.py` | ~165 | astropy unit validation/conversion (`to_canonical`, `to_flux_density_jy`, `check_magnitude_unit`, …) |
+| `whisper_cbpf/io/svo.py` | ~230 | SVO fallback — lazy/mockable network boundary, disk+memory cache, `register_manual_band`, `get_transmission_data` |
 | `dev/demo_ingestion.py` | ~135 | Offline end-to-end demo of all four features |
 | `tests/test_units.py` | 12 tests | unit conversions + error paths |
 | `tests/test_svo.py` | 15 tests | band resolution, mocked SVO, caching, corrupt-cache resilience (×4 params), manual override |
@@ -51,11 +51,11 @@ fixed → **133 tests pass**.
 ```
  CHANGELOG.md                 |  26 ++-
  pyproject.toml               |   3 +-     # [svo] extra = astroquery
- whisper_labia/__init__.py    |  13 +-     # new top-level exports
- whisper_labia/io/__init__.py |  26 ++-
- whisper_labia/io/bands.py    | 103 ++++    # LSST_BAND_INFO + resolve_band/resolve_bands
- whisper_labia/io/loader.py   |  81 ++-     # redshift/units/data_mode/band plumbing
- whisper_labia/io/schema.py   | 174 +++--   # data_mode, redshift state, __call__, enrichment
+ whisper_cbpf/__init__.py    |  13 +-     # new top-level exports
+ whisper_cbpf/io/__init__.py |  26 ++-
+ whisper_cbpf/io/bands.py    | 103 ++++    # LSST_BAND_INFO + resolve_band/resolve_bands
+ whisper_cbpf/io/loader.py   |  81 ++-     # redshift/units/data_mode/band plumbing
+ whisper_cbpf/io/schema.py   | 174 +++--   # data_mode, redshift state, __call__, enrichment
  7 files changed, 397 insertions(+), 29 deletions(-)
 ```
 
@@ -116,7 +116,7 @@ the tests mock it). Selected output:
 
 ## 5. Test results — 133 passed
 
-`docker exec phe_sbi bash -lc 'cd …/whisper-labia && python -m pytest tests -q'` → **133 passed in ~7 s.**
+`docker exec phe_sbi bash -lc 'cd …/whisper-cbpf && python -m pytest tests -q'` → **133 passed in ~7 s.**
 
 | File | Tests | Status | Focus |
 |---|---:|---|---|

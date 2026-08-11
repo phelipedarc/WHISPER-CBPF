@@ -11,6 +11,6 @@ self-contained and executes in a few minutes.
 | 4 | [Visualizing results](04_visualizing.ipynb) | `plot_corner`, `recovery_metrics`, `waic` |
 | 5 | [Bayesian model comparison](05_bayesian_model_comparison.ipynb) | AT2017GFO: one/two/three-component kilonova × ABC/SNPE/MCMC, AIC/BIC ranking |
 
-Notebooks 2 and 5 need the optional **redback** backend (`pip install 'whisper-labia[models]'`);
+Notebooks 2 and 5 need the optional **redback** backend (`pip install 'whisper-cbpf[models]'`);
 5 also benefits from **sbi** (`[sbi]`) for the SNPE fits. The source cells are generated from
 `_build_notebooks.py`.

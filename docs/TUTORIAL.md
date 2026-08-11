@@ -4,7 +4,7 @@ A hands-on tour of what Whisper can do today — **data ingestion, plotting, and
 and SNPE). Import once:
 
 ```python
-import whisper_labia as wp
+import whisper_cbpf as wp
 ```
 
 ---
@@ -165,7 +165,7 @@ astroquery), the load degrades gracefully and you can supply the band by hand:
 ```python
 wp.register_manual_band("my_filter", lambda_eff=9000.0, zero_point=3631.0)
 ```
-> SVO needs the optional `[svo]` extra (`pip install 'whisper-labia[svo]'`, which adds `astroquery`).
+> SVO needs the optional `[svo]` extra (`pip install 'whisper-cbpf[svo]'`, which adds `astroquery`).
 > A runnable, **offline** tour of all four features is in [`dev/demo_ingestion.py`](../dev/demo_ingestion.py).
 
 ## 6. Plot
@@ -321,11 +321,11 @@ reddening):
 ### Likelihoods & space (flux vs magnitude)
 
 All inference can run in **flux** or **apparent-magnitude** space, with Gaussian, upper-limit, and
-mixture (outlier-robust) likelihoods (`whisper_labia.likelihood`). The default is chosen by data type;
+mixture (outlier-robust) likelihoods (`whisper_cbpf.likelihood`). The default is chosen by data type;
 override for edge cases (non-detections, outliers):
 
 ```python
-from whisper_labia.likelihood import make_likelihood, GaussianLikelihoodWithUpperLimits
+from whisper_cbpf.likelihood import make_likelihood, GaussianLikelihoodWithUpperLimits
 lik = make_likelihood(lc, space="magnitude")                 # default by data type; override space/kind
 lik = GaussianLikelihoodWithUpperLimits(lc, space="flux")    # use non-detections in flux space
 ```
@@ -402,7 +402,7 @@ res = wp.fit_SNPE(
 - **`x_format="stacked"`** — condition the network on the full observation tuple
   `(value, error, time, band)` instead of the values alone: the same information the likelihood-based
   samplers get, and what an embedding net needs to exploit cadence/noise structure.
-- **`embedding_net`** — `"mlp"` or `"tcn"` build the built-in compressors (`whisper_labia.embeddings`;
+- **`embedding_net`** — `"mlp"` or `"tcn"` build the built-in compressors (`whisper_cbpf.embeddings`;
   the TCN is a Temporal Convolutional Network — dilated causal convolutions specialized for time
   series), trained jointly with the estimator to `embedding_latent` features; or pass any
   `torch.nn.Module`. In the Bazin benchmark the MLP was the *fastest* config and the TCN the *most
@@ -427,7 +427,7 @@ res = wp.fit_SNPE(
 res = wp.fit_SNPE(lc, "two_component_kilonova", device="auto", num_rounds=2, num_simulations=2000)
 ```
 
-> `snpe` needs the optional `[sbi]` extra (`pip install 'whisper-labia[sbi]'`, adds `sbi` + `torch`).
+> `snpe` needs the optional `[sbi]` extra (`pip install 'whisper-cbpf[sbi]'`, adds `sbi` + `torch`).
 > Runnable: [`dev/demo_snpe.py`](../dev/demo_snpe.py) and the notebook
 > [`examples/at2017gfo_quickstart.ipynb`](../examples/at2017gfo_quickstart.ipynb). Training is the slow
 > part — its tests are marked `slow` (`pytest -m "not slow"` skips them).

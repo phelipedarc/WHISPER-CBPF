@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Whisper (`whisper_labia`). The project is in early development; nothing is
+All notable changes to Whisper (`whisper_cbpf`). The project is in early development; nothing is
 released to PyPI yet — install from GitHub (`pip install git+https://github.com/phelipedarc/WHISPER_AI.git`).
 
 ## [Unreleased] — 0.0.1.dev0
@@ -126,29 +126,29 @@ released to PyPI yet — install from GitHub (`pip install git+https://github.co
   survey codes resolve without hardcoding every case variant.
 
 ### Predictive & model-comparison metrics + coverage calibration in every fit's JSON
-- **`predictive_metrics(result, lc, ...)`** (`whisper_labia.metrics`) — a posterior-predictive metric
+- **`predictive_metrics(result, lc, ...)`** (`whisper_cbpf.metrics`) — a posterior-predictive metric
   block computed from the posterior sample and **auto-attached to `result.info["predictive_metrics"]`**
   by every sampler (so it is written to `to_json`):
   - **RMSE** of `observed − posterior-mean prediction`, per band + overall.
   - **LPD** (log predictive density, the `lppd`).
   - **ELPD** by **PSIS-LOO** cross-validation (Vehtari et al. 2017) with `p_loo`, `se`, `looic` and the
-    Pareto-`k` diagnostic — via the optional **`arviz`** extra (`pip install 'whisper-labia[loo]'`);
+    Pareto-`k` diagnostic — via the optional **`arviz`** extra (`pip install 'whisper-cbpf[loo]'`);
     degrades to `None` without it.
   - **WAIC** (deviance scale), **AIC**, **BIC**.
   - a **coverage-calibration curve**: empirical posterior-predictive coverage vs nominal at
     50/68/80/90/95/99%, overall and per band.
-- **`plot_calibration(results, lc, ...)`** (`whisper_labia.plotting`) — the coverage-calibration curve /
+- **`plot_calibration(results, lc, ...)`** (`whisper_cbpf.plotting`) — the coverage-calibration curve /
   reliability pp-plot (empirical vs nominal coverage; on the diagonal ⇒ calibrated), for one or more
   fits or one fit broken out per band.
 
 ### Per-band goodness-of-fit + posterior-predictive grid plot
-- **`per_band_metrics(lc, model, params, *, space, fixed)`** (`whisper_labia.metrics`) — per-band and
+- **`per_band_metrics(lc, model, params, *, space, fixed)`** (`whisper_cbpf.metrics`) — per-band and
   overall **MSE / RMSE / MAE** of the best-fit residuals in the fit's comparison space (Jy for flux,
   mag for magnitude). **Every sampler** now computes it at its best fit and stores it in
   `result.info["band_metrics"]`, so it is written to `SamplerResult.to_json()` automatically — the
   per-band error is part of the standard fit output.
 - **`plot_ppc(results, lc, model=None, *, quantity="apparent_mag"|"flux", panel_by="method"|"band"|"auto", ...)`**
-  (`whisper_labia.plotting`) — the grid posterior-predictive-check plot (previously bespoke to the
+  (`whisper_cbpf.plotting`) — the grid posterior-predictive-check plot (previously bespoke to the
   AT2017GFO study) is now a first-class feature: 95% predictive band + median over the data, one panel
   per fit (bands overlaid) or one panel per band (fits overlaid), in **magnitude or flux** space. Takes
   one `SamplerResult`, a `{label: result}` dict, or a list.
@@ -168,7 +168,7 @@ released to PyPI yet — install from GitHub (`pip install git+https://github.co
   own `data/`, `figures/` and `reports/`. **`sanity_check/`** holds the synthetic-recovery benchmarks
   (`sanity_check.py`, `benchmark_*.py`, `corner_kilonova_benchmark.py`, `compare_samplers.py`,
   `sanity_mck19_modes.py`, `BENCHMARK.md`) and their figures. **`dev/`** holds one-off demos and
-  superseded fit/report scripts. The importable package (`whisper_labia/`) and the `tests/` suite are
+  superseded fit/report scripts. The importable package (`whisper_cbpf/`) and the `tests/` suite are
   untouched; only the g/r/i `tests/data/at2017gfo.csv` stays a shared fixture.
 - **Preprocessed AT2017GFO reduction** (`analysis/at2017gfo_villar/preprocess_at2017gfo.py`): drops the
   lone Swift-UVOT `uvw1` band, cuts to SNR > 5, and collapses near-simultaneous same-band duplicates to
@@ -273,7 +273,7 @@ released to PyPI yet — install from GitHub (`pip install git+https://github.co
   `min_epsilon` values from the noiseless era must be re-derived (adaptive quantiles handle it).
   `best_params` (and AIC/BIC there) are now selected by the **exact Gaussian log-likelihood** over
   accepted draws — never by the noisy distance, whose argmin is the luckiest noise realization.
-- **`whisper_labia.embeddings` (new):** `MLPEmbedding` and `TCNEmbedding` (Temporal Convolutional
+- **`whisper_cbpf.embeddings` (new):** `MLPEmbedding` and `TCNEmbedding` (Temporal Convolutional
   Network — dilated causal 1-D convolutions with residual blocks, avg+max-pool head), buildable via
   `fit_SNPE(..., embedding_net="mlp"|"tcn", embedding_latent=...)` and trained jointly with the
   density estimator.
@@ -290,7 +290,7 @@ released to PyPI yet — install from GitHub (`pip install git+https://github.co
   one method/config per GPU (how the benchmarks run).
 
 ### Inference-validation tools + synthetic-recovery sanity check
-- **`whisper_labia.validation`** — reusable, sampler-agnostic checks that a fit *recovered the truth*
+- **`whisper_cbpf.validation`** — reusable, sampler-agnostic checks that a fit *recovered the truth*
   with *reliable uncertainties*: `recovery_metrics` (per-parameter bias, standardized z-score, 68/95%
   credible-interval coverage vs a known truth), `posterior_predictive_check` (predictive band, best-fit
   reduced χ², noise-inflated predictive coverage, Bayesian p-value) and `sbc_rank` / `sbc_ranks`
@@ -382,12 +382,12 @@ A systematic, adversarially-verified review (physical consistency, Bayesian rigo
   slow, guarded end-to-end fit→report.
 
 ### `two_component_kilonova` — first redback-backed model
-- New built-in **`two_component_kilonova`** (`whisper_labia/models/two_component_kilonova.py`): a
+- New built-in **`two_component_kilonova`** (`whisper_cbpf/models/two_component_kilonova.py`): a
   blue (low-κ) + red (high-κ) kilonova via the optional **redback** package (`[models]` extra), wrapping
   redback's `two_component_kilonova_model`. Parameters: `mej_1/2`, `vej_1/2`, `kappa_1/2`,
   `temperature_floor_1/2`, `redshift` (default prior follows the Darc kilonova-simulation setup).
 - **redback is imported lazily** — WHISPER and `list_models()` work without it; only `predict` needs the
-  extra (clear `ImportError` pointing to `pip install 'whisper-labia[models]'` otherwise). This is the
+  extra (clear `ImportError` pointing to `pip install 'whisper-cbpf[models]'` otherwise). This is the
   template for a planned series of redback-backed models.
 - Band-dependent: WHISPER bands → redback LSST filters (`g→lsstg`…); redback's band-integrated AB
   magnitude is converted to WHISPER's canonical **flux density (Jy)** as an exact (machine-precision)
@@ -397,7 +397,7 @@ A systematic, adversarially-verified review (physical consistency, Bayesian rigo
   AT2017GFO — which, being a real kilonova, this model fits well, unlike `mck19`).
 
 ### `mck19` physical model — BBH merger in an AGN disk
-- New built-in **`mck19`** model (`whisper_labia/models/mck19.py`): the optical flare from a
+- New built-in **`mck19`** model (`whisper_cbpf/models/mck19.py`): the optical flare from a
   binary-black-hole merger embedded in an AGN accretion disk. A GW-recoil-kicked remnant shocks a
   bound-gas **hotspot** that radiates as a blackbody — a `sin²` rise to the ram-pressure delay `t_ram`,
   then exponential decay back to the disk baseline. McKernan et al. 2019

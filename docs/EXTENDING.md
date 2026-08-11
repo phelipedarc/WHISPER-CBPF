@@ -12,7 +12,7 @@ Keep it **vectorized** (no per-point loops), and for **parallel** ABC define it 
 
 ```python
 import numpy as np
-import whisper_labia as wp
+import whisper_cbpf as wp
 
 def powerlaw(params, times, bands=None):
     return params["amplitude"] * np.clip(times, 1e-6, None) ** (-params["index"])
@@ -28,7 +28,7 @@ res = wp.fit_ABC(lc, "powerlaw")          # usable by name with any sampler
 ```
 
 `bands` is passed for generality; ignore it for band-independent models. See
-`whisper_labia/models/{flare,bazin,gaussian_rise}.py` for references.
+`whisper_cbpf/models/{flare,bazin,gaussian_rise}.py` for references.
 
 **To ship a model as a module** (the convention every built-in follows, and what
 `models/__init__.py` feeds to `register_model`), expose these four names:
@@ -41,7 +41,7 @@ def powerlaw_flux(params, times, bands=None): ...   # the predict callable, retu
 ```
 
 then register it once at import. Keeping them at module level means a user can widen a built-in prior
-without retyping its bounds — `from whisper_labia.models import flare; flare.PRIOR`.
+without retyping its bounds — `from whisper_cbpf.models import flare; flare.PRIOR`.
 
 ## Add a sampler
 
@@ -53,11 +53,11 @@ it. Reuse the building blocks: `get_model`, the model's `predict`, the prior's `
 import time
 import numpy as np
 import pandas as pd
-import whisper_labia as wp
-from whisper_labia.samplers import register_sampler
-from whisper_labia.samplers.base import BaseSampler, SamplerResult, summarize_posterior
-from whisper_labia.models import get_model
-from whisper_labia.distance import chi2_distance
+import whisper_cbpf as wp
+from whisper_cbpf.samplers import register_sampler
+from whisper_cbpf.samplers.base import BaseSampler, SamplerResult, summarize_posterior
+from whisper_cbpf.models import get_model
+from whisper_cbpf.distance import chi2_distance
 
 class RandomSearch(BaseSampler):
     name = "random_search"
@@ -93,7 +93,7 @@ register_sampler("random_search", RandomSearch)
 res = wp.fit(lc, "flare", sampler="random_search", n=5000)   # dispatch by name
 ```
 
-The full ABC and ABC-SMC implementations live in `whisper_labia/samplers/abc.py` and `abc_smc.py`.
+The full ABC and ABC-SMC implementations live in `whisper_cbpf/samplers/abc.py` and `abc_smc.py`.
 
 ## Add a likelihood
 
@@ -109,8 +109,8 @@ it your likelihood fits but scores `None`. `summary()` is what lands in the resu
 
 ```python
 import numpy as np
-import whisper_labia as wp
-from whisper_labia.likelihood import GaussianLikelihood, register_likelihood
+import whisper_cbpf as wp
+from whisper_cbpf.likelihood import GaussianLikelihood, register_likelihood
 
 class StudentTLikelihood(GaussianLikelihood):
     """Heavy-tailed Student-t: outlier-tolerant without a mixture component."""
