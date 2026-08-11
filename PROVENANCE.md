@@ -96,3 +96,66 @@ whisper-GPU's `distances.py` shipped `register_into_whisper()` to push its five 
 whisper's registry from outside. After the merge those metrics are core and register normally in
 `distance/__init__.py`, so the function has no remaining job. The CPU ABC still gains all five,
 which is what keeps a CPU/GPU comparison at a fixed distance possible.
+
+## Tests
+
+Byte-identical at copy time; imports rewritten in the next commit.
+
+| Destination | Source repo | Original path | Source commit | sha256 (12) |
+|---|---|---|---|---|
+| `tests/conftest.py` | WHISPER_AI | `tests/conftest.py` | `8ba3843` | `438f7b32f058` |
+| `tests/data/at2017gfo.csv` | WHISPER_AI | `tests/data/at2017gfo.csv` | `8ba3843` | `19b610026c54` |
+| `tests/data/ztf18aarlhfw.csv` | WHISPER_AI | `tests/data/ztf18aarlhfw.csv` | `8ba3843` | `3a3bf31522af` |
+| `tests/goldens/filterset_t0.npz` | whisper-GPU | `tests/goldens/filterset_t0.npz` | `10796a0` | `45a62d1c80c1` |
+| `tests/goldens/kilonova_one_component.npz` | whisper-GPU | `tests/goldens/kilonova_one_component.npz` | `10796a0` | `f4473d681248` |
+| `tests/goldens/tde_cooling_envelope.npz` | whisper-GPU | `tests/goldens/tde_cooling_envelope.npz` | `10796a0` | `edbf426a7df2` |
+| `tests/goldens/tde_cooling_envelope_magnitude.npz` | whisper-GPU | `tests/goldens/tde_cooling_envelope_magnitude.npz` | `10796a0` | `33305424b5c1` |
+| `tests/t0_parity/_f32_probe.py` | whisper-GPU | `tests/t0_parity/_f32_probe.py` | `10796a0` | `45a8a281959a` |
+| `tests/t0_parity/make_goldens.py` | whisper-GPU | `tests/t0_parity/make_goldens.py` | `10796a0` | `dbb3bacb3ab9` |
+| `tests/t0_parity/test_conventions.py` | whisper-GPU | `tests/t0_parity/test_conventions.py` | `10796a0` | `6827f90c89a7` |
+| `tests/t0_parity/test_goldens.py` | whisper-GPU | `tests/t0_parity/test_goldens.py` | `10796a0` | `750b431d3d15` |
+| `tests/t2_autodiff/test_gradients.py` | whisper-GPU | `tests/t2_autodiff/test_gradients.py` | `10796a0` | `bb07dc97d720` |
+| `tests/t3_inference/_stage_common.py` | whisper-GPU | `tests/t3_inference/_stage_common.py` | `10796a0` | `657a6f15a2f7` |
+| `tests/t3_inference/_t3_common.py` | whisper-GPU | `tests/t3_inference/_t3_common.py` | `10796a0` | `bf1ec31b72fc` |
+| `tests/t3_inference/stage_injection_recovery.py` | whisper-GPU | `tests/t3_inference/stage_injection_recovery.py` | `10796a0` | `b457399a1658` |
+| `tests/t3_inference/stage_sbc.py` | whisper-GPU | `tests/t3_inference/stage_sbc.py` | `10796a0` | `991aee8c3826` |
+| `tests/t3_inference/test_continuity.py` | whisper-GPU | `tests/t3_inference/test_continuity.py` | `10796a0` | `1bf403b10a76` |
+| `tests/t3_inference/test_likelihood_parity.py` | whisper-GPU | `tests/t3_inference/test_likelihood_parity.py` | `10796a0` | `6d7d7779f025` |
+| `tests/t3_inference/test_prior_predictive.py` | whisper-GPU | `tests/t3_inference/test_prior_predictive.py` | `10796a0` | `71bf4272d036` |
+| `tests/test_abc.py` | WHISPER_AI | `tests/test_abc.py` | `8ba3843` | `cfeb41659707` |
+| `tests/test_abc_gpu_scan.py` | whisper-GPU | `tests/test_abc_gpu_scan.py` | `10796a0` | `0f27d6f4c09c` |
+| `tests/test_abc_smc.py` | WHISPER_AI | `tests/test_abc_smc.py` | `8ba3843` | `e3ab86812092` |
+| `tests/test_abc_smc_gpu.py` | whisper-GPU | `tests/test_abc_smc_gpu.py` | `10796a0` | `e73714330b23` |
+| `tests/test_bands.py` | WHISPER_AI | `tests/test_bands.py` | `8ba3843` | `07665066b54e` |
+| `tests/test_benchmark_kilonova.py` | WHISPER_AI | `tests/test_benchmark_kilonova.py` | `8ba3843` | `1508562de5f4` |
+| `tests/test_distance.py` | WHISPER_AI | `tests/test_distance.py` | `8ba3843` | `3a1b14fca2b8` |
+| `tests/test_embeddings.py` | WHISPER_AI | `tests/test_embeddings.py` | `8ba3843` | `652abc338088` |
+| `tests/test_flare_gradients.py` | whisper-GPU | `tests/test_flare_gradients.py` | `10796a0` | `750a504e6d8d` |
+| `tests/test_import_and_registry.py` | whisper-GPU | `tests/test_import_and_registry.py` | `10796a0` | `517048ddc79d` |
+| `tests/test_ingestion.py` | WHISPER_AI | `tests/test_ingestion.py` | `8ba3843` | `f5b008cde2f8` |
+| `tests/test_kilonova_two.py` | whisper-GPU | `tests/test_kilonova_two.py` | `10796a0` | `dec26e741af2` |
+| `tests/test_kilonova_vs_redback.py` | whisper-GPU | `tests/test_kilonova_vs_redback.py` | `10796a0` | `f8141c666a4b` |
+| `tests/test_likelihood.py` | WHISPER_AI | `tests/test_likelihood.py` | `8ba3843` | `7098340dc888` |
+| `tests/test_loader.py` | WHISPER_AI | `tests/test_loader.py` | `8ba3843` | `6c614efa9140` |
+| `tests/test_mck19.py` | WHISPER_AI | `tests/test_mck19.py` | `8ba3843` | `5dcc32ada6bc` |
+| `tests/test_mcmc.py` | WHISPER_AI | `tests/test_mcmc.py` | `8ba3843` | `63347f7e7ec9` |
+| `tests/test_metrics.py` | WHISPER_AI | `tests/test_metrics.py` | `8ba3843` | `07bc1989a9cf` |
+| `tests/test_models.py` | WHISPER_AI | `tests/test_models.py` | `8ba3843` | `3801e5f9e452` |
+| `tests/test_photometry.py` | WHISPER_AI | `tests/test_photometry.py` | `8ba3843` | `3bef7d93472c` |
+| `tests/test_plotting.py` | WHISPER_AI | `tests/test_plotting.py` | `8ba3843` | `b75e2028ebd8` |
+| `tests/test_priors.py` | WHISPER_AI | `tests/test_priors.py` | `8ba3843` | `db5480cdfa32` |
+| `tests/test_pymc_chain_method.py` | whisper-GPU | `tests/test_pymc_chain_method.py` | `10796a0` | `1587229ab499` |
+| `tests/test_registries.py` | WHISPER_AI | `tests/test_registries.py` | `8ba3843` | `74f1ed3c8cad` |
+| `tests/test_review_fixes.py` | WHISPER_AI | `tests/test_review_fixes.py` | `8ba3843` | `73694d5cc018` |
+| `tests/test_scatter.py` | WHISPER_AI | `tests/test_scatter.py` | `8ba3843` | `12507ad0f461` |
+| `tests/test_schema.py` | WHISPER_AI | `tests/test_schema.py` | `8ba3843` | `6c15e932b954` |
+| `tests/test_snpe.py` | WHISPER_AI | `tests/test_snpe.py` | `8ba3843` | `38e6b104070a` |
+| `tests/test_supernova_vs_redback.py` | whisper-GPU | `tests/test_supernova_vs_redback.py` | `10796a0` | `8f112ebde3ce` |
+| `tests/test_svo.py` | WHISPER_AI | `tests/test_svo.py` | `8ba3843` | `42aad6396ffb` |
+| `tests/test_table_lc.py` | WHISPER_AI | `tests/test_table_lc.py` | `8ba3843` | `3ec9268b8ee9` |
+| `tests/test_tde_vs_redback.py` | whisper-GPU | `tests/test_tde_vs_redback.py` | `10796a0` | `4c936b677c58` |
+| `tests/test_two_component_kilonova.py` | WHISPER_AI | `tests/test_two_component_kilonova.py` | `8ba3843` | `658d89f91567` |
+| `tests/test_units.py` | WHISPER_AI | `tests/test_units.py` | `8ba3843` | `1d41b6b25de0` |
+| `tests/test_validation.py` | WHISPER_AI | `tests/test_validation.py` | `8ba3843` | `af31239311f6` |
+
+**Excluded by the functionality-only rule** (run output, not fixtures): `tests/t3_inference/sbc_results/` (27 files), `tests/t3_inference/injection_results/` (11), and the three tier `REPORT.md` files. Nothing reads them -- `stage_sbc.py` and `stage_injection_recovery.py` treat both directories as their `DEFAULT_OUT` and recreate them on run. `tests/goldens/*.npz` ARE kept: the t0 parity tests assert against them.
