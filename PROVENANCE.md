@@ -37,6 +37,13 @@ source at that commit; import rewrites land in later commits and are measured ag
 | `whisper_cbpf/models/bazin.py` | WHISPER_AI | `whisper_labia/models/bazin.py` | `8ba3843` | `486db2afd041` |
 | `whisper_cbpf/models/flare.py` | WHISPER_AI | `whisper_labia/models/flare.py` | `8ba3843` | `402d067a3a13` |
 | `whisper_cbpf/models/gaussian_rise.py` | WHISPER_AI | `whisper_labia/models/gaussian_rise.py` | `8ba3843` | `43451346d76d` |
+| `whisper_cbpf/models/jax/_factories.py` | whisper-GPU | `models/__init__.py` | `10796a0` | `283f17fca627` |
+| `whisper_cbpf/models/jax/_flare_spec.py` | whisper-GPU | `models/_flare_spec.py` | `10796a0` | `77f62265ebe9` |
+| `whisper_cbpf/models/jax/flare.py` | whisper-GPU | `models/flare.py` | `10796a0` | `9051068f586e` |
+| `whisper_cbpf/models/jax/kilonova.py` | whisper-GPU | `models/kilonova.py` | `10796a0` | `550686d90fc2` |
+| `whisper_cbpf/models/jax/kilonova_two.py` | whisper-GPU | `models/kilonova_two.py` | `10796a0` | `95fbce628a56` |
+| `whisper_cbpf/models/jax/supernova.py` | whisper-GPU | `models/supernova.py` | `10796a0` | `524e79fd14eb` |
+| `whisper_cbpf/models/jax/tde.py` | whisper-GPU | `models/tde.py` | `10796a0` | `4257dd0f2926` |
 | `whisper_cbpf/models/mck19.py` | WHISPER_AI | `whisper_labia/models/mck19.py` | `8ba3843` | `38186b87a7e4` |
 | `whisper_cbpf/models/two_component_kilonova.py` | WHISPER_AI | `whisper_labia/models/two_component_kilonova.py` | `8ba3843` | `c1324bb64db3` |
 | `whisper_cbpf/plotting.py` | WHISPER_AI | `whisper_labia/plotting.py` | `8ba3843` | `50511319d629` |
