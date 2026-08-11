@@ -1,12 +1,13 @@
-"""ABC distance metrics, in numpy (for whisper's CPU ABC) and jnp (for ``abc_gpu``).
+"""ABC distance metrics — numpy backend (the default).
 
-whisper ships exactly one registered distance, ``chi2`` (aliased ``chi_square``), and an unused
-``register_distance`` extension point. This module fills that in: it defines the common metrics in
-both backends, keeps the two bit-comparable, and registers the numpy versions into whisper's own
-registry so the CPU sampler gains them too. Importing :mod:`whisper_gpu` performs the registration.
+Assembled from two sources, function bodies unchanged:
 
-    from whisper_labia.distance import list_distances
-    list_distances()      # -> ['chi2', 'chi_square', 'mae', 'mse', 'rmse', 'wmae', 'wmse']
+* ``chi2_distance`` — WHISPER_AI @ 8ba3843, ``whisper_labia/distance.py``
+* ``mse_distance``, ``rmse_distance``, ``mae_distance``, ``wmse_distance``, ``wmae_distance``
+  — whisper-GPU @ 10796a0, ``distances.py``
+
+The registry lives in this subpackage's ``__init__``; this module holds implementations only.
+The jnp versions are in ``_jax.py`` and are never imported from here.
 
 Which metric to use, and why it matters more than it looks
 ----------------------------------------------------------
@@ -37,20 +38,25 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["chi2_distance", "mse_distance", "rmse_distance", "mae_distance",
-           "wmse_distance", "wmae_distance", "NUMPY_DISTANCES", "jnp_distance",
-           "register_into_whisper"]
+           "wmse_distance", "wmae_distance", "NUMPY_DISTANCES"]
 
 
-# --------------------------------------------------------------------------- numpy (CPU ABC)
+def chi2_distance(obs_flux, obs_flux_err, sim_flux, bands=None):
+    """Multi-band chi-square: ``sum(((obs - sim) / err)**2)``.
+
+    Summing over all points is equivalent to summing per band and adding. Numerically this equals
+    ``-2 ln L`` for an independent Gaussian likelihood, which is what lets ABC report AIC/BIC.
+    """
+    obs_flux = np.asarray(obs_flux, dtype=float)
+    sim_flux = np.asarray(sim_flux, dtype=float)
+    obs_flux_err = np.asarray(obs_flux_err, dtype=float)
+    residual = (obs_flux - sim_flux) / obs_flux_err
+    return float(np.sum(residual * residual))
+
+
 # Signature is whisper's: distance(obs, obs_err, sim, bands=None) -> float. `bands` is accepted for
 # API compatibility and ignored, exactly as chi2_distance does -- a flat sum over all points is
 # equivalent to summing per band and adding.
-
-def chi2_distance(obs, obs_err, sim, bands=None):
-    """``sum(((obs - sim) / err)**2)`` -- identical to whisper's built-in, re-exported for symmetry."""
-    r = (np.asarray(obs, float) - np.asarray(sim, float)) / np.asarray(obs_err, float)
-    return float(np.sum(r * r))
-
 
 def mse_distance(obs, obs_err, sim, bands=None):
     """Mean squared error, unweighted: ``mean((obs - sim)**2)``."""
@@ -87,56 +93,3 @@ NUMPY_DISTANCES = {
     "chi2": chi2_distance, "mse": mse_distance, "rmse": rmse_distance,
     "mae": mae_distance, "wmse": wmse_distance, "wmae": wmae_distance,
 }
-
-
-def register_into_whisper(overwrite=True):
-    """Add these metrics to whisper's own distance registry, so the CPU ABC can use them too."""
-    from whisper_labia.distance import list_distances, register_distance
-
-    known = set(list_distances())
-    for name, fn in NUMPY_DISTANCES.items():
-        if name in known and not overwrite:
-            continue
-        register_distance(name, fn, overwrite=True)
-    return sorted(NUMPY_DISTANCES)
-
-
-# --------------------------------------------------------------------------- jnp (GPU ABC)
-def jnp_distance(name):
-    """Return ``f(obs, err, sim) -> scalar`` in jnp, for use inside a vmapped simulate step.
-
-    Deliberately mirrors the numpy versions term for term, including what they do NOT do: no
-    masking of non-finite values, no clipping of the error. whisper's ABC lets a NaN propagate into
-    the distance (and thence into the acceptance quantile) rather than hiding it, and the GPU port
-    matches that so the two produce the same diagnosis on bad input.
-    """
-    import jax.numpy as jnp
-
-    def _chi2(o, e, s):
-        r = (o - s) / e
-        return jnp.sum(r * r)
-
-    def _mse(o, e, s):
-        r = o - s
-        return jnp.mean(r * r)
-
-    def _rmse(o, e, s):
-        r = o - s
-        return jnp.sqrt(jnp.mean(r * r))
-
-    def _mae(o, e, s):
-        return jnp.mean(jnp.abs(o - s))
-
-    def _wmse(o, e, s):
-        r = (o - s) / e
-        return jnp.mean(r * r)
-
-    def _wmae(o, e, s):
-        return jnp.mean(jnp.abs((o - s) / e))
-
-    table = {"chi2": _chi2, "chi_square": _chi2, "mse": _mse, "rmse": _rmse,
-             "mae": _mae, "wmse": _wmse, "wmae": _wmae}
-    key = str(name).lower()
-    if key not in table:
-        raise KeyError(f"abc_gpu has no jnp distance {name!r}. Available: {sorted(table)}")
-    return table[key]

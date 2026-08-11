@@ -67,3 +67,32 @@ source at that commit; import rewrites land in later commits and are measured ag
 | `whisper_cbpf/samplers/mcmc.py` | WHISPER_AI | `whisper_labia/samplers/mcmc.py` | `8ba3843` | `f608d6904c6c` |
 | `whisper_cbpf/samplers/snpe.py` | WHISPER_AI | `whisper_labia/samplers/snpe.py` | `8ba3843` | `12e1902281c1` |
 | `whisper_cbpf/validation.py` | WHISPER_AI | `whisper_labia/validation.py` | `8ba3843` | `a864918017b0` |
+
+## Files created during the merge
+
+Not copied from either source. Every one is registry glue, a re-export layer, or a split of a
+copied file — no new numerics. Where a body came from a source file it is noted.
+
+| File | What it is | Derived from |
+|---|---|---|
+| `PROVENANCE.md` | this file | — |
+| `whisper_cbpf/distance/_numpy.py` | numpy implementations, no registry | `chi2_distance` verbatim from WHISPER_AI `whisper_labia/distance.py` @ `8ba3843`; `mse/rmse/mae/wmse/wmae_distance` verbatim from whisper-GPU `distances.py` @ `10796a0` |
+| `whisper_cbpf/distance/_jax.py` | jnp implementations | `jnp_distance` verbatim from whisper-GPU `distances.py` @ `10796a0` |
+| `whisper_cbpf/distance/__init__.py` | registry + re-exports, numpy default, `_jax` lazy | `register_distance`/`get_distance`/`list_distances` verbatim from WHISPER_AI `whisper_labia/distance.py` @ `8ba3843`, extended with `*_jax` lazy resolution |
+| `whisper_cbpf/metrics/__init__.py` | re-export layer, `_jax` slot lazy | new; re-exports only |
+
+### One duplicate collapsed — recorded, not silent
+
+whisper-GPU's `distances.py` defined its own `chi2_distance` alongside WHISPER_AI's. Only the
+WHISPER_AI one survives in `_numpy.py`, per the brief's prescribed `distance/` layout
+("chi2 (from CPU) + mse rmse mae wmse wmae (from GPU)"). Evidence that this loses nothing: the
+whisper-GPU copy's own docstring reads *"identical to whisper's built-in, re-exported for
+symmetry"* (`distances.py:50` @ `10796a0`). Both remain in this repo's history in commit `3b12c1b`.
+See `DUPLICATES.md`.
+
+### `register_into_whisper` is intentionally not carried across
+
+whisper-GPU's `distances.py` shipped `register_into_whisper()` to push its five numpy metrics into
+whisper's registry from outside. After the merge those metrics are core and register normally in
+`distance/__init__.py`, so the function has no remaining job. The CPU ABC still gains all five,
+which is what keeps a CPU/GPU comparison at a fixed distance possible.
