@@ -1,9 +1,72 @@
 # Changelog
 
-All notable changes to Whisper (`whisper_cbpf`). The project is in early development; nothing is
-released to PyPI yet — install from GitHub (`pip install git+https://github.com/phelipedarc/WHISPER_AI.git`).
+All notable changes to WHISPER-CBPF (`whisper_cbpf`). The project is in early development; nothing is
+released to PyPI yet — install from GitHub
+(`pip install git+https://github.com/phelipedarc/WHISPER-CBPF.git`).
 
-## [Unreleased] — 0.0.1.dev0
+## [0.1.0] — 2026-08-11 — the merge
+
+`whisper_labia` and `whisper_gpu` become one package, `whisper_cbpf`. **This is a reorganisation, not
+a rewrite:** almost every migrated file is byte-identical to its source apart from its import lines.
+Sources: `WHISPER_AI` @ `8ba3843` and `whisper-GPU` @ `10796a0`, both frozen, both untouched, both
+still citable. Per-file origins are in `PROVENANCE.md`.
+
+### Breaking
+
+- **Import name is `whisper_cbpf`.** No compatibility shim and no alias — `whisper_labia` and
+  `whisper_gpu` do not resolve. `docs/MIGRATION.md` maps every public symbol old → new.
+- **The GPU sampler registry stores zero-argument factories, not class objects.** `get_sampler(name)`
+  still does `_SAMPLERS[name]()` and still returns a sampler instance, so the documented contract is
+  unchanged; only code introspecting `_SAMPLERS["nuts_gpu"]` *as a class* is affected. This is what
+  lets the package import without JAX.
+- **The whisper version guard is gone.** `_REQUIRED_WHISPER_SYMBOLS` / `_check_whisper()` verified an
+  *external* `whisper_labia` checkout. The CPU core is now the same package, so that skew cannot
+  occur.
+
+### Added
+
+- `pip install whisper-cbpf` is a complete CPU package that imports with **no JAX, no CUDA, no torch
+  and no redback** — while `list_models()`, `list_samplers()` and `list_distances()` still name every
+  GPU entry, so the GPU half is discoverable before it is installed. Asking for one without the extra
+  raises a message naming the extra, never a bare `ImportError`.
+- New extras: `[gpu]` (`jax[cuda12]`, numpyro, arviz) and `[pymc]`. CUDA 12 is pinned deliberately —
+  plain `jax` silently installs the CPU build.
+- Paired-backend subpackages: `distance/` and `metrics/`, each `_numpy.py` + `_jax.py` behind one
+  registry, numpy the default, `_jax` imported lazily. JAX distances take a `_jax` suffix
+  (`mse` → `mse_jax`), matching the sampler naming.
+- Documentation the GPU half never had: `docs/API_REFERENCE.md` §9 covers its ~110 public symbols,
+  plus `docs/CHOOSING.md`, `docs/GPU_SETUP.md`, `docs/MIGRATION.md`, `DUPLICATES.md`, `FINDINGS.md`,
+  `OPEN_ITEMS.md`, `INVENTORY.md` and `PROVENANCE.md`.
+
+### Changed
+
+- The five numpy distances (`mse`, `rmse`, `mae`, `wmse`, `wmae`) are now core and register normally.
+  They used to be pushed into the registry from the GPU repo on import via `register_into_whisper()`,
+  which no longer exists. The CPU ABC keeps them — that is what makes a CPU/GPU comparison at a fixed
+  distance possible.
+- `require_jax()`'s message now names the extra (`pip install 'whisper-cbpf[gpu]'`) instead of
+  directing users to install jax and numpyro by hand. The environment-bootstrap half is unchanged and
+  still essential.
+- `env.sh` → `scripts/whisper-gpu-env.sh`. Still a sourceable shell script, deliberately: JAX reads
+  device visibility at import, so this cannot become import-time logic.
+
+### Not included
+
+Analyses, benchmarks and run results — this package ships functionality only. 217 files stay in the
+legacy repos: `analysis/`, `sanity_check/`, `dev/`, `jax_gpu/` and `whisper-GPU/benchmarks/`.
+
+### Known
+
+- `tests/test_benchmark_kilonova.py` (3 tests) is not collected: it loads a file from the excluded
+  `sanity_check/` tree. The only reduction against the pre-merge CPU count.
+- `test_flare_gradients.py::test_naive_single_where_would_fail_here` fails on JAX 0.10.2 — **and fails
+  identically in the source repo.** A control that has stopped testing anything; see `FINDINGS.md`.
+- The two kilonova implementations, and `flare` vs `flare_jax`, are **different models** — not
+  CPU/GPU pairs. See `DUPLICATES.md`.
+
+---
+
+## [Unreleased] — 0.0.1.dev0 (legacy `whisper_labia` history below)
 
 ### SNPE's GPU simulate path now works in magnitude space (it used to refuse)
 - **`_torch_simulate` maps the model flux into the comparison space before adding noise**, via a new
