@@ -61,8 +61,8 @@ from ...samplers.base import (
     summarize_posterior,
 )
 
-from .._env import require_jax
-from ..distances import jnp_distance
+from ...backends._env import require_jax
+from ...distance._jax import jnp_distance
 from .abc_gpu import DEFAULT_CHUNK, _model_in_space_jnp, _prior_rescale_arrays
 
 #: Attempts issued per host synchronisation, as a multiple of ``n_particles``.

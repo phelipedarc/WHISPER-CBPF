@@ -44,7 +44,7 @@ from torch import nn
 from ...embeddings import build_embedding  # noqa: E402
 from ...samplers.snpe import SNPESampler  # noqa: E402
 
-from ..models import flare as flare_jax  # noqa: E402
+from ...models.jax import flare as flare_jax  # noqa: E402
 
 LSST_BANDS = ("u", "g", "r", "i", "z", "y")
 

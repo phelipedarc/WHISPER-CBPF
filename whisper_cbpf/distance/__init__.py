@@ -57,13 +57,16 @@ def get_distance(distance):
     if key in _DISTANCES:
         return _DISTANCES[key]
     if key in _JAX_DISTANCE_NAMES:
+        # `_jax` itself imports cleanly -- it defers `import jax.numpy` to inside jnp_distance --
+        # so the guard has to wrap the CALL, not just the module import.
+        from ._jax import jnp_distance
+
         try:
-            from ._jax import jnp_distance
+            return jnp_distance(key[: -len("_jax")])
         except ImportError as exc:  # pragma: no cover - depends on the install
             raise ImportError(
                 f"{key} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
             ) from exc
-        return jnp_distance(key[: -len("_jax")])
     raise KeyError(f"Unknown distance {distance!r}. Available: {list_distances()}")
 
 

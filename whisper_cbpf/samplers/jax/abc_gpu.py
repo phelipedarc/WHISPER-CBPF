@@ -49,8 +49,8 @@ from ...samplers.base import (
     summarize_posterior,
 )
 
-from .._env import require_jax
-from ..distances import jnp_distance
+from ...backends._env import require_jax
+from ...distance._jax import jnp_distance
 
 #: Particles simulated per compiled call.
 #:

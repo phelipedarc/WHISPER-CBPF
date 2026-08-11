@@ -35,8 +35,8 @@ from ...samplers.base import (  # noqa: E402
 )
 
 
-from ..models._flare_spec import PARAMETERS as _PARAMS  # noqa: E402
-from ..models._flare_spec import flare_flux_numpy  # noqa: E402
+from ...models.jax._flare_spec import PARAMETERS as _PARAMS  # noqa: E402
+from ...models.jax._flare_spec import flare_flux_numpy  # noqa: E402
 
 
 def _flux_numpy(theta, times):

@@ -16,8 +16,8 @@ import warnings
 import numpy as np
 from scipy.special import logsumexp
 
-from .likelihood import make_likelihood
-from .models import get_model
+from ..likelihood import make_likelihood
+from ..models import get_model
 
 
 def _resolve_samples(posterior, model):
@@ -142,7 +142,7 @@ def per_band_metrics(lc, model, params, *, space="auto", fixed=None):
         ``{"space", "unit", "bands": {band: {"mse","rmse","mae","n"}}, "overall": {...}}``.
         ``unit`` is ``"Jy"`` (flux) or ``"mag"`` (magnitude).
     """
-    from .likelihood import GaussianLikelihood
+    from ..likelihood import GaussianLikelihood
 
     m = get_model(model)
     if m is None:
@@ -226,7 +226,7 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     * Vehtari, Gelman & Gabry 2017, *Stat. Comput.* 27, 1413 — WAIC & PSIS-LOO from the pointwise
       predictive density; Watanabe 2010, *JMLR* 11, 3571 — WAIC.
     """
-    from .likelihood import GaussianLikelihoodWithScatter
+    from ..likelihood import GaussianLikelihoodWithScatter
 
     samples, names, model_name = _resolve_samples(result, model)
     m = get_model(model if model is not None else model_name)

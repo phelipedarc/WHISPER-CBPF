@@ -49,7 +49,7 @@ from ...samplers.base import (
     summarize_posterior,
 )
 
-from .._env import require_jax
+from ...backends._env import require_jax
 
 
 def _build_ops(log_prob_fn, jax, jnp):
