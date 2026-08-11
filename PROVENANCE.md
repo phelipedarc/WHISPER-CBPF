@@ -159,3 +159,16 @@ Byte-identical at copy time; imports rewritten in the next commit.
 | `tests/test_validation.py` | WHISPER_AI | `tests/test_validation.py` | `8ba3843` | `af31239311f6` |
 
 **Excluded by the functionality-only rule** (run output, not fixtures): `tests/t3_inference/sbc_results/` (27 files), `tests/t3_inference/injection_results/` (11), and the three tier `REPORT.md` files. Nothing reads them -- `stage_sbc.py` and `stage_injection_recovery.py` treat both directories as their `DEFAULT_OUT` and recreate them on run. `tests/goldens/*.npz` ARE kept: the t0 parity tests assert against them.
+
+## Packaging files created during the merge
+
+| File | What it is | Derived from |
+|---|---|---|
+| `pyproject.toml` | one build config for the merged package | WHISPER_AI `pyproject.toml` @ `8ba3843`, renamed to whisper-cbpf 0.1.0, plus the [gpu] and [pymc] extras |
+| `conftest.py` | root pytest config | new; skips collection of JAX-import-at-module-scope tests when JAX is absent |
+| `whisper_cbpf/py.typed` | typing marker | WHISPER_AI `whisper_labia/py.typed` @ `8ba3843` (byte-identical) |
+
+`MANIFEST.in` is deliberately absent: the package reads no data files at runtime. The `.prior`
+references in the JAX models are docstrings citing redback's own installed prior files, which come
+from the `[models]` extra, not from this package. Only `py.typed` needs shipping, and
+`[tool.setuptools.package-data]` covers it.

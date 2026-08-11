@@ -9,7 +9,7 @@ can optionally be supplied by the external redback package (the ``[models]`` ext
 source of models and priors.
 """
 
-__version__ = "0.0.1.dev0"
+__version__ = "0.1.0"
 
 from .io import (
     FILTER_LOOKUP,

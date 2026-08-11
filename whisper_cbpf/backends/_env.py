@@ -52,7 +52,7 @@ def require_jax(feature="this sampler"):
     except ImportError as exc:
         raise ImportError(
             f"{feature} requires JAX, which is not installed.\n"
-            f"  pip install 'jax[cuda12]' numpyro\n"
+            f"  pip install 'whisper-cbpf[gpu]'\n"
             f"then source the environment bootstrap so JAX can find the GPU:\n"
             f"  source {env_script()}"
         ) from exc
