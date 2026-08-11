@@ -10,7 +10,7 @@ import whisper_cbpf as wp
 
 lc  = wp.load_lightcurve("transient.csv")
 res = wp.fit(lc, "gaussian_rise", sampler="abc")      # CPU, no extras needed
-print(res.posterior.describe(), res.aic, res.bic)
+print(res.samples.describe(), res.aic, res.bic)   # posterior draws, plus AIC/BIC
 ```
 
 ## Install
