@@ -1,6 +1,6 @@
 """JAX transient models, and their adapters onto whisper's ``Model`` contract.
 
-The physics modules (:mod:`whisper_gpu.models.kilonova`, :mod:`whisper_gpu.models.flare`) are kept
+The physics modules (:mod:`whisper_cbpf.models.jax.kilonova`, :mod:`whisper_cbpf.models.jax.flare`) are kept
 free of whisper coupling -- ``kilonova.py`` imports nothing but numpy and jax (plus a lazy sncosmo
 inside ``make_filter_set``). That is deliberate: the JAX physics can then be validated standalone
 against redback and against an independent numpy reference, with no inference framework in the way.
@@ -10,7 +10,7 @@ Two kinds of model, and they register differently
 -------------------------------------------------
 *Self-contained* models (the flare) satisfy whisper's contract directly:
 ``predict(parameters: dict, times, bands) -> flux``. Everything they need is in ``parameters``, so
-they are registered automatically when :mod:`whisper_gpu` is imported.
+they are registered automatically when :mod:`whisper_cbpf` is imported.
 
 *Photometric* models (the kilonova) are not self-contained. Turning ``(mej, vej, kappa,
 temperature_floor)`` into a flux in a band requires a **filter set**, a **redshift** and a
@@ -32,7 +32,7 @@ __all__ = ["flare_model", "kilonova_model", "register_kilonova",
 
 # --------------------------------------------------------------------------- flare
 def flare_model():
-    """The JAX flare as a ``whisper_labia.models.Model``. Self-contained, auto-registered."""
+    """The JAX flare as a ``whisper_cbpf.models.Model``. Self-contained, auto-registered."""
     from . import flare
     return flare.get_model()
 
@@ -74,8 +74,8 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
     """
     import jax.numpy as jnp
 
-    from whisper_labia.models import Model
-    from whisper_labia.priors import LogUniform, Prior, Uniform
+    from ...models import Model
+    from ...priors import LogUniform, Prior, Uniform
 
     from . import kilonova as kn
 
@@ -129,7 +129,7 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
 
 def register_kilonova(band_names, redshift, dl_cm, *, name="kilonova_one_jax", **kwargs):
     """Build a kilonova ``Model`` for this dataset and register it under ``name``."""
-    from whisper_labia.models import register_model
+    from ...models import register_model
 
     m = kilonova_model(band_names, redshift, dl_cm, name=name, **kwargs)
     register_model(name, m.predict, m.parameters, prior=m.default_prior,
@@ -167,20 +167,20 @@ def tde_model(band_names, redshift, dl_cm, *, name=None, rise="gaussian", n_wave
         Override which parameters are held fixed. ``{"beta": 2.0}`` pins one redback leaves
         free; ``{"beta": None}`` frees one redback pins -- but redback's file replaced those
         parameters' distributions with deltas, so freeing one also needs ``prior=``.
-    prior : whisper_labia.priors.Prior or None
+    prior : whisper_cbpf.priors.Prior or None
         Distributions that override redback's, per parameter. The default is redback's own
         prior, read from redback and **not modified** -- including where its file leaves only
         ``stellar_mass`` free. Widen it here, at the call site, where the choice is visible in
         the analysis rather than buried in a library default.
     n_time :
         Which redback grid to reproduce. Default is 1.12.0's 5000; pass
-        ``**whisper_gpu.models.tde.REDBACK_PRESETS["1.15"]`` for 1.15.1's 500. See CHANGE 6
-        in :mod:`whisper_gpu.models.tde` for what the difference costs (1.7% in T).
+        ``**whisper_cbpf.models.jax.tde.REDBACK_PRESETS["1.15"]`` for 1.15.1's 500. See CHANGE 6
+        in :mod:`whisper_cbpf.models.jax.tde` for what the difference costs (1.7% in T).
     dilation : bool
         ``True`` (default) applies the ``(1+z)`` flux factor, matching redback 1.15.1 and
-        :mod:`whisper_gpu.models.kilonova`. ``False`` reproduces redback 1.12.0, which has
+        :mod:`whisper_cbpf.models.jax.kilonova`. ``False`` reproduces redback 1.12.0, which has
         no such factor. Worth 2.5*log10(1+z) magnitudes -- 0.053 at z = 0.05, 0.44 at z = 0.5
-        -- so it is not a rounding detail. See CHANGE 7 in :mod:`whisper_gpu.models.tde`.
+        -- so it is not a rounding detail. See CHANGE 7 in :mod:`whisper_cbpf.models.jax.tde`.
     filter_set : dict or None
         Pre-built ``kilonova.make_filter_set`` output; building it needs sncosmo and is
         slow, so pass it in if you re-register repeatedly.
@@ -203,7 +203,7 @@ def tde_model(band_names, redshift, dl_cm, *, name=None, rise="gaussian", n_wave
     import jax
     import jax.numpy as jnp
 
-    from whisper_labia.models import Model
+    from ...models import Model
 
     from . import kilonova as kn
     from . import tde
@@ -317,7 +317,7 @@ def tde_model(band_names, redshift, dl_cm, *, name=None, rise="gaussian", n_wave
 
 def register_tde(band_names, redshift, dl_cm, *, name=None, **kwargs):
     """Build a TDE ``Model`` for this dataset and register it under ``name``."""
-    from whisper_labia.models import register_model
+    from ...models import register_model
 
     m = tde_model(band_names, redshift, dl_cm, name=name, **kwargs)
     register_model(m.name, m.predict, m.parameters, prior=m.default_prior,
@@ -366,7 +366,7 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
     t_exp_days : float
         Explosion epoch on the same clock as ``times``, subtracted before the redshift.
     magnetar_convention : {"1.15", "1.12"}
-        Which redback's ``basic_magnetar`` (CHANGE 5 in :mod:`whisper_gpu.models.supernova`).
+        Which redback's ``basic_magnetar`` (CHANGE 5 in :mod:`whisper_cbpf.models.jax.supernova`).
         Worth up to 0.75 mag, and not a constant offset. Ignored by models that have no
         magnetar. Default "1.15", which is also MOSFiT's.
     interaction : bool
@@ -376,12 +376,12 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
         Worth up to 15 mag. Ignored by every other model.
     dilation : bool
         ``True`` (default) applies the ``(1+z)`` flux factor, matching redback 1.15.1 and
-        :mod:`whisper_gpu.models.kilonova`. ``False`` reproduces 1.12.0 (CHANGE 6).
+        :mod:`whisper_cbpf.models.jax.kilonova`. ``False`` reproduces 1.12.0 (CHANGE 6).
     pin : dict or None
         Override which parameters are held fixed. ``{"kappa": 0.1}`` pins one redback leaves
         free; ``{"line_width": None}`` frees one redback's prior file pins -- but a freed
         parameter needs a distribution, so that also needs ``prior=``.
-    prior : whisper_labia.priors.Prior or None
+    prior : whisper_cbpf.priors.Prior or None
         Distributions overriding redback's, per parameter. The default is redback's own prior,
         read from redback and not modified.
 
@@ -392,13 +392,13 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
     ``slsn``'s redback prior carries two bilby ``Constraint`` entries (``e_rot_constraint``,
     ``t_nebula_min``) which are rejection conditions rather than distributions. whisper's prior
     layer has no constraint concept, so they are NOT applied; they are reported in the model
-    description and returned by ``whisper_gpu.models.supernova.default_prior`` if you want to
+    description and returned by ``whisper_cbpf.models.jax.supernova.default_prior`` if you want to
     enforce them at the call site.
     """
     import jax
     import jax.numpy as jnp
 
-    from whisper_labia.models import Model
+    from ...models import Model
 
     from . import kilonova as kn
     from . import supernova as sn
@@ -510,7 +510,7 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
                  description=(f"Supernova: redback's {model} (JAX/GPU){tail}. Bolometric "
                               f"physics matches redback to ~1e-16; the band integral uses the "
                               f"real bandpass rather than redback's sncosmo spline. See "
-                              f"whisper_gpu.models.supernova for the numbered deviations."))
+                              f"whisper_cbpf.models.jax.supernova for the numbered deviations."))
 
 
 def _source_time(times, redshift, t_exp_days):
@@ -520,7 +520,7 @@ def _source_time(times, redshift, t_exp_days):
 
 def register_supernova(model, band_names, redshift, dl_cm, *, name=None, **kwargs):
     """Build a supernova ``Model`` for this dataset and register it under ``name``."""
-    from whisper_labia.models import register_model
+    from ...models import register_model
 
     m = supernova_model(model, band_names, redshift, dl_cm, name=name, **kwargs)
     register_model(m.name, m.predict, m.parameters, prior=m.default_prior,

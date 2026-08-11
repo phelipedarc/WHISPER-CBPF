@@ -119,7 +119,7 @@ class ABCSMCSampler(BaseSampler):
         lc : LightCurve
             Observed light curve; must carry ``flux_err`` for the chi-square distance.
         model : str or Model
-            Registered model name or a :class:`~whisper_labia.models.Model`.
+            Registered model name or a :class:`~whisper_cbpf.models.Model`.
         prior : Prior, optional
             Parameter prior; defaults to the model's ``default_prior`` (``ValueError`` if neither).
         n_particles : int, default 500
@@ -156,7 +156,7 @@ class ABCSMCSampler(BaseSampler):
         scatter_param : str, optional
             Prior parameter treated as a free **extra-scatter** term (Villar+2017): each simulation's
             noise becomes ``N(0, sqrt(err² + scatter²))`` with that particle's value, matching
-            :class:`~whisper_labia.likelihood.GaussianLikelihoodWithScatter`. It is perturbed and
+            :class:`~whisper_cbpf.likelihood.GaussianLikelihoodWithScatter`. It is perturbed and
             weighted like every other particle dimension. Requires ``simulate_noise=True``.
         perturbation_scale : float, default 0.1
             Retained for backward compatibility; the kernel covariance is now set adaptively from the

@@ -5,9 +5,9 @@ The log-posterior is
 
     log P(theta | data) = log prior(theta) + log L(theta)
 
-where the prior is Whisper's :class:`~whisper_labia.priors.Prior` and **the likelihood is Whisper's own
-likelihood layer** (:func:`~whisper_labia.likelihood.make_likelihood` /
-:class:`~whisper_labia.likelihood.GaussianLikelihood`). So MCMC uses the *same physically consistent
+where the prior is Whisper's :class:`~whisper_cbpf.priors.Prior` and **the likelihood is Whisper's own
+likelihood layer** (:func:`~whisper_cbpf.likelihood.make_likelihood` /
+:class:`~whisper_cbpf.likelihood.GaussianLikelihood`). So MCMC uses the *same physically consistent
 likelihood* as ABC / ABC-SMC / SNPE and automatically respects the light curve's ``data_mode`` — it
 compares in **flux** space for flux data and **magnitude** space for magnitude data (the model always
 predicts flux; the likelihood converts). All four samplers should therefore converge to the same
@@ -38,7 +38,7 @@ def _log_prob(theta, names, prior, predict, times, bands, likelihood, scatter_na
     """log-posterior for one parameter vector ``theta`` (ordered like ``names``).
 
     ``scatter_name`` routes that prior parameter to the likelihood as its extra-scatter term
-    (:class:`~whisper_labia.likelihood.GaussianLikelihoodWithScatter`) instead of the model —
+    (:class:`~whisper_cbpf.likelihood.GaussianLikelihoodWithScatter`) instead of the model —
     the model's ``predict`` still receives the full params dict (models ignore unknown keys).
     """
     params = {nm: float(v) for nm, v in zip(names, theta)}
@@ -70,7 +70,7 @@ class MCMCSampler(BaseSampler):
         lc : LightCurve
             Observed light curve; must carry errors (``flux_err`` / ``magnitude_err``) for the likelihood.
         model : str or Model
-            Registered model name or a :class:`~whisper_labia.models.Model`.
+            Registered model name or a :class:`~whisper_cbpf.models.Model`.
         prior : Prior, optional
             Parameter prior; defaults to the model's ``default_prior`` (``ValueError`` if neither).
         nwalkers : int, optional

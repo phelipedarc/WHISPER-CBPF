@@ -1,11 +1,11 @@
 """Arm C: per-observation SNPE on GPU, with the JAX model supplying GPU-batched simulation.
 
-A thin wrapper around ``whisper_labia.samplers.snpe.SNPESampler`` — that sampler is used
+A thin wrapper around ``whisper_cbpf.samplers.snpe.SNPESampler`` — that sampler is used
 completely unmodified. Two things are supplied from this side:
 
 1. ``predict_torch=flare_jax.predict_torch`` — SNPESampler already has a hook for a batched,
    device-resident simulator (``_torch_simulate``); it falls back to a per-row numpy loop when
-   no model provides one, and until now no whisper_labia model did. That CPU fallback is
+   no model provides one, and until now no whisper_cbpf model did. That CPU fallback is
    precisely the bottleneck this benchmark exists to remove.
 2. ``embedding_net=ContextEmbedding(...)`` — adds per-point sigma and photometric band as
    extra input channels alongside the flux.
@@ -37,12 +37,12 @@ import numpy as np
 import torch
 from torch import nn
 
-# whisper_labia is imported directly: whisper-GPU is cloned INTO the whisper checkout as
-# `whisper_gpu/`, so the repo root that holds both is already on sys.path. The previous
-# three-level dirname() walk-up hard-coded this file's nesting depth and broke on any move.
+# Imported relatively -- the CPU core and this sampler now live in one package. In the legacy
+# split this file sat in whisper-GPU, cloned INTO a whisper-labia checkout as `whisper_gpu/`,
+# and reached whisper_labia absolutely off sys.path; the merge removes that indirection.
 
-from whisper_labia.embeddings import build_embedding  # noqa: E402
-from whisper_labia.samplers.snpe import SNPESampler  # noqa: E402
+from ...embeddings import build_embedding  # noqa: E402
+from ...samplers.snpe import SNPESampler  # noqa: E402
 
 from ..models import flare as flare_jax  # noqa: E402
 
@@ -134,7 +134,7 @@ def fit_snpe_gpu(lc, model, *, prior=None, num_rounds=3, num_simulations=10000,
     #
     # This function takes a `model` argument but then passes `predict_torch=flare_jax.predict_torch`
     # unconditionally (below), so whatever model is named, the simulations are FLARES. That is why
-    # this sampler is deliberately absent from `whisper_gpu.GPU_SAMPLERS`: registering it would let
+    # this sampler is deliberately absent from `whisper_cbpf.GPU_SAMPLERS`: registering it would let
     # `wp.fit(lc, "kilonova_one_jax", sampler="snpe_gpu")` return flare draws carrying a kilonova's
     # parameter names -- a wrong answer with no error. Until the torch predictor is generalised, the
     # honest interface is a direct call with an explicit check.

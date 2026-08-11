@@ -8,7 +8,7 @@ log_tau, t0`` (amplitude/sigma/tau are strictly positive by construction, so the
 sampled/optimized in log space; t0 stays linear).
 
 Ships in whisper-GPU rather than whisper because it is JAX-native. It mirrors
-whisper_labia's `Model.predict(params,
+whisper_cbpf's `Model.predict(params,
 times, bands) -> flux` contract via `predict_numpy` below, so it drops into
 existing plotting/data-generation helpers that expect that shape.
 
@@ -72,7 +72,7 @@ def predict_jax(params, times):
 
 
 def predict_numpy(parameters, times, bands=None):
-    """whisper_labia's ``Model.predict(parameters: dict, times, bands) -> flux`` contract."""
+    """whisper_cbpf's ``Model.predict(parameters: dict, times, bands) -> flux`` contract."""
     params = {k: jnp.asarray(float(parameters[k])) for k in PARAMETERS}
     return np.asarray(predict_jax(params, jnp.asarray(times, dtype=jnp.float32)))
 
@@ -115,7 +115,7 @@ def predict_torch(theta_batch, times, device="cuda"):
     ``__dlpack__`` protocol (``torch.from_dlpack`` / ``jnp.from_dlpack``), so
     SNPE's simulate-for-training step never leaves the GPU and never round-trips
     through a CPU numpy array — this is what makes simulation GPU-bound instead
-    of the CPU-bound per-row loop ``whisper_labia``'s existing SNPE sampler falls
+    of the CPU-bound per-row loop ``whisper_cbpf``'s existing SNPE sampler falls
     back to when no ``predict_torch`` is supplied.
     """
     import torch
@@ -142,15 +142,15 @@ def prior_bounds_flat():
 
 
 def get_model():
-    """A ``whisper_labia.models.Model`` instance for this model — NOT registered in whisper_labia's
-    registry by this function -- :mod:`whisper_gpu` registers it as ``flare_jax`` on import.
+    """A ``whisper_cbpf.models.Model`` instance for this model — NOT registered in whisper_cbpf's
+    registry by this function -- :mod:`whisper_cbpf` registers it as ``flare_jax`` on import.
     It satisfies the same ``.name``/``.predict``/``.parameters``/``.default_prior`` contract every
-    whisper_labia model does.
+    whisper_cbpf model does.
     """
     import os
     import sys
 
-    from whisper_labia.models import Model
+    from ...models import Model
 
     return Model(
         name="flare_jax",
@@ -158,7 +158,7 @@ def get_model():
         parameters=list(PARAMETERS),
         default_prior=default_prior(),
         description="JAX Gaussian-rise/exponential-decay flare, log-space parameters "
-                     "(JAX/GPU; registered by whisper_gpu as 'flare_jax').",
+                     "(JAX/GPU; registered by whisper_cbpf as 'flare_jax').",
     )
 
 

@@ -11,7 +11,7 @@ install can import this package, list every distance, and only meets JAX if it a
 Adding a distance later means: one function in ``_numpy.py``, optionally one in ``_jax.py``, one
 entry in ``_DISTANCES``.
 
-Registry contract (unchanged from ``whisper_labia.distance``): ``register_distance`` /
+Registry contract (unchanged from the legacy ``whisper_labia.distance``): ``register_distance`` /
 ``get_distance`` / ``list_distances``.
 """
 from __future__ import annotations

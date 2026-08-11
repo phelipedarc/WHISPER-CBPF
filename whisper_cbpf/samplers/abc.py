@@ -78,7 +78,7 @@ class ABCSampler(BaseSampler):
         lc : LightCurve
             Observed light curve; must carry flux errors (``flux_err``) for the chi-square distance.
         model : str or Model
-            A registered model name or a :class:`~whisper_labia.models.Model`.
+            A registered model name or a :class:`~whisper_cbpf.models.Model`.
         prior : Prior, optional
             Parameter prior; defaults to the model's ``default_prior`` (``ValueError`` if neither).
         n_simulations : int, default 10000
@@ -105,7 +105,7 @@ class ABCSampler(BaseSampler):
             Name of a prior parameter to treat as a free **extra-scatter** term (Villar+2017): each
             simulation's noise becomes ``N(0, sqrt(err² + scatter²))`` with that draw's value, so ABC
             fits the same scatter-augmented generative model as
-            :class:`~whisper_labia.likelihood.GaussianLikelihoodWithScatter`. Requires
+            :class:`~whisper_cbpf.likelihood.GaussianLikelihoodWithScatter`. Requires
             ``simulate_noise=True``; the parameter is ignored by ``model.predict`` (models read only
             the keys they know) and appears in the posterior like any other.
         n_jobs : int, optional

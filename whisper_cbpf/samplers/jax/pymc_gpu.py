@@ -41,7 +41,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from whisper_labia.samplers.base import (
+from ...samplers.base import (
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -56,7 +56,7 @@ def _build_ops(log_prob_fn, jax, jnp):
     """A PyTensor Op for the JAX log-density, plus the gradient Op NUTS needs.
 
     Built per fit rather than at import: the Op closes over ``log_prob_fn``, and PyTensor is only
-    imported here so ``import whisper_gpu`` does not require PyMC to be installed.
+    imported here so ``import whisper_cbpf`` does not require PyMC to be installed.
     """
     import pytensor.tensor as pt
     from pytensor.graph import Apply, Op

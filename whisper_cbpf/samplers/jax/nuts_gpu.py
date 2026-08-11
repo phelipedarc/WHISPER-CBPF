@@ -1,12 +1,12 @@
-"""GPU NUTS sampling via NumPyro, following whisper_labia's ``BaseSampler``/``SamplerResult``
-contract exactly (same shape as ``whisper_labia.samplers.mcmc.MCMCSampler``).
+"""GPU NUTS sampling via NumPyro, following whisper_cbpf's ``BaseSampler``/``SamplerResult``
+contract exactly (same shape as ``whisper_cbpf.samplers.mcmc.MCMCSampler``).
 
-Registered into whisper's own sampler registry as ``nuts_gpu`` when :mod:`whisper_gpu` is
+Registered into whisper's own sampler registry as ``nuts_gpu`` when :mod:`whisper_cbpf` is
 imported, so ``wp.fit(lc, model, sampler="nuts_gpu", ...)`` works through the normal dispatcher.
 Whisper instantiates samplers with zero arguments, so every GPU option travels through ``fit()``.
 
 Takes an already-built, jitted ``log_prob_fn`` (e.g. from
-``whisper_gpu.models.flare.make_log_prob_jax``) rather than building its own from ``model`` —
+``whisper_cbpf.models.jax.flare.make_log_prob_jax``) rather than building its own from ``model`` —
 this is what lets the emcee-vectorized-JAX arm and this NUTS arm share the *literal same*
 Python object for the fairness comparison, instead of just "the same code written twice".
 """
@@ -24,11 +24,11 @@ import numpyro.distributions as dist
 import pandas as pd
 from numpyro.infer import MCMC, NUTS
 
-# whisper_labia is imported directly: whisper-GPU is cloned INTO the whisper checkout as
-# `whisper_gpu/`, so the repo root that holds both is already on sys.path. The previous
-# three-level dirname() walk-up hard-coded this file's nesting depth and broke on any move.
+# Imported relatively -- the CPU core and this sampler now live in one package. In the legacy
+# split this file sat in whisper-GPU, cloned INTO a whisper-labia checkout as `whisper_gpu/`,
+# and reached whisper_labia absolutely off sys.path; the merge removes that indirection.
 
-from whisper_labia.samplers.base import (  # noqa: E402
+from ...samplers.base import (  # noqa: E402
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -96,7 +96,7 @@ class NUTSGPUSampler(BaseSampler):
         lc : LightCurve
             Observed light curve (only used for ``n_data``/``attach_*`` metrics here — the actual
             likelihood is baked into ``log_prob_fn``).
-        model : whisper_labia.models.Model-like
+        model : whisper_cbpf.models.Model-like
             Needs ``.name`` and ``.parameters`` (order must match ``log_prob_fn``'s expected
             flat theta vector).
         prior : Prior, optional

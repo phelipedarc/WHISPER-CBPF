@@ -1,4 +1,4 @@
-"""Rejection ABC on the GPU -- a JAX port of ``whisper_labia.samplers.abc``.
+"""Rejection ABC on the GPU -- a JAX port of ``whisper_cbpf.samplers.abc``.
 
 ABC is the case where a GPU forward model pays off most. It has no network to train and no chain to
 advance: the entire cost is *simulate, measure distance, keep the closest*. Measured on the same
@@ -36,11 +36,12 @@ import warnings
 import numpy as np
 import pandas as pd
 
-# whisper_labia is imported directly: whisper-GPU is cloned INTO the whisper checkout as
-# `whisper_gpu/`, so the repo root that holds both is already on sys.path.
-from whisper_labia.likelihood import GaussianLikelihood, make_likelihood
-from whisper_labia.models import get_model
-from whisper_labia.samplers.base import (
+# Imported relatively -- the CPU core and this sampler now live in one package. In the legacy
+# split this file sat in whisper-GPU, cloned INTO a whisper-labia checkout as `whisper_gpu/`,
+# and reached whisper_labia absolutely off sys.path; the merge removes that indirection.
+from ...likelihood import GaussianLikelihood, make_likelihood
+from ...models import get_model
+from ...samplers.base import (
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -79,7 +80,7 @@ from ..distances import jnp_distance
 #: bigger batches do help); lower it only if you OOM, which is unlikely to be the binding limit.
 DEFAULT_CHUNK = 16
 
-_MIN_FLUX_JY = 1e-300          # matches whisper_labia.likelihood._MIN_FLUX_JY
+_MIN_FLUX_JY = 1e-300          # matches whisper_cbpf.likelihood._MIN_FLUX_JY
 AB_ZEROPOINT_JY = 3631.0
 
 
@@ -138,10 +139,10 @@ class ABCGPUSampler(BaseSampler):
             ``prior.names`` order.
         distance : str
             One of ``chi2`` (default, matching whisper's CPU ABC), ``mse``, ``rmse``, ``mae``,
-            ``wmse``, ``wmae``. See :mod:`whisper_gpu.distances` for what each implies -- the
+            ``wmse``, ``wmae``. See :mod:`whisper_cbpf.distance` for what each implies -- the
             distance defines what "close" means, so it defines the posterior.
         n_simulations, quantile, threshold, simulate_noise, space, scatter_param, seed
-            As ``whisper_labia.samplers.abc.ABCSampler.fit``. ``threshold`` overrides ``quantile``.
+            As ``whisper_cbpf.samplers.abc.ABCSampler.fit``. ``threshold`` overrides ``quantile``.
             ``scatter_param`` adds that draw's scatter to the SIMULATED noise; it does not make the
             parameter fittable (see the warning raised below).
         chunk : int

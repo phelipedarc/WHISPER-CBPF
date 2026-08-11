@@ -17,7 +17,7 @@ import numpy as np
 
 PARAMETERS = ["log_amp", "log_sigma", "log_tau", "t0"]
 
-# Uniform on each LOG parameter (plus linear t0). Deliberately not whisper_labia's LogUniform:
+# Uniform on each LOG parameter (plus linear t0). Deliberately not whisper_cbpf's LogUniform:
 # that samples a *linear* value under a log-uniform density, whereas these parameters are
 # already in log space, so a plain Uniform on the log parameter is the correct prior.
 PRIOR_BOUNDS = [(-2.0, 3.0),    # log_amp   -> amp   in ~[0.14, 20.1]
@@ -27,13 +27,13 @@ PRIOR_BOUNDS = [(-2.0, 3.0),    # log_amp   -> amp   in ~[0.14, 20.1]
 
 
 def _whisper():
-    import whisper_labia.priors as pr
-    from whisper_labia.models import Model
+    import whisper_cbpf.priors as pr
+    from ...models import Model
     return pr, Model
 
 
 def default_prior():
-    """The model's prior as a ``whisper_labia.priors.Prior``."""
+    """The model's prior as a ``whisper_cbpf.priors.Prior``."""
     pr, _ = _whisper()
     return pr.Prior({nm: pr.Uniform(lo, hi) for nm, (lo, hi) in zip(PARAMETERS, PRIOR_BOUNDS)})
 
@@ -41,7 +41,7 @@ def default_prior():
 def flare_flux_numpy(parameters, times, bands=None):
     """Gaussian rise / exponential decay in pure numpy (float64).
 
-    Module-level so it stays picklable for multiprocessing pools. Follows whisper_labia's
+    Module-level so it stays picklable for multiprocessing pools. Follows whisper_cbpf's
     ``predict(parameters: dict, times, bands) -> flux`` contract; ``bands`` is accepted and
     ignored because the model is band-independent by design.
     """
@@ -60,10 +60,10 @@ def flare_flux_numpy(parameters, times, bands=None):
 
 
 def get_model_numpy():
-    """A ``whisper_labia.models.Model`` backed by the numpy forward model. No JAX imported.
+    """A ``whisper_cbpf.models.Model`` backed by the numpy forward model. No JAX imported.
 
-    Not registered in whisper_labia's model registry — this is a standalone pre-integration
-    registry by this function; whisper_gpu registers the JAX variant. Constructed directly so it
+    Not registered in whisper_cbpf's model registry — this is a standalone pre-integration
+    registry by this function; whisper_cbpf registers the JAX variant. Constructed directly so it
     satisfies the same
     ``.name`` / ``.predict`` / ``.parameters`` / ``.default_prior`` contract.
     """

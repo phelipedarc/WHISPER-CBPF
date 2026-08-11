@@ -10,7 +10,7 @@ These quantify whether a fit **recovered the truth** and whether its **uncertain
   al. 2022): the rank of each true value within its posterior is **uniform** iff the posterior is
   calibrated. A χ²-of-uniformity *p*-value flags over-/under-confidence.
 
-All operate on a :class:`~whisper_labia.samplers.base.SamplerResult` (or its ``.samples`` DataFrame) plus
+All operate on a :class:`~whisper_cbpf.samplers.base.SamplerResult` (or its ``.samples`` DataFrame) plus
 the model + data, so they work identically for every sampler.
 """
 from __future__ import annotations

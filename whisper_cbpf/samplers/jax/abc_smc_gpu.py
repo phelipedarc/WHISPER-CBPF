@@ -1,4 +1,4 @@
-"""Importance-weighted ABC-SMC on the GPU -- a JAX port of ``whisper_labia.samplers.abc_smc``.
+"""Importance-weighted ABC-SMC on the GPU -- a JAX port of ``whisper_cbpf.samplers.abc_smc``.
 
 WHAT IS PORTED, AND WHAT IS DELIBERATELY NOT
     Only the propose -> simulate -> distance step runs on the device. That step is essentially all
@@ -50,10 +50,10 @@ import numpy as np
 import pandas as pd
 from scipy.special import logsumexp
 
-from whisper_labia.likelihood import GaussianLikelihood, make_likelihood
-from whisper_labia.models import get_model
-from whisper_labia.samplers.abc_smc import _importance_log_weights, _kernel_std
-from whisper_labia.samplers.base import (
+from ...likelihood import GaussianLikelihood, make_likelihood
+from ...models import get_model
+from ...samplers.abc_smc import _importance_log_weights, _kernel_std
+from ...samplers.base import (
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -93,7 +93,7 @@ class ABCSMCGPUSampler(BaseSampler):
             vectorise the forward model. Columns are in ``prior.names`` order.
         n_particles, n_rounds, epsilon_schedule, quantile, min_epsilon, simulate_noise, space,
         scatter_param, seed
-            As :meth:`whisper_labia.samplers.abc_smc.ABCSMCSampler.fit`.
+            As :meth:`whisper_cbpf.samplers.abc_smc.ABCSMCSampler.fit`.
         distance : str
             ``chi2`` (default), ``mse``, ``rmse``, ``mae``, ``wmse``, ``wmae``.
         chunk : int

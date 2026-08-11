@@ -48,7 +48,7 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=No
     model : str | Model, optional
         Model name/object; defaults to ``posterior.model``.
     space, likelihood : str
-        Forwarded to :func:`~whisper_labia.likelihood.make_likelihood` (data space + likelihood kind).
+        Forwarded to :func:`~whisper_cbpf.likelihood.make_likelihood` (data space + likelihood kind).
     fixed : dict, optional
         Parameter values to merge into every draw — for parameters held fixed during the fit and so not
         present in the posterior columns (e.g. a pinned ``redshift``).

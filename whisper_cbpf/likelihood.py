@@ -68,7 +68,7 @@ class GaussianLikelihood:
 
     def log_likelihood_pointwise(self, model_flux):
         """Per-data-point log-likelihood (length ``n_data``). Sums to :meth:`log_likelihood`; the
-        pointwise terms are what WAIC needs (see :func:`whisper_labia.metrics.waic`)."""
+        pointwise terms are what WAIC needs (see :func:`whisper_cbpf.metrics.waic`)."""
         res = (self.y - self.model_in_space(model_flux)) / self.sigma
         return -0.5 * (res * res) - 0.5 * (_LN2PI + 2.0 * np.log(self.sigma))
 

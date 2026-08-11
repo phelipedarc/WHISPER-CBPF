@@ -2,7 +2,7 @@
 Standalone JAX implementation of redback's self-contained SUPERNOVA models.
 
 Runtime dependencies: jax and numpy only. No redback, no astropy, no scipy.
-(:mod:`whisper_gpu.models.kilonova` and :mod:`whisper_gpu.models.tde` are imported for shared
+(:mod:`whisper_cbpf.models.jax.kilonova` and :mod:`whisper_cbpf.models.jax.tde` are imported for shared
 constants and for the already-hardened diffusion / photosphere / AB-photometry machinery --
 see "REUSE" below.)
 
@@ -32,7 +32,7 @@ REUSE, NOT COPYING
     ``ip.Diffusion`` (:func:`tde.diffusion`), ``photosphere.TemperatureFloor``
     (:func:`tde.temperature_floor_photosphere`) and the blackbody / AB-band layer
     (:func:`tde.ab_magnitude`, :func:`tde.flux_density_mjy`, built on
-    :mod:`whisper_gpu.models.kilonova`) are shared, exactly as redback shares
+    :mod:`whisper_cbpf.models.jax.kilonova`) are shared, exactly as redback shares
     ``interaction_processes.py``, ``photosphere.py`` and ``sed.py`` across model families.
     Copying them here would silently reintroduce the numerical defects those modules document
     the next time the original is fixed. Both were validated against redback to ~1e-16.
@@ -128,7 +128,7 @@ THE CHANGES
     which is identical in both.
 
  6. THE (1+z) FLUX FACTOR IS ALSO A VERSION DIFFERENCE -- the same one documented as CHANGE 7
-    in :mod:`whisper_gpu.models.tde`. redback 1.15.1's supernova models end their
+    in :mod:`whisper_cbpf.models.jax.tde`. redback 1.15.1's supernova models end their
     flux-density branch with
 
         return flux_density.to(uu.mJy).value * (1 + redshift)
@@ -144,8 +144,8 @@ THE CHANGES
     evaluates the SED on ``np.geomspace(100, 60000, 100)`` at ``np.geomspace(0.1, 3000, 300)``
     days, builds an sncosmo ``TimeSeriesSource`` and splines onto the observations. This
     module integrates the spectrum against the tabulated bandpass directly AT the observation
-    times, which is what :mod:`whisper_gpu.models.kilonova` documents under "DELIBERATE
-    DEVIATION" and what :mod:`whisper_gpu.models.tde` already does. Expect small differences
+    times, which is what :mod:`whisper_cbpf.models.jax.kilonova` documents under "DELIBERATE
+    DEVIATION" and what :mod:`whisper_cbpf.models.jax.tde` already does. Expect small differences
     from redback's magnitudes traceable to the removed spline; the flux-density path has no
     such step and is the like-for-like comparison.
 
@@ -203,7 +203,7 @@ THE CHANGES
     Note the SECOND row. 7.9e36 is comfortably inside float32, and it still overflows,
     because ``ni56_lum * np.exp(-t/tau)`` = 6.45e43 is formed BEFORE the nickel mass
     multiplies it and XLA is free to reassociate the product -- the same hazard
-    :mod:`whisper_gpu.models.kilonova` documents as its identity 4. So there is no corner of
+    :mod:`whisper_cbpf.models.jax.kilonova` documents as its identity 4. So there is no corner of
     the prior where float32 works, and the failure is silent: L becomes inf, then 0 through
     the guards, and every band comes back at ``mag_floor``. A whole light curve of exactly
     40.0 mag, with finite gradients.
@@ -303,7 +303,7 @@ TIME_PAD = 100.0
 _FLOOR = 1e-30
 
 #: redback ``sed.CutoffBlackbody`` class constants (sed.py:302-303), rebuilt from the same
-#: astropy-cgs literals :mod:`whisper_gpu.models.kilonova` carries rather than hardcoded, so a
+#: astropy-cgs literals :mod:`whisper_cbpf.models.jax.kilonova` carries rather than hardcoded, so a
 #: constant can never drift between the two modules.
 X_CONST = PLANCK * SPEED_OF_LIGHT / BOLTZMANN        # 1.4387768775 cm K
 ANGSTROM_CGS = 1e-8
@@ -359,7 +359,7 @@ def build_sn_grid(time_days, dense_resolution=DENSE_RESOLUTION, t_pad=TIME_PAD):
     -------
     dict with ``time``, ``dense_times``, ``uniq_times``, ``gather_idx``, ``tb``.
     """
-    _require_x64("whisper_gpu.models.supernova")
+    _require_x64("whisper_cbpf.models.jax.supernova")
     time_days = np.asarray(time_days, dtype=np.float64)
     if time_days.ndim != 1 or time_days.size == 0:
         raise ValueError(f"time_days must be a non-empty 1-D array, got shape {time_days.shape}")
@@ -376,7 +376,7 @@ def _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej):
     function directly with a hand-built grid still fails loudly (CHANGE 8). It is a Python
     branch on a config flag, so it resolves at TRACE time and costs nothing at run time.
     """
-    _require_x64("whisper_gpu.models.supernova")
+    _require_x64("whisper_cbpf.models.jax.supernova")
     return diffusion(grid['uniq_times'], grid['gather_idx'], grid['tb'],
                      grid['dense_times'], dense_lbols, kappa, kappa_gamma, mej, vej)
 
@@ -858,7 +858,7 @@ def exponential_powerlaw_integrable(alpha_1, alpha_2):
     independently, so this fails on ~32% of it -- measured 74.5% of draws disagreeing with
     redback by more than 1% of peak at ``n_dense = 1000``, and still 50.5% at 100000. Use it to
     build a prior (or to reject a proposal), the same way
-    :func:`whisper_gpu.models.tde.envelope_exists` is used. It changes nothing about the model.
+    :func:`whisper_cbpf.models.jax.tde.envelope_exists` is used. It changes nothing about the model.
     """
     return (alpha_2 - alpha_1) < 2.0
 
@@ -1244,7 +1244,7 @@ def sn_ab_magnitude(grid, lbol, vej, temperature_floor, band_idx, weights, norms
 
     ``weights, norms`` come from :func:`kilonova.ab_weights`; ``lam_obs_ang`` is its grid.
     ``grid['time']`` is the SOURCE-frame epoch of each observation, as in
-    :func:`sn_flux_density`. See :mod:`whisper_gpu.models.tde`'s ``ab_magnitude`` for the
+    :func:`sn_flux_density`. See :mod:`whisper_cbpf.models.jax.tde`'s ``ab_magnitude`` for the
     ``mag_floor`` and extinction semantics, which are unchanged.
 
     The three non-blackbody SEDs enter as three factors on ONE band integral -- a per-epoch
@@ -1301,7 +1301,7 @@ def sn_ab_magnitude(grid, lbol, vej, temperature_floor, band_idx, weights, norms
 #
 # Eleven models that share nine engines, one interaction process, one photosphere and four
 # SEDs. Spelling that out as a table rather than as eleven near-identical entry points is what
-# keeps the whisper adapter (:func:`whisper_gpu.models.supernova_model`) to one function
+# keeps the whisper adapter (:func:`whisper_cbpf.models.jax.supernova_model`) to one function
 # instead of eleven, and it is the only place a new model has to be registered.
 #
 # ``engine``     : the bolometric function, called as ``engine(grid, **{p: v for p in engine_params})``
@@ -1502,7 +1502,7 @@ def redback_prior(model, *, drop=("redshift",)):
     """
     from redback.priors import get_priors
 
-    from whisper_labia.priors import LogUniform, Prior, Uniform
+    from ...priors import LogUniform, Prior, Uniform
 
     rb = get_priors(model=_spec(model)["prior"] if model in MODELS else model)
     dists, pinned, constraints = {}, {}, {}
@@ -1522,7 +1522,7 @@ def redback_prior(model, *, drop=("redshift",)):
             raise NotImplementedError(
                 f"redback's {model} prior has a {kind} on {k!r}, which whisper's prior layer "
                 f"cannot represent. Pin it at the factory or add the distribution to "
-                f"whisper_labia.priors.")
+                f"whisper_cbpf.priors.")
     return Prior(dists), pinned, constraints
 
 
@@ -1582,7 +1582,7 @@ _FALLBACK = {
 
 def fallback_prior(model):
     """:func:`redback_prior` without redback. Same three-tuple return shape; see ``_FALLBACK``."""
-    from whisper_labia.priors import LogUniform, Prior, Uniform
+    from ...priors import LogUniform, Prior, Uniform
 
     dists, pinned, constraints = _FALLBACK[model]
     cls = {"Uniform": Uniform, "LogUniform": LogUniform}

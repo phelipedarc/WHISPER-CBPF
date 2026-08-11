@@ -324,7 +324,7 @@ def plot_calibration(results, lc, model=None, *, levels=(0.5, 0.68, 0.8, 0.9, 0.
     fraction of observations inside the central predictive interval (model + observation noise) — against
     the nominal level. A well-calibrated fit lies on the diagonal; below ⇒ over-confident (intervals too
     narrow), above ⇒ under-confident. Coverage is computed by
-    :func:`whisper_labia.metrics.predictive_metrics`.
+    :func:`whisper_cbpf.metrics.predictive_metrics`.
 
     ``results`` is a `SamplerResult`, a `{label: result}` dict, or a list. With ``per_band=True`` a
     single fit is broken out into one line per band. Returns the ``Figure``.
@@ -411,7 +411,7 @@ def plot_corner(posteriors, *, labels=None, parameters=None, colors=None, truths
     Parameters
     ----------
     posteriors : sequence
-        Each item is a :class:`~whisper_labia.samplers.base.SamplerResult`, a ``pandas.DataFrame`` of
+        Each item is a :class:`~whisper_cbpf.samplers.base.SamplerResult`, a ``pandas.DataFrame`` of
         samples, a ``{name: array}`` dict, or a 2-D array (then pass ``parameters`` for the columns).
     labels : sequence of str, optional
         Legend label per posterior (defaults to each ``SamplerResult``'s sampler name, else
@@ -439,7 +439,7 @@ def plot_corner(posteriors, *, labels=None, parameters=None, colors=None, truths
 
     Examples
     --------
-    >>> import whisper_labia as wp
+    >>> import whisper_cbpf as wp
     >>> fig = wp.plot_corner([res_abc, res_mcmc, res_snpe],
     ...                      labels=["ABC", "MCMC", "SNPE"], log_params=["mej_1"],
     ...                      title="AT2017GFO posteriors")

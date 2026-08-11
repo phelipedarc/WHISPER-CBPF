@@ -44,7 +44,7 @@ def attach_predictive_metrics(result, lc, space, n_draws=200):
     """Populate ``result.info['predictive_metrics']`` with the posterior predictive metric block.
 
     RMSE (posterior-mean), LPD, ELPD (PSIS-LOO), WAIC, AIC/BIC and the coverage-calibration curve —
-    see :func:`whisper_labia.metrics.predictive_metrics`. Called after the result is built (it reuses
+    see :func:`whisper_cbpf.metrics.predictive_metrics`. Called after the result is built (it reuses
     the fit's ``aic`` / ``bic``); ``n_draws`` bounds the extra forward-model evaluations. Best-effort:
     a failure (slow/failing model, no likelihood) leaves the fit untouched.
     """
@@ -63,7 +63,7 @@ class SamplerResult:
     ``max_log_likelihood``) come from the best fit. With a chi-square distance these use
     ``chi2 = -2 ln L`` **up to an additive constant** (the Gaussian normalization is dropped, so
     absolute values are offset, but model comparison on the same data is unaffected); a proper
-    ``whisper_labia.likelihood`` gives exact values. ``info`` carries sampler-specific diagnostics.
+    ``whisper_cbpf.likelihood`` gives exact values. ``info`` carries sampler-specific diagnostics.
     """
 
     sampler: str

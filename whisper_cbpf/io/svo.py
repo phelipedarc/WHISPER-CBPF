@@ -11,7 +11,7 @@ wavelength and zero point, and -- later, for Phase-2 spectral integration -- its
   monkeypatch *those* -- nothing else touches the network, and ``astroquery`` is imported lazily so
   the package installs and imports without it.
 * Results are cached **by filter ID** both in memory and on disk
-  (``$WHISPER_SVO_CACHE`` or ``~/.cache/whisper_labia/svo_cache.json``), so re-runs are offline-safe
+  (``$WHISPER_SVO_CACHE`` or ``~/.cache/whisper_cbpf/svo_cache.json``), so re-runs are offline-safe
   and a repeated lookup never re-queries the service.
 * Every failure path degrades gracefully: a network error / missing filter raises
   :class:`SvoUnavailable`, which callers turn into a warning plus a manual-override path
@@ -62,7 +62,7 @@ def _cache_path() -> Path:
     env = os.environ.get("WHISPER_SVO_CACHE")
     if env:
         return Path(env)
-    return Path.home() / ".cache" / "whisper_labia" / "svo_cache.json"
+    return Path.home() / ".cache" / "whisper_cbpf" / "svo_cache.json"
 
 
 def _valid_meta(entry):

@@ -5,12 +5,12 @@ in ``vectorize=True`` mode so each step is one batched GPU call over the whole w
 rather than one Python call per walker. CPU-orchestrated, GPU-compute.
 
 Arm A(2) — ``fit_emcee_numpy``: the realistic baseline. A pure-numpy log-posterior with no JAX
-anywhere, parallelized across processes like ``whisper_labia.samplers.mcmc``'s ``n_jobs``. This
+anywhere, parallelized across processes like ``whisper_cbpf.samplers.mcmc``'s ``n_jobs``. This
 is what a scientist runs today with no GPU/JAX infrastructure, and it must NOT benefit from any
 of the JAX work — that's the whole point of having it as a separate arm.
 
-Both return a ``whisper_labia.samplers.base.SamplerResult`` built through the same helpers every
-whisper_labia sampler uses, so all four arms of the benchmark share one output schema.
+Both return a ``whisper_cbpf.samplers.base.SamplerResult`` built through the same helpers every
+whisper_cbpf sampler uses, so all four arms of the benchmark share one output schema.
 """
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ import emcee
 import numpy as np
 import pandas as pd
 
-# whisper_labia is imported directly: whisper-GPU is cloned INTO the whisper checkout as
-# `whisper_gpu/`, so the repo root that holds both is already on sys.path. The previous
-# three-level dirname() walk-up hard-coded this file's nesting depth and broke on any move.
+# Imported relatively -- the CPU core and this sampler now live in one package. In the legacy
+# split this file sat in whisper-GPU, cloned INTO a whisper-labia checkout as `whisper_gpu/`,
+# and reached whisper_labia absolutely off sys.path; the merge removes that indirection.
 
-from whisper_labia.samplers.base import (  # noqa: E402
+from ...samplers.base import (  # noqa: E402
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -61,7 +61,7 @@ def _log_prob_numpy(theta, times, values, sigmas, lows, highs):
 
 def _finish(sampler_name, lc, model, names, flat, ll_flat, runtime, info, space,
             compile_time_s=0.0):
-    """Shared tail: build the SamplerResult exactly like every whisper_labia sampler does."""
+    """Shared tail: build the SamplerResult exactly like every whisper_cbpf sampler does."""
     samples = pd.DataFrame(flat, columns=names)
     k, n = len(names), int(len(lc.time))
 
@@ -85,7 +85,7 @@ def _finish(sampler_name, lc, model, names, flat, ll_flat, runtime, info, space,
 
 def _init_walkers(nwalkers, lows, highs, seed):
     """Spread walkers uniformly across the prior box (no initial guess needed — matches how
-    whisper_labia's MCMCSampler initializes when ``initial_guess`` is None)."""
+    whisper_cbpf's MCMCSampler initializes when ``initial_guess`` is None)."""
     rng = np.random.default_rng(int(seed))
     return rng.uniform(lows, highs, size=(nwalkers, len(lows)))
 
@@ -163,10 +163,10 @@ def fit_emcee_numpy(lc, model, times, values, sigmas, *, prior=None, nwalkers=32
     """Arm A(2): plain-numpy emcee on N CPU cores — the realistic no-GPU baseline.
 
     No JAX involvement anywhere: its own numpy forward model, its own numpy log-posterior,
-    parallelized over processes exactly like ``whisper_labia.samplers.mcmc``'s ``n_jobs`` path.
+    parallelized over processes exactly like ``whisper_cbpf.samplers.mcmc``'s ``n_jobs`` path.
 
     **Run this in a process that has never imported JAX.** The pool uses ``fork`` (matching
-    whisper_labia's MCMCSampler), and forking a process with JAX's threads already running
+    whisper_cbpf's MCMCSampler), and forking a process with JAX's threads already running
     risks deadlock — JAX itself warns about exactly this. ``run_benchmark.py`` therefore
     dispatches this arm as its own subprocess. Running it inside a JAX process may appear to
     work and then hang unpredictably, which is worse than failing outright.
@@ -249,5 +249,5 @@ class EmceeJAXSampler(BaseSampler):
         are meant to receive the *same object* so a comparison between them isolates the sampling
         algorithm rather than the log-density implementation.
         """
-        from whisper_labia.models import get_model
+        from ...models import get_model
         return fit_emcee_jax(lc, get_model(model), log_prob_fn, prior=prior, **kwargs)

@@ -98,7 +98,7 @@ def to_flux_density_jy(values, unit, lambda_eff=None):
                 f"Converting F_lambda flux density ({unit}) to Jy needs a per-point effective "
                 f"wavelength, but {n} point(s) have an unresolved band (NaN lambda_eff). Resolve "
                 "the band (FILTER_LOOKUP/SVO), register it with "
-                "whisper_labia.io.svo.register_manual_band(...), or pass lambda_eff explicitly.")
+                "whisper_cbpf.io.svo.register_manual_band(...), or pass lambda_eff explicitly.")
         return (values * unit).to_value(CANON_FD, equivalencies=u.spectral_density(lam * u.AA))
     raise ValueError(
         f"Unit {unit} is not a recognised flux-density unit. Expected F_nu (e.g. Jy, mJy, uJy) "

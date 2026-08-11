@@ -9,7 +9,7 @@ is the honest summary — a posterior is only as well-characterized as its least
 direction.
 
 ArviZ is imported lazily and failures degrade to NaN with a warning, matching the
-optional-arviz pattern in ``whisper_labia.metrics._loo_waic``.
+optional-arviz pattern in ``whisper_cbpf.metrics._loo_waic``.
 """
 from __future__ import annotations
 

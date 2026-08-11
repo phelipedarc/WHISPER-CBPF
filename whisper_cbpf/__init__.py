@@ -1,4 +1,4 @@
-"""Whisper (``whisper_labia``): easy Bayesian model comparison of transient light curves.
+"""Whisper (``whisper_cbpf``): easy Bayesian model comparison of transient light curves.
 
 **Four pluggable axes**, each a small name registry with matching ``register_*`` / ``list_*`` helpers:
 **models** (``register_model`` / ``list_models``), **samplers** (``register_sampler`` / ``list_samplers``

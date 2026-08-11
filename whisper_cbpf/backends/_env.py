@@ -5,7 +5,7 @@ because JAX reads them at import: which device is visible, how much of it to pre
 the CUDA shared libraries live. This module is the Python-side counterpart -- it reports what
 actually happened and explains, in words a user can act on, what to fix when it did not.
 
-Nothing here imports jax at module scope. Importing :mod:`whisper_gpu` must work on a machine with
+Nothing here imports jax at module scope. Importing :mod:`whisper_cbpf` must work on a machine with
 no GPU (so ``wp.list_samplers()`` still shows what is available); the failure belongs at ``fit()``
 time, with a message that says what to do.
 """

@@ -228,7 +228,7 @@ def default_prior():
     ``redshift`` is omitted: it is fixed per dataset here, because ``dl_cm`` would otherwise have to
     move with it through a cosmology on every likelihood call.
     """
-    from whisper_labia.priors import LogUniform, Prior, Uniform
+    from ...priors import LogUniform, Prior, Uniform
 
     return Prior({
         "mej_1": Uniform(1e-2, 0.03), "vej_1": Uniform(0.1, 0.5),
@@ -270,7 +270,7 @@ def villar_prior(n_components=2, with_sigma=True):
     genuinely be near zero, and a log-uniform prior cannot represent that -- it puts infinite
     density at the lower edge and none at zero.
     """
-    from whisper_labia.priors import LogUniform, Prior, Uniform
+    from ...priors import LogUniform, Prior, Uniform
 
     if n_components == 2:
         d = {

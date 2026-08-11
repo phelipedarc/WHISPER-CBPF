@@ -87,7 +87,7 @@ FILTER_LOOKUP = {
 # 2MASS / JWST effective wavelengths -- still on the AB zero point Whisper uses internally. ``source``
 # records the provenance so callers can tell an LSST anchor from a documented NIR value.
 # ---------------------------------------------------------------------------
-_AB_ZP_JY = 3631.0  # AB zero point (== whisper_labia.io.photometry.AB_ZEROPOINT_JY)
+_AB_ZP_JY = 3631.0  # AB zero point (== whisper_cbpf.io.photometry.AB_ZEROPOINT_JY)
 
 LSST_BAND_INFO = {
     # optical -- LSST ugrizy anchors (lambda_eff in Angstrom)
@@ -116,7 +116,7 @@ def resolve_band(band, *, lookup=None, svo_fallback=True, lambda_eff_hint=None, 
        band itself) is in :data:`LSST_BAND_INFO`, return that anchored wavelength + zero point;
     2. otherwise the band has no local match -- emit a clear warning naming it and, if
        ``svo_fallback`` is on, query the SVO Filter Profile Service
-       (:func:`whisper_labia.io.svo.resolve_band_svo`);
+       (:func:`whisper_cbpf.io.svo.resolve_band_svo`);
     3. if SVO is unavailable / unknown, warn and return ``lambda_eff=zero_point=None`` (the load
        still succeeds; the user can supply values via ``svo.register_manual_band``).
 
@@ -163,7 +163,7 @@ def resolve_band(band, *, lookup=None, svo_fallback=True, lambda_eff_hint=None, 
                 warnings.warn(
                     f"Could not resolve band {raw!r} via SVO ({exc}). Effective wavelength / zero "
                     f"point are unknown; supply them with "
-                    f"whisper_labia.io.svo.register_manual_band({raw!r}, lambda_eff, zero_point).",
+                    f"whisper_cbpf.io.svo.register_manual_band({raw!r}, lambda_eff, zero_point).",
                     stacklevel=2)
     return {"group": group, "lambda_eff": None, "zero_point": None,
             "filter_id": None, "source": "unresolved"}

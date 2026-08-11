@@ -9,11 +9,11 @@ How it plugs into Whisper:
 
 * **Simulator** = Whisper's forward model. For a parameter vector it calls ``model.predict`` at the
   observed times/bands, maps the prediction into the data space (flux or magnitude, like
-  :class:`~whisper_labia.likelihood.GaussianLikelihood`), and adds Gaussian noise with the per-point
+  :class:`~whisper_cbpf.likelihood.GaussianLikelihood`), and adds Gaussian noise with the per-point
   data error — so the implicit likelihood matches Whisper's Gaussian likelihood.
-* **Prior** = Whisper's :class:`~whisper_labia.priors.Prior`, adapted to a torch prior (``Uniform`` →
+* **Prior** = Whisper's :class:`~whisper_cbpf.priors.Prior`, adapted to a torch prior (``Uniform`` →
   ``BoxUniform``; mixed ``Uniform``/``LogUniform`` → ``MultipleIndependent``).
-* **Result** = the same :class:`~whisper_labia.samplers.SamplerResult` every other sampler returns,
+* **Result** = the same :class:`~whisper_cbpf.samplers.SamplerResult` every other sampler returns,
   with exact Gaussian ``max_log_likelihood`` / ``AIC`` / ``BIC`` evaluated at the best posterior draw.
   The trained sbi posterior is attached as ``result.posterior`` (and ``result.posteriors`` per round)
   for resampling / sbi ``pairplot``.
@@ -482,7 +482,7 @@ class SNPESampler(BaseSampler):
         **Density estimator (flexible):** ``density_estimator`` is an sbi estimator name ('maf', 'nsf',
         'mdn', ...) **or** a pre-built ``posterior_nn(...)`` factory. ``embedding_net`` is ``None``
         (condition on the raw vector), a built-in name — ``"mlp"`` or ``"tcn"`` (Temporal Convolutional
-        Network; see :mod:`whisper_labia.embeddings`), compressed to ``embedding_latent`` features —
+        Network; see :mod:`whisper_cbpf.embeddings`), compressed to ``embedding_latent`` features —
         or any ``torch.nn.Module``. ``hidden_features`` / ``num_transforms`` / ``num_bins`` build a
         custom architecture via ``sbi``'s ``posterior_nn``.
 
@@ -495,7 +495,7 @@ class SNPESampler(BaseSampler):
         LIKELIHOOD scatter term, not a model input: each simulation's noise becomes
         ``N(0, sqrt(err² + scatter²))`` with that draw's value, so the density estimator learns the
         scatter posterior from its imprint on the simulations — the SBI counterpart of
-        :class:`~whisper_labia.likelihood.GaussianLikelihoodWithScatter`, which is also used for the
+        :class:`~whisper_cbpf.likelihood.GaussianLikelihoodWithScatter`, which is also used for the
         exact ``max_log_likelihood``/AIC/BIC at the best draw.
 
         **Sequential scheme:** ``proposal_mode='posterior'`` (default) is SNPE-C (propose from the latest

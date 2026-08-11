@@ -2,7 +2,7 @@
 Standalone JAX implementation of redback's self-contained TDE models.
 
 Runtime dependencies: jax and numpy only. No redback, no astropy, no scipy.
-(:mod:`whisper_gpu.models.kilonova` is imported for shared constants and for the
+(:mod:`whisper_cbpf.models.jax.kilonova` is imported for shared constants and for the
 already-hardened blackbody / AB-photometry machinery -- see "REUSE" below.)
 
 PHYSICS IS UNCHANGED. Every deviation from redback is one of
@@ -36,7 +36,7 @@ WHAT IS PORTED, AND WHAT IS NOT
 
 REUSE, NOT COPYING
     The blackbody, the AB weights and the filter export come from
-    :mod:`whisper_gpu.models.kilonova`, whose module docstring documents eight numbered
+    :mod:`whisper_cbpf.models.jax.kilonova`, whose module docstring documents eight numbered
     algebraic identities removing specific numerical defects. Copying them here would
     silently reintroduce every one of those defects the next time the original is fixed.
     The single deliberate exception is the redshift factor -- see CHANGE 7.
@@ -597,7 +597,7 @@ def cooling_envelope(mbh_6, stellar_mass, eta, alpha, beta, *,
     ``constraint`` may be 0 (redback raises IndexError in that case; here the mask is
     simply all-False).
     """
-    _require_x64("whisper_gpu.models.tde.cooling_envelope")
+    _require_x64("whisper_cbpf.models.jax.tde.cooling_envelope")
 
     Mstar = stellar_mass * SOLAR_MASS
     Mdisrupt = f_debris * Mstar
@@ -1131,7 +1131,7 @@ def _flux_nu_tde(temperature, r_photosphere, dl_cm, nu_source, redshift,
 
     Every large quantity is pre-scaled into a precomputed literal, and the frequency scale
     is pinned with ``optimization_barrier``, for the reasons documented as identities 4
-    and 8 in :mod:`whisper_gpu.models.kilonova`. ``pref_const`` selects the output unit:
+    and 8 in :mod:`whisper_cbpf.models.jax.kilonova`. ``pref_const`` selects the output unit:
     ``PLANCK_T3`` gives cgs, ``PLANCK_T3_AB`` the same spectrum in AB-zero-point units.
     """
     ratio = RATIO_CONST * ((r_photosphere / RSCALE) / (dl_cm / DLSCALE)) ** 2
@@ -1171,7 +1171,7 @@ def ab_magnitude(temperature, r_photosphere, band_idx, weights, norms, lam_obs_a
     source-frame epochs of the observations.
 
     This integrates the Planck spectrum against the real bandpass, which is what
-    :mod:`whisper_gpu.models.kilonova` does. redback instead evaluates the spectrum on a
+    :mod:`whisper_cbpf.models.jax.kilonova` does. redback instead evaluates the spectrum on a
     100-point wavelength grid, builds an sncosmo ``TimeSeriesSource`` and splines it --
     see "DELIBERATE DEVIATION" in the kilonova docstring; the same applies here.
 
@@ -1578,7 +1578,7 @@ def redback_prior(model_name, *, drop=("redshift",)):
     """
     from redback.priors import get_priors
 
-    from whisper_labia.priors import LogUniform, Prior, Uniform
+    from ...priors import LogUniform, Prior, Uniform
 
     rb = get_priors(model=model_name)
     dists, pinned = {}, {}
@@ -1596,7 +1596,7 @@ def redback_prior(model_name, *, drop=("redshift",)):
             raise NotImplementedError(
                 f"redback's {model_name} prior has a {kind} on {k!r}, which whisper's prior "
                 f"layer cannot represent. Pin it at the factory or add the distribution to "
-                f"whisper_labia.priors.")
+                f"whisper_cbpf.priors.")
     return Prior(dists), pinned
 
 
@@ -1619,7 +1619,7 @@ _FALLBACK = {
 
 def fallback_prior(model_name):
     """:func:`redback_prior` without redback. Same return shape; see _FALLBACK."""
-    from whisper_labia.priors import LogUniform, Prior, Uniform
+    from ...priors import LogUniform, Prior, Uniform
 
     dists, pinned = _FALLBACK[model_name]
     cls = {"Uniform": Uniform, "LogUniform": LogUniform}
