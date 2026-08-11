@@ -60,7 +60,7 @@ Run (CPU; float64 is mandatory -- the TDE engine raises without it)::
 
     docker exec phe_sbi_2 bash -lc 'export JAX_PLATFORMS=cpu; \
         source .../whisper-labia/jax_gpu/env.sh; cd .../whisper-labia && \
-        python -u -m pytest whisper_gpu/tests/t2_autodiff -v'
+        python -u -m pytest whisper_cbpf/tests/t2_autodiff -v'
 
 ``T2_DUMP=/path.json`` writes every measured table (REPORT.md was built from it); by default
 the tests write nothing. ``T2_SCALE=0.25`` shrinks every sweep for a quick pass -- the
@@ -85,9 +85,9 @@ jax = pytest.importorskip("jax")
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
-from whisper_gpu.models import kilonova as kn  # noqa: E402
-from whisper_gpu.models import kilonova_two as kn2  # noqa: E402
-from whisper_gpu.models import tde as T  # noqa: E402
+from whisper_cbpf.models.jax import kilonova as kn  # noqa: E402
+from whisper_cbpf.models.jax import kilonova_two as kn2  # noqa: E402
+from whisper_cbpf.models.jax import tde as T  # noqa: E402
 
 DAY = 86400.0
 GOLDENS = Path(__file__).resolve().parent.parent / "goldens"
@@ -366,7 +366,7 @@ def source_variant(name, subs, tmpdir, source=None):
     for old, new in subs:
         assert src.count(old) == 1, f"{name}: anchor matched {src.count(old)}x, not 1: {old!r}"
         src = src.replace(old, new)
-    src = src.replace("from .kilonova import", "from whisper_gpu.models.kilonova import")
+    src = src.replace("from .kilonova import", "from whisper_cbpf.models.jax.kilonova import")
     assert "\nfrom ." not in src, f"{name}: unhandled relative import"
     path = Path(tmpdir) / f"{name}.py"
     path.write_text(src)
@@ -559,7 +559,7 @@ def tde_cases(n_time, n_draw, filt, rng, seed, mode="masked", hi=0.98):
 
 def _kilonova_prior(filt):
     """The prior the ``kilonova_model`` factory publishes -- redback's own file, verbatim."""
-    import whisper_gpu.models as M
+    import whisper_cbpf.models.jax as M
 
     m = M.kilonova_model(["sdssu", "sdssg", "sdssr", "sdssi"], Z, DL_CM,
                          filter_set=dict(lam=filt["lam_np"], trans=filt["trans_np"]))
@@ -1049,8 +1049,8 @@ import numpy as np
 import jax
 assert not jax.config.jax_enable_x64
 import jax.numpy as jnp
-from whisper_gpu.models import kilonova as kn
-from whisper_gpu.models import tde as T
+from whisper_cbpf.models.jax import kilonova as kn
+from whisper_cbpf.models.jax import tde as T
 
 theta = np.load(sys.argv[1])["theta"].astype(np.float32)
 fs = np.load(sys.argv[2], allow_pickle=False)
@@ -1165,7 +1165,7 @@ def test_tde_refuses_float32_rather_than_returning_inf(f32_probe):
 
 def sn_case(model, filt, rng, t_src_days):
     """``(names, prior, loss)`` for one supernova model, over redback's own prior for it."""
-    from whisper_gpu.models import supernova as sn
+    from whisper_cbpf.models.jax import supernova as sn
 
     prior, pinned, _constraints = sn.default_prior(model)
     names = [k for k in sn.PARAMETERS[model] if k not in pinned]
@@ -1205,7 +1205,7 @@ def test_supernova_gradients_are_finite_and_fd_correct(filters):
     This family needs no float64 (it has no accumulator, CHANGE 8), so it is swept in the
     ambient x64 session like the rest; the per-model table is recorded either way.
     """
-    from whisper_gpu.models import supernova as sn
+    from whisper_cbpf.models.jax import supernova as sn
 
     rng = np.random.default_rng(5150)
     t_src = np.geomspace(0.5, 120.0, 24)
@@ -1250,7 +1250,7 @@ def test_factory_predict_is_a_concrete_numpy_boundary(filters):
     the module function -- a silent divergence between what is fitted and what is
     differentiated -- and it documents the boundary so nobody rediscovers it inside a sampler.
     """
-    import whisper_gpu.models as M
+    import whisper_cbpf.models.jax as M
 
     fs = dict(lam=filters["lam_np"], trans=filters["trans_np"])
     bands = ["sdssu", "sdssg", "sdssr", "sdssi"]
@@ -1315,7 +1315,7 @@ def test_factory_bound_model_is_differentiable_through_the_module_functions(filt
     ``mag_floor`` that clamps every epoch to a zero-gradient plateau). The module-level sweeps
     above would not see it, because they build their own arguments.
     """
-    import whisper_gpu.models as M
+    import whisper_cbpf.models.jax as M
 
     fs = dict(lam=filters["lam_np"], trans=filters["trans_np"])
     bands = ["sdssu", "sdssg", "sdssr", "sdssi"]

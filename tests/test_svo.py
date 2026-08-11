@@ -4,8 +4,8 @@ import warnings
 import numpy as np
 import pytest
 
-from whisper_labia.io import bands, svo
-from whisper_labia.io.svo import SvoUnavailable
+from whisper_cbpf.io import bands, svo
+from whisper_cbpf.io.svo import SvoUnavailable
 
 
 @pytest.fixture

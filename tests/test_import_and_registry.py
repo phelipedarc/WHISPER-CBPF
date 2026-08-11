@@ -10,9 +10,9 @@ import importlib
 import numpy as np
 import pytest
 
-import whisper_labia as wp
-import whisper_gpu
-from whisper_labia.samplers import get_sampler, list_samplers
+import whisper_cbpf as wp
+import whisper_cbpf
+from whisper_cbpf.samplers import get_sampler, list_samplers
 
 
 def test_registers_into_whispers_own_registries():
@@ -31,16 +31,16 @@ def test_sampler_constructs_with_zero_arguments():
 
 def test_reimport_is_idempotent():
     # register_sampler raises on a duplicate name unless overwrite=True; a reload must not explode
-    importlib.reload(whisper_gpu)
-    importlib.reload(whisper_gpu)
+    importlib.reload(whisper_cbpf)
+    importlib.reload(whisper_cbpf)
     assert "nuts_gpu" in list_samplers()
 
 
 def test_version_guard_names_the_symbols_it_needs():
     # the guard must enumerate what it requires, so a stale whisper gives an actionable error
-    required = whisper_gpu._REQUIRED_WHISPER_SYMBOLS
-    assert "attach_predictive_metrics" in required["whisper_labia.samplers.base"]
-    assert "attach_band_metrics" in required["whisper_labia.samplers.base"]
+    required = whisper_cbpf._REQUIRED_WHISPER_SYMBOLS
+    assert "attach_predictive_metrics" in required["whisper_cbpf.samplers.base"]
+    assert "attach_band_metrics" in required["whisper_cbpf.samplers.base"]
 
 
 def test_flare_model_satisfies_the_predict_contract():
@@ -56,12 +56,12 @@ def test_kilonova_is_not_auto_registered_and_says_why():
     # It is photometric: it needs a filter set, redshift and distance that predict() cannot carry.
     # Auto-registering with a guessed distance would silently rescale every fitted mass.
     assert "kilonova_one_jax" not in wp.list_models()
-    assert callable(whisper_gpu.kilonova_model)
-    assert callable(whisper_gpu.register_kilonova)
+    assert callable(whisper_cbpf.kilonova_model)
+    assert callable(whisper_cbpf.register_kilonova)
 
 
 def test_kilonova_factory_uses_redback_default_priors():
-    kn = whisper_gpu.kilonova_model(["sdssg", "sdssr"], redshift=0.01, dl_cm=1.3e26, n_wave=400)
+    kn = whisper_cbpf.kilonova_model(["sdssg", "sdssr"], redshift=0.01, dl_cm=1.3e26, n_wave=400)
     b = {k: v.bounds for k, v in kn.default_prior.distributions.items()}
     # verbatim from redback/priors/one_component_kilonova_model.prior
     assert b["mej"] == pytest.approx((1e-2, 0.05))
@@ -72,7 +72,7 @@ def test_kilonova_factory_uses_redback_default_priors():
 
 
 def test_kilonova_predict_returns_flux_and_rejects_unbound_bands():
-    kn = whisper_gpu.kilonova_model(["sdssg", "sdssr"], redshift=0.01, dl_cm=1.3e26, n_wave=400)
+    kn = whisper_cbpf.kilonova_model(["sdssg", "sdssr"], redshift=0.01, dl_cm=1.3e26, n_wave=400)
     t = np.array([1.0, 3.0, 7.0, 15.0])
     p = {"mej": 0.03, "vej": 0.2, "kappa": 1.0, "temperature_floor": 3000.0}
     f = kn.predict(p, t, np.array(["sdssg", "sdssr", "sdssg", "sdssr"]))
@@ -89,30 +89,30 @@ def test_tde_is_not_auto_registered_and_says_why():
     # redshift and distance it needs. It additionally requires float64, which a zero-argument
     # registry factory could not communicate either.
     assert "tde_gaussianrise_jax" not in wp.list_models()
-    assert callable(whisper_gpu.tde_model)
-    assert callable(whisper_gpu.register_tde)
+    assert callable(whisper_cbpf.tde_model)
+    assert callable(whisper_cbpf.register_tde)
 
 
 def test_tde_factory_names_itself_after_the_rise_it_was_given():
-    a = whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200)
-    b = whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200, rise="none")
+    a = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200)
+    b = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200, rise="none")
     assert a.name == "tde_gaussianrise_jax" and b.name == "tde_cooling_envelope_jax"
     # The two differ by more than the rise, because redback's two prior files differ: the
     # gaussianrise one pins nothing, the cooling_envelope one pins four parameters. Compare
     # the FULL parameter sets by freeing everything.
-    from whisper_labia.priors import LogUniform, Prior, Uniform
+    from whisper_cbpf.priors import LogUniform, Prior, Uniform
     free = {k: None for k in ("mbh_6", "eta", "alpha", "beta")}
     # freeing a delta-pinned parameter needs a distribution: redback's file has none for them
     pr = Prior({"mbh_6": LogUniform(0.1, 20.0), "eta": LogUniform(1e-4, 0.1),
                 "alpha": LogUniform(0.1, 1.0), "beta": Uniform(1.0, 5.0)})
-    a2 = whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
+    a2 = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
                                pin=free, prior=pr)
-    b2 = whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
+    b2 = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
                                rise="none", pin=free, prior=pr)
     assert set(a2.parameters) - set(b2.parameters) == {"peak_time", "sigma_t"}
     assert b2.parameters == ["mbh_6", "stellar_mass", "eta", "alpha", "beta"]
     with pytest.raises(ValueError, match="rise must be"):
-        whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, rise="linear")
+        whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, rise="linear")
 
 
 def test_tde_factory_uses_redbacks_prior_including_what_redback_pins():
@@ -123,35 +123,35 @@ def test_tde_factory_uses_redbacks_prior_including_what_redback_pins():
     DeltaFunction), leaving stellar_mass the only free parameter. whisper has no delta
     prior, so those are bound at the factory and absent from `parameters`.
     """
-    m = whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200)
+    m = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200)
     b = {k: v.bounds for k, v in m.default_prior.distributions.items()}
     assert set(m.parameters) == set(b), "every free parameter needs a prior"
     assert b["stellar_mass"] == pytest.approx((0.1, 10.0))
     assert b["sigma_t"] == pytest.approx((10.0, 60.0))
     assert type(m.default_prior.distributions["beta"]).__name__ == "Uniform"
 
-    bare = whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200, rise="none")
+    bare = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200, rise="none")
     pytest.importorskip("redback")
     # redback's own file leaves ONE free parameter here; reproducing that is the point
     assert bare.parameters == ["stellar_mass"], bare.parameters
     assert "redback pins" in bare.description
 
     # ... and `pin` overrides in both directions
-    from whisper_labia.priors import LogUniform, Prior, Uniform
-    freed = whisper_gpu.tde_model(
+    from whisper_cbpf.priors import LogUniform, Prior, Uniform
+    freed = whisper_cbpf.tde_model(
         ["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200, rise="none",
         pin={"beta": None, "mbh_6": None},
         prior=Prior({"beta": Uniform(1.0, 5.0), "mbh_6": LogUniform(0.1, 20.0)}))
     assert set(freed.parameters) >= {"stellar_mass", "beta", "mbh_6"}
     # ... and unpinning WITHOUT a distribution must fail loudly, not invent a range
     with pytest.raises(ValueError, match="no prior"):
-        whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
+        whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
                               rise="none", pin={"beta": None})
-    fixed = whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
+    fixed = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
                                   pin={"sigma_t": 15.0})
     assert "sigma_t" not in fixed.parameters
     with pytest.raises(ValueError, match="not a parameter"):
-        whisper_gpu.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
+        whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
                               pin={"nonsense": 1.0})
 
 
@@ -160,7 +160,7 @@ def test_tde_predict_returns_flux_and_rejects_unbound_bands():
     was = jax.config.jax_enable_x64
     jax.config.update("jax_enable_x64", True)          # the engine refuses float32 by design
     try:
-        m = whisper_gpu.tde_model(["sdssg", "sdssr"], redshift=0.05, dl_cm=7e26,
+        m = whisper_cbpf.tde_model(["sdssg", "sdssr"], redshift=0.05, dl_cm=7e26,
                                   n_wave=300, n_time=200)
         p = {"peak_time": 20.0, "sigma_t": 15.0, "mbh_6": 1.0, "stellar_mass": 1.0,
              "eta": 0.05, "alpha": 0.1, "beta": 1.0}
@@ -180,12 +180,12 @@ def test_tde_predict_returns_flux_and_rejects_unbound_bands():
 
 
 def test_env_helpers_never_import_jax_at_module_scope():
-    # importing whisper_gpu on a CPU-only box must work, so `wp.list_samplers()` still tells the
+    # importing whisper_cbpf on a CPU-only box must work, so `wp.list_samplers()` still tells the
     # user what exists; the GPU requirement belongs at fit() time with an actionable message.
     import ast
     import inspect
 
-    from whisper_gpu import _env
+    from whisper_cbpf import _env
 
     # AST, not a substring search: the module docstring legitimately contains the words
     # "import jax" while describing when NOT to do it.

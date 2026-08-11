@@ -1,6 +1,6 @@
 import numpy as np
 
-from whisper_labia.io.photometry import (
+from whisper_cbpf.io.photometry import (
     AB_ZEROPOINT_JY,
     flux_density_to_mag,
     mag_err_to_snr,

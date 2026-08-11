@@ -2,9 +2,9 @@
 import numpy as np
 import pytest
 
-import whisper_labia as wp
-from whisper_labia.models import get_model, list_models
-from whisper_labia.models import mck19
+import whisper_cbpf as wp
+from whisper_cbpf.models import get_model, list_models
+from whisper_cbpf.models import mck19
 
 # A representative point from the Darc 2025 grid (the GW-event redshift z=0.28).
 TRUE = {"v_kick": 300.0, "M_smbh": 1e8, "M_bh": 80.0, "r_bh": 700.0, "redshift": 0.28}

@@ -1,8 +1,8 @@
 """MCMC sampler (emcee): recovery, reproducibility, data-mode-consistent likelihood, cross-sampler agreement."""
 import numpy as np
 
-import whisper_labia as wp
-from whisper_labia.models.flare import flare_flux
+import whisper_cbpf as wp
+from whisper_cbpf.models.flare import flare_flux
 
 
 def _synthetic(truth, n=40, noise_frac=0.02, seed=0):

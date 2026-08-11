@@ -3,8 +3,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import whisper_labia as wp
-from whisper_labia.models import get_model
+import whisper_cbpf as wp
+from whisper_cbpf.models import get_model
 
 TRUE = {"amplitude": 5.0, "t0": 8.0, "sigma_rise": 3.0, "tau_decay": 15.0}
 

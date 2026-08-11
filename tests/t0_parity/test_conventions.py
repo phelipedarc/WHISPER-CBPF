@@ -28,8 +28,8 @@ jax = pytest.importorskip("jax")
 jax.config.update("jax_enable_x64", True)      # before any array: the TDE engine needs it
 import jax.numpy as jnp  # noqa: E402
 
-from whisper_gpu.models import kilonova as kn  # noqa: E402
-from whisper_gpu.models import tde as T  # noqa: E402
+from whisper_cbpf.models.jax import kilonova as kn  # noqa: E402
+from whisper_cbpf.models.jax import tde as T  # noqa: E402
 
 DAY = 86400.0
 GOLDENS = Path(__file__).resolve().parent.parent / "goldens"

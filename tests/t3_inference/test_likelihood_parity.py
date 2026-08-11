@@ -8,7 +8,7 @@ the scale that decides an inference: 0.5 nats, one sigma of a one-parameter post
 
 Same synthetic-dataset discipline as T3.2, but the quantity compared is the thing a
 sampler actually consumes: a Gaussian log-likelihood over a fixed 40-point ZTF-like
-dataset, computed once through ``whisper_gpu.models.tde.cooling_envelope_flux_density``
+dataset, computed once through ``whisper_cbpf.models.jax.tde.cooling_envelope_flux_density``
 with ``REDBACK_PRESETS["1.15"]`` (n_time=500, dilation=True) and once through redback
 1.15.1's ``cooling_envelope(..., output_format='flux_density')``, on 64 Latin-hypercube
 draws over the five engine parameters.
@@ -190,7 +190,7 @@ def test_tde_likelihood_parity_vs_redback():
     import inspect
 
     from redback.transient_models import tde_models
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     # this comparison is against 1.15.1's photometry; refuse to "pass" against 1.12.0
     assert "f_debris" in inspect.getsource(tde_models._cooling_envelope), (
@@ -336,7 +336,7 @@ def test_kilonova_likelihood_parity_vs_redback():
     pytest.importorskip("redback")
     from redback.transient_models.kilonova_models import _one_component_kilonova_model
 
-    from whisper_gpu.models import kilonova as kn
+    from whisper_cbpf.models.jax import kilonova as kn
 
     grid = np.geomspace(1e-3, 7e6, 300)                 # redback's own default grid, seconds
     rng = np.random.default_rng(SEED + 5)

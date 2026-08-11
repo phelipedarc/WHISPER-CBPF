@@ -3,7 +3,7 @@
     docker exec phe_sbi_2 bash -lc 'export JAX_PLATFORMS=cpu; \
         source /tf/astrodados2/phelipedata2/WHISPER/whisper-labia/jax_gpu/env.sh; \
         cd /tf/astrodados2/phelipedata2/WHISPER/whisper-labia && \
-        python -u whisper_gpu/tests/t0_parity/make_goldens.py'
+        python -u whisper_cbpf/tests/t0_parity/make_goldens.py'
 
 Everything asserted by ``test_goldens.py`` is computed here FROM REDBACK ONLY -- numpy in,
 numpy out, no JAX anywhere in the reference path. The one exception is ``filterset_t0.npz``,
@@ -68,7 +68,7 @@ def provenance(extra):
         "scipy": scipy.__version__,
         "dtype": "float64",
         "generated_utc": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-        "generator": "whisper_gpu/tests/t0_parity/make_goldens.py",
+        "generator": "whisper_cbpf/tests/t0_parity/make_goldens.py",
     }
     info.update(extra)
     return json.dumps(info, indent=1)
@@ -245,7 +245,7 @@ def make_kilonova():
         "notes": "compare only at grid NODES (index >= 2: redback copies L[0] = L[1]). "
                  "Parity region: t < 1.4 * t_diff. Documented deviation: past "
                  "~2.66 * t_diff redback's trapezoid is under-resolved and TOO BRIGHT "
-                 "(see whisper_gpu/models/kilonova.py identity 6 and "
+                 "(see whisper_cbpf/models/kilonova.py identity 6 and "
                  "tests/test_kilonova_vs_redback.py).",
     })
     np.savez_compressed(
@@ -259,13 +259,13 @@ def make_filterset():
     """NOT a reference output: the port's own offline sncosmo export, frozen for the tests."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from whisper_gpu.models.kilonova import make_filter_set
+    from whisper_cbpf.models.jax.kilonova import make_filter_set
 
     fs = make_filter_set(BANDS, n_wave=5000)
     np.savez_compressed(
         OUT_DIR / "filterset_t0.npz",
         provenance=provenance({
-            "model": "whisper_gpu.models.kilonova.make_filter_set (port input, NOT a "
+            "model": "whisper_cbpf.models.jax.kilonova.make_filter_set (port input, NOT a "
                      "redback reference output)",
             "bands": BANDS, "n_wave": 5000}),
         **fs)

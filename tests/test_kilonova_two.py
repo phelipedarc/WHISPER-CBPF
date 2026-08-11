@@ -7,8 +7,8 @@ import pytest
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
-from whisper_gpu.models import kilonova as kn      # noqa: E402
-from whisper_gpu.models import kilonova_two as kn2  # noqa: E402
+from whisper_cbpf.models.jax import kilonova as kn      # noqa: E402
+from whisper_cbpf.models.jax import kilonova_two as kn2  # noqa: E402
 
 DAY = 86400.0
 P = dict(mej_1=0.01, vej_1=0.25, temperature_floor_1=4000.0, kappa_1=2.0,

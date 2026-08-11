@@ -1,6 +1,6 @@
 import numpy as np
 
-from whisper_labia import chi2_distance
+from whisper_cbpf import chi2_distance
 
 
 def test_chi2_zero_when_equal():

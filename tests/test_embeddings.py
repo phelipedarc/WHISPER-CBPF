@@ -2,20 +2,20 @@
 import numpy as np
 import pytest
 
-import whisper_labia as wp
+import whisper_cbpf as wp
 
 torch = pytest.importorskip("torch")
 
 
 def test_mlp_embedding_shape():
-    from whisper_labia.embeddings import MLPEmbedding
+    from whisper_cbpf.embeddings import MLPEmbedding
     net = MLPEmbedding(80, latent_dim=16)
     out = net(torch.randn(7, 80))
     assert out.shape == (7, 16) and torch.isfinite(out).all()
 
 
 def test_tcn_embedding_shape_and_channels():
-    from whisper_labia.embeddings import TCNEmbedding
+    from whisper_cbpf.embeddings import TCNEmbedding
     net = TCNEmbedding(n_points=80, n_channels=4, latent_dim=16)
     out = net(torch.randn(5, 4 * 80))                    # flat sbi layout -> (B, C, L) inside
     assert out.shape == (5, 16) and torch.isfinite(out).all()
@@ -23,7 +23,7 @@ def test_tcn_embedding_shape_and_channels():
 
 def test_tcn_causal_receptive_field_covers_input():
     # 4 levels x kernel 5: receptive field 1 + 2*4*(2^4-1) = 121 >= 80 points
-    from whisper_labia.embeddings import TCNEmbedding
+    from whisper_cbpf.embeddings import TCNEmbedding
     net = TCNEmbedding(n_points=80, n_channels=1, latent_dim=8)
     x = torch.zeros(1, 80)
     y0 = net(x)
@@ -32,7 +32,7 @@ def test_tcn_causal_receptive_field_covers_input():
 
 
 def test_build_embedding_dispatch():
-    from whisper_labia.embeddings import MLPEmbedding, TCNEmbedding, build_embedding
+    from whisper_cbpf.embeddings import MLPEmbedding, TCNEmbedding, build_embedding
     assert isinstance(build_embedding("mlp", 50), MLPEmbedding)
     assert isinstance(build_embedding("tcn", 50, n_channels=4), TCNEmbedding)
     with pytest.raises(ValueError, match="Unknown embedding"):
@@ -47,7 +47,7 @@ def test_snpe_x_format_validation():
 
 
 def test_abc_simulate_noise_reproducible_and_optional():
-    from whisper_labia.models import get_model
+    from whisper_cbpf.models import get_model
     m = get_model("gaussian_rise")
     truth = {"amplitude": 5.0, "t0": 8.0, "sigma_rise": 3.0, "tau_decay": 15.0}
     t = np.linspace(0.1, 30, 40)

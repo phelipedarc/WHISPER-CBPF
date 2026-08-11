@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-from whisper_labia import (
+from whisper_cbpf import (
     LightCurve,
     Prior,
     Uniform,
@@ -11,7 +11,7 @@ from whisper_labia import (
     list_samplers,
     register_model,
 )
-from whisper_labia.models.flare import flare_flux
+from whisper_cbpf.models.flare import flare_flux
 
 
 def _synthetic(truth, n=50, noise_frac=0.01, seed=0):

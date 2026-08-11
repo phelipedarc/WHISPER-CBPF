@@ -20,7 +20,7 @@ import pytest
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
-from whisper_gpu.models import kilonova as kn  # noqa: E402
+from whisper_cbpf.models.jax import kilonova as kn  # noqa: E402
 
 DAY = 86400.0
 #: redback's quadrature is good to <0.003 mag below 1.4*t_diff and exceeds 0.05 mag beyond

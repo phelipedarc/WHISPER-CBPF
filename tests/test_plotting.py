@@ -5,7 +5,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import pytest  # noqa: E402
 
-from whisper_labia import load_lightcurve, plot_light_curve  # noqa: E402
+from whisper_cbpf import load_lightcurve, plot_light_curve  # noqa: E402
 
 
 def test_report_layout(at2017gfo_csv):
@@ -60,7 +60,7 @@ def _post(rng, names, shift=0.0, n=200):
 
 def test_plot_corner_overlays_and_legend():
     import numpy as np
-    import whisper_labia as wp
+    import whisper_cbpf as wp
     rng = np.random.default_rng(0)
     names = ["a", "b", "c"]
     posts = [_post(rng, names, s) for s in (0.0, 0.3, -0.3)]
@@ -74,7 +74,7 @@ def test_plot_corner_overlays_and_legend():
 def test_plot_corner_common_params_log_and_errors():
     import numpy as np
     import pandas as pd
-    import whisper_labia as wp
+    import whisper_cbpf as wp
     rng = np.random.default_rng(0)
     p1 = pd.DataFrame({"a": rng.uniform(1, 9, 100), "b": rng.normal(0, 1, 100)})
     p2 = pd.DataFrame({"a": rng.uniform(1, 9, 100), "c": rng.normal(0, 1, 100)})
@@ -92,7 +92,7 @@ def test_plot_corner_common_params_log_and_errors():
 
 def _ppc_setup():
     import numpy as np
-    from whisper_labia import LightCurve, Prior, Uniform, fit_ABC, get_model
+    from whisper_cbpf import LightCurve, Prior, Uniform, fit_ABC, get_model
     m = get_model("gaussian_rise")
     truth = {"amplitude": 5.0, "t0": 8.0, "sigma_rise": 3.0, "tau_decay": 15.0}
     t = np.linspace(0.1, 30, 40)
@@ -107,7 +107,7 @@ def _ppc_setup():
 
 
 def test_plot_ppc_single_flux_grid_by_band():
-    from whisper_labia import plot_ppc
+    from whisper_cbpf import plot_ppc
     lc, res = _ppc_setup()
     fig = plot_ppc(res, lc, quantity="flux")            # single fit -> panel per band
     assert len(fig.axes) >= 2                            # g + r panels
@@ -115,7 +115,7 @@ def test_plot_ppc_single_flux_grid_by_band():
 
 
 def test_plot_ppc_multi_method_magnitude():
-    from whisper_labia import plot_ppc
+    from whisper_cbpf import plot_ppc
     lc, res = _ppc_setup()
     fig = plot_ppc({"a": res, "b": res}, lc, quantity="apparent_mag")   # per-method grid, mag axis
     assert len(fig.axes) >= 2
@@ -126,7 +126,7 @@ def test_plot_ppc_multi_method_magnitude():
 
 
 def test_plot_ppc_panel_by_band_override():
-    from whisper_labia import plot_ppc
+    from whisper_cbpf import plot_ppc
     lc, res = _ppc_setup()
     fig = plot_ppc({"a": res, "b": res}, lc, panel_by="band", quantity="flux")
     assert len(fig.axes) >= 2
@@ -134,7 +134,7 @@ def test_plot_ppc_panel_by_band_override():
 
 
 def test_plot_calibration_multi_and_per_band():
-    from whisper_labia import plot_calibration
+    from whisper_cbpf import plot_calibration
     lc, res = _ppc_setup()
     fig = plot_calibration({"a": res}, lc, n_draws=200)          # overall curve + diagonal
     ax = fig.axes[0]

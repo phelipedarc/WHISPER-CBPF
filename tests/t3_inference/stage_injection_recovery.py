@@ -17,7 +17,7 @@ RUNS ON GPU, with the env sourced and CUDA_VISIBLE_DEVICES set::
       export CUDA_VISIBLE_DEVICES=0
       source /tf/astrodados2/phelipedata2/WHISPER/whisper-labia/jax_gpu/env.sh
       cd /tf/astrodados2/phelipedata2/WHISPER/whisper-labia
-      python -u whisper_gpu/tests/t3_inference/stage_injection_recovery.py --n-injections 100'
+      python -u whisper_cbpf/tests/t3_inference/stage_injection_recovery.py --n-injections 100'
 
 The script refuses to start on CPU unless ``--allow-cpu`` is passed; see stage_sbc.py's
 docstring for why CPU is nonetheless a reasonable place to run this, and shard the same
@@ -76,7 +76,7 @@ def sane_theta(sample_theta, rng, n_time, t_max_days, z, day, max_tries=200_000)
     """
     import numpy as np
 
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     for tries in range(1, max_tries + 1):
         th = sample_theta(rng)
@@ -209,7 +209,7 @@ def main(argv=None):
           f"--injection-offset + a per-shard --outdir; --analyse-only globs every "
           f"coverage.csv under the outdir.", flush=True)
 
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     model, mags_fn, t_obs, bands, names, sample_theta = S.build_context(args.n_time)
     csv_path = args.outdir / "coverage.csv"

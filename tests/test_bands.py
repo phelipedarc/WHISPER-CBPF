@@ -1,4 +1,4 @@
-from whisper_labia.io.bands import (
+from whisper_cbpf.io.bands import (
     group_bands,
     normalize_band,
     normalize_bands,
@@ -64,7 +64,7 @@ def test_unmapped_bands():
 def test_ztf_prefixed_bands_resolve():
     """ZTF_g / ZTF_r / ZTF_i / ZTF_z (and case variants) map to the LSST optical bands and resolve to a
     finite effective wavelength + zero point (no NaN)."""
-    from whisper_labia.io.bands import resolve_band
+    from whisper_cbpf.io.bands import resolve_band
     import numpy as np
     expect = {"ZTF_g": "g-band", "ZTF_r": "r-band", "ZTF_i": "i-band", "ZTF_z": "z-band"}
     assert list(group_bands(list(expect))) == list(expect.values())

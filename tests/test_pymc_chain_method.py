@@ -23,7 +23,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from whisper_gpu.samplers.pymc_gpu import _effective_chain_method  # noqa: E402
+from whisper_cbpf.samplers.jax.pymc_gpu import _effective_chain_method  # noqa: E402
 
 
 @pytest.mark.parametrize("chains,devices,expected", [

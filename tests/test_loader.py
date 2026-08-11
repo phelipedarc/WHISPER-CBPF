@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from whisper_labia import LightCurve, load_lightcurve
-from whisper_labia.io.bands import unmapped_bands
+from whisper_cbpf import LightCurve, load_lightcurve
+from whisper_cbpf.io.bands import unmapped_bands
 
 
 def test_load_at2017gfo(at2017gfo_csv):

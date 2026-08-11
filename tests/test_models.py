@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from whisper_labia import Prior, Uniform, get_model, list_models, register_model
-from whisper_labia.models.bazin import bazin_flux
-from whisper_labia.models.flare import flare_flux
-from whisper_labia.models.gaussian_rise import gaussian_rise_flux
+from whisper_cbpf import Prior, Uniform, get_model, list_models, register_model
+from whisper_cbpf.models.bazin import bazin_flux
+from whisper_cbpf.models.flare import flare_flux
+from whisper_cbpf.models.gaussian_rise import gaussian_rise_flux
 
 
 def test_flare_registered():

@@ -4,24 +4,24 @@ Everything the three T3 test modules (prior predictive, continuity, likelihood p
 must AGREE on lives here, so a discrepancy between them is a finding about the model and
 never about two test files quietly using different filters, distances or epoch grids.
 
-FLOAT64 FIRST. The TDE engine refuses float32 (CHANGE 8 in whisper_gpu/models/tde.py), and
+FLOAT64 FIRST. The TDE engine refuses float32 (CHANGE 8 in whisper_cbpf/models/tde.py), and
 the config flag only affects arrays created AFTER it is set -- so this module flips it at
 import time, before any jnp array exists. Import this before anything that touches jax.
 
 Container: these tests are written for the ``phe_sbi_2`` layout, i.e. run from the
-whisper-labia repo root so ``whisper_gpu`` and ``whisper_labia`` are both importable::
+whisper-labia repo root so ``whisper_cbpf`` and ``whisper_cbpf`` are both importable::
 
     docker exec phe_sbi_2 bash -lc 'export JAX_PLATFORMS=cpu; \
       source /tf/astrodados2/phelipedata2/WHISPER/whisper-labia/jax_gpu/env.sh; \
       cd /tf/astrodados2/phelipedata2/WHISPER/whisper-labia && \
-      python -u whisper_gpu/tests/t3_inference/test_prior_predictive.py'
+      python -u whisper_cbpf/tests/t3_inference/test_prior_predictive.py'
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-# Make `whisper_gpu` importable when a test file is executed as a script: python puts the
+# Make `whisper_cbpf` importable when a test file is executed as a script: python puts the
 # SCRIPT's directory on sys.path, not the cwd, so the repo root (three levels up from
 # tests/t3_inference/) has to be added by hand. Harmless under pytest.
 _ROOT = Path(__file__).resolve().parents[3]
@@ -67,7 +67,7 @@ def filters():
     """(lam, weights, norms) for BANDS, built once per process (sncosmo is slow)."""
     global _FILTERS
     if _FILTERS is None:
-        from whisper_gpu.models import kilonova as kn
+        from whisper_cbpf.models.jax import kilonova as kn
 
         fs = kn.make_filter_set(BANDS, n_wave=N_WAVE)
         W, N = kn.ab_weights(fs["lam"], fs["trans"])

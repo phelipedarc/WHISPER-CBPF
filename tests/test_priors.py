@@ -2,7 +2,7 @@ import pickle
 
 import numpy as np
 
-from whisper_labia.priors import LogUniform, Prior, Uniform
+from whisper_cbpf.priors import LogUniform, Prior, Uniform
 
 
 def test_uniform_sample_in_bounds():

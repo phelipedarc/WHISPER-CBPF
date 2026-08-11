@@ -133,8 +133,8 @@ def test_kilonova_prior_predictive():
     as magnitudes brighter than 5 at z = 0.05 -- physically impossible for this source
     class, so it is asserted rather than reported.
     """
-    from whisper_gpu.models import kilonova as kn
-    from whisper_gpu.models import kilonova_model
+    from whisper_cbpf.models.jax import kilonova as kn
+    from whisper_cbpf.models.jax import kilonova_model
 
     lam, W, N, fs = C.filters()
     # 30 epochs, 0.5-25 d, both ZTF bands at every epoch -> 60 observations
@@ -198,7 +198,7 @@ def test_tde_gaussianrise_prior_predictive():
     ``frac_past`` are asserted NONZERO, because a prior-predictive that never reaches the
     documented pathologies is not covering the prior it claims to cover.
     """
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     lam, W, N, _ = C.filters()
     # 24 epochs, 1-400 d from the light-curve origin, both bands -> 48 observations

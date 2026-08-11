@@ -1,9 +1,9 @@
-"""Astropy-unit validation + conversion for the three data modes (whisper_labia.io.units)."""
+"""Astropy-unit validation + conversion for the three data modes (whisper_cbpf.io.units)."""
 import numpy as np
 import pytest
 import astropy.units as u
 
-from whisper_labia.io.units import (
+from whisper_cbpf.io.units import (
     check_magnitude_unit,
     to_canonical,
     to_flux_cgs,

@@ -2,9 +2,9 @@ import pickle
 
 import numpy as np
 
-from whisper_labia import LightCurve
-from whisper_labia.io.photometry import mag_to_flux_density
-from whisper_labia.likelihood import (
+from whisper_cbpf import LightCurve
+from whisper_cbpf.io.photometry import mag_to_flux_density
+from whisper_cbpf.likelihood import (
     GaussianLikelihood,
     GaussianLikelihoodWithUpperLimits,
     MixtureGaussianLikelihood,

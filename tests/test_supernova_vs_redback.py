@@ -10,7 +10,7 @@ There are five, and they are not the same claim:
 
 2. **It reproduces redback's SEDs**, including the two that are new here (CutoffBlackbody, Line)
    and the one that is only reachable in the radio (Synchrotron). These are the parts with no
-   sibling in :mod:`whisper_gpu.models.tde`, so they carry the most new code.
+   sibling in :mod:`whisper_cbpf.models.jax.tde`, so they carry the most new code.
 
 3. **It is differentiable everywhere the prior reaches**, including at ``theta_pb = 0``, which
    redback's own ``Uniform(0, 3.14/2)`` includes and where ``sin(theta)**-2`` is infinite.
@@ -35,7 +35,7 @@ import pytest
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
-from whisper_gpu.models import supernova as S  # noqa: E402
+from whisper_cbpf.models.jax import supernova as S  # noqa: E402
 
 DAY = 86400.0
 MSUN = 1.988409870698051e33
@@ -308,7 +308,7 @@ def test_synchrotron_is_negligible_in_the_optical():
     syn = np.asarray(S.synchrotron_f_nu(jnp.asarray(nu), 3.0, dl_cm=1e27))
     assert syn[1] / syn[0] > 1e20, "the documented discontinuity should still be there"
     # a plain blackbody at SN-like (T, R) dwarfs it at every optical frequency
-    from whisper_gpu.models.tde import flux_density_mjy
+    from whisper_cbpf.models.jax.tde import flux_density_mjy
     bb = np.asarray(flux_density_mjy(jnp.full(3, 8000.0), jnp.full(3, 1e15),
                                      jnp.asarray(nu[2:]), 0.0, 1e27, dilation=False)) * 1e-26
     assert np.all(syn[2:] / bb < 1e-8)
@@ -515,7 +515,7 @@ def test_engine_params_are_a_subset_of_params():
 def test_redback_prior_matches_the_transcription(model):
     """`fallback_prior` is a transcription and transcriptions drift. Check it against the file."""
     pytest.importorskip("redback")
-    pytest.importorskip("whisper_labia")
+    pytest.importorskip("whisper_cbpf")
     try:
         rb, rb_pinned, _ = S.redback_prior(model)
     except (ImportError, KeyError, NotImplementedError) as exc:
@@ -530,8 +530,8 @@ def test_redback_prior_matches_the_transcription(model):
 
 def test_adapter_builds_and_predicts(bands):
     """The whisper contract end to end, with a synthetic filter set (no sncosmo needed)."""
-    pytest.importorskip("whisper_labia")
-    from whisper_gpu.models import supernova_model
+    pytest.importorskip("whisper_cbpf")
+    from whisper_cbpf.models.jax import supernova_model
 
     lam, _, _, _ = bands
     trans = np.zeros((2, np.asarray(lam).size))
@@ -551,8 +551,8 @@ def test_adapter_builds_and_predicts(bands):
 
 
 def test_adapter_pin_removes_a_parameter_without_changing_the_curve(bands):
-    pytest.importorskip("whisper_labia")
-    from whisper_gpu.models import supernova_model
+    pytest.importorskip("whisper_cbpf")
+    from whisper_cbpf.models.jax import supernova_model
 
     la = np.asarray(bands[0])
     trans = np.zeros((1, la.size))

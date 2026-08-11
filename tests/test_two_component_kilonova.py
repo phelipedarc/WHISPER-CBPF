@@ -6,8 +6,8 @@ The registry/prior tests run without redback; the physics tests are guarded by
 import numpy as np
 import pytest
 
-from whisper_labia.models import get_model, list_models
-from whisper_labia.models import two_component_kilonova as tck
+from whisper_cbpf.models import get_model, list_models
+from whisper_cbpf.models import two_component_kilonova as tck
 
 PARAMS = ["mej_1", "vej_1", "kappa_1", "temperature_floor_1",
           "mej_2", "vej_2", "kappa_2", "temperature_floor_2", "redshift"]
@@ -94,8 +94,8 @@ def test_kilonova_snpe_recovers():
     """End-to-end: SNPE recovers a synthetic two_component_kilonova injection (redback + sbi)."""
     pytest.importorskip("redback")
     pytest.importorskip("sbi")
-    import whisper_labia as wp
-    from whisper_labia.priors import Prior, Uniform
+    import whisper_cbpf as wp
+    from whisper_cbpf.priors import Prior, Uniform
 
     m = get_model("two_component_kilonova")
     truth = dict(SAMPLE, temperature_floor_1=2500.0, temperature_floor_2=2500.0)

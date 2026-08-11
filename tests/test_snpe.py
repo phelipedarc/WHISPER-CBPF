@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-import whisper_labia as wp
-from whisper_labia.models import get_model
+import whisper_cbpf as wp
+from whisper_cbpf.models import get_model
 
 
 def test_snpe_registered_without_sbi():
@@ -23,7 +23,7 @@ def test_snpe_invalid_proposal_mode():
 
 # Everything below needs the optional [sbi] extra (sbi + torch).
 sbi = pytest.importorskip("sbi")
-from whisper_labia.samplers.snpe import (  # noqa: E402
+from whisper_cbpf.samplers.snpe import (  # noqa: E402
     _build_density_estimator,
     _require_sbi,
     _to_torch_prior,
@@ -111,8 +111,8 @@ def test_torch_model_in_space_matches_the_numpy_likelihood():
     """
     import torch
 
-    from whisper_labia.likelihood import GaussianLikelihood
-    from whisper_labia.samplers.snpe import _torch_model_in_space
+    from whisper_cbpf.likelihood import GaussianLikelihood
+    from whisper_cbpf.samplers.snpe import _torch_model_in_space
 
     lc = wp.LightCurve(time=[1.0, 2.0, 3.0], band=["r"] * 3,
                        magnitude=[20.0, 20.5, 21.0], magnitude_err=[0.05] * 3)
@@ -140,8 +140,8 @@ def test_torch_model_in_space_floor_survives_float32():
     """
     import torch
 
-    from whisper_labia.likelihood import _MIN_FLUX_JY
-    from whisper_labia.samplers.snpe import _torch_model_in_space
+    from whisper_cbpf.likelihood import _MIN_FLUX_JY
+    from whisper_cbpf.samplers.snpe import _torch_model_in_space
 
     to_mag = _torch_model_in_space("magnitude", 3631.0, torch)
     bad = torch.tensor([0.0, -1e-12, 1e-30], dtype=torch.float32)
@@ -161,7 +161,7 @@ def test_torch_simulate_maps_space_before_adding_noise():
     """
     import torch
 
-    from whisper_labia.samplers.snpe import _torch_model_in_space, _torch_simulate
+    from whisper_cbpf.samplers.snpe import _torch_model_in_space, _torch_simulate
 
     n_obs, zp = 4, 3631.0
     flux_row = torch.tensor([1e-5, 5e-6, 2e-6, 1e-6], dtype=torch.float64)
@@ -242,7 +242,7 @@ def test_snpe_dispatch_and_alias_multiround():
 
 def test_resolve_device_auto_gpu_and_fallback():
     """`_resolve_device` maps auto/gpu/cuda/cpu and falls back (with a warning) when CUDA is absent."""
-    from whisper_labia.samplers.snpe import _resolve_device
+    from whisper_cbpf.samplers.snpe import _resolve_device
 
     class _Cuda:
         def __init__(self, ok): self._ok = ok

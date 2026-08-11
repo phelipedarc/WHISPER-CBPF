@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-import whisper_labia as wp
-from whisper_labia.io import svo
+import whisper_cbpf as wp
+from whisper_cbpf.io import svo
 
 
 def test_list_likelihoods_and_register():
@@ -34,7 +34,7 @@ def test_list_distances_register_and_get():
 
 def test_distance_by_name_in_fit():
     m = wp.get_model("flare") if hasattr(wp, "get_model") else None
-    from whisper_labia.models import get_model
+    from whisper_cbpf.models import get_model
     t = np.linspace(0.1, 10, 20)
     f = get_model("flare").predict({"amplitude": 1.0, "rise_time": 1.0, "decay_time": 3.0}, t, None)
     lc = wp.LightCurve(time=t, band=["r"] * 20, flux=f, flux_err=np.full_like(f, 0.05))

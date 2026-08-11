@@ -1,11 +1,11 @@
-"""Tests for WAIC (`whisper_labia.metrics.waic`) and the pointwise log-likelihood it relies on."""
+"""Tests for WAIC (`whisper_cbpf.metrics.waic`) and the pointwise log-likelihood it relies on."""
 import numpy as np
 import pandas as pd
 import pytest
 
-import whisper_labia as wp
-from whisper_labia.likelihood import GaussianLikelihood, GaussianLikelihoodWithUpperLimits
-from whisper_labia.models import get_model
+import whisper_cbpf as wp
+from whisper_cbpf.likelihood import GaussianLikelihood, GaussianLikelihoodWithUpperLimits
+from whisper_cbpf.models import get_model
 
 TRUE = {"amplitude": 5.0, "t0": 8.0, "sigma_rise": 3.0, "tau_decay": 15.0}
 

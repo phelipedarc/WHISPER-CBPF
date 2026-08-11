@@ -60,9 +60,9 @@ def build_context(n_time=500):
     ``mags_fn(theta_vec) -> (48,) AB magnitudes`` is the exact band-magnitude path the
     T3 tests verified, jit-compiled once; theta order is PARAMETERS_GAUSSIANRISE.
     """
-    from whisper_gpu.models import kilonova as kn
-    from whisper_gpu.models import tde as T
-    from whisper_gpu.models import tde_model
+    from whisper_cbpf.models.jax import kilonova as kn
+    from whisper_cbpf.models.jax import tde as T
+    from whisper_cbpf.models.jax import tde_model
 
     fs = kn.make_filter_set(BANDS, n_wave=N_WAVE)
     lam = jnp.asarray(fs["lam"])
@@ -94,7 +94,7 @@ def build_context(n_time=500):
 
 def simulate_lightcurve(mags_fn, theta, t_obs, bands, rng):
     """A LightCurve at ``theta`` with sigma = SIGMA_MAG magnitude noise (T3 convention)."""
-    from whisper_labia.io.schema import LightCurve
+    from whisper_cbpf.io.schema import LightCurve
 
     mag_true = np.asarray(mags_fn(jnp.asarray(theta)))
     mag_obs = mag_true + rng.normal(0.0, SIGMA_MAG, mag_true.size)
@@ -129,7 +129,7 @@ def make_log_prob(mags_fn, mag_obs):
 def fit_one(lc, model, log_prob_fn, *, num_warmup, num_samples, num_chains, seed,
             target_accept_prob=0.8):
     """One NUTS fit through whisper's own registered GPU sampler."""
-    from whisper_gpu.samplers.nuts_gpu import NUTSGPUSampler
+    from whisper_cbpf.samplers.jax.nuts_gpu import NUTSGPUSampler
 
     t0 = time.perf_counter()
     res = NUTSGPUSampler().fit(

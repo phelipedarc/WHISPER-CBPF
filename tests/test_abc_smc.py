@@ -1,7 +1,7 @@
 import numpy as np
 
-from whisper_labia import LightCurve, fit, fit_ABC_SMC, list_samplers
-from whisper_labia.models.flare import flare_flux
+from whisper_cbpf import LightCurve, fit, fit_ABC_SMC, list_samplers
+from whisper_cbpf.models.flare import flare_flux
 
 
 def _synthetic(truth, n=50, noise_frac=0.01, seed=0):
@@ -80,7 +80,7 @@ def test_smc_serial_and_dispatch():
 
 
 def test_smc_on_bazin_model_agnostic():
-    from whisper_labia.models.bazin import bazin_flux
+    from whisper_cbpf.models.bazin import bazin_flux
     times = np.linspace(0, 40, 40)
     bands = np.array(["g"] * 40)
     truth = {"amplitude": 5.0, "t0": 3.0, "tau_rise": 3.0, "tau_fall": 15.0}

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from whisper_labia import LightCurve
+from whisper_cbpf import LightCurve
 
 
 def _lc(**kw):

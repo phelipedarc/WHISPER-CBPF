@@ -37,7 +37,7 @@ FINDING and fails the test loudly. (One reclassification is allowed first: the g
 concentrates |d2| in one or two grid points while smooth curvature blends into its
 neighbours. See its docstring for the measured example.)
 
-Documented causes, kilonova (whisper_gpu/models/kilonova.py):
+Documented causes, kilonova (whisper_cbpf/models/kilonova.py):
   BK-node        the Barnes & Kasen thermalisation table is bilinear, so its derivative
                  jumps at interior grid lines: vej = 0.2, 0.3 (0.1 and 0.4 are edge nodes
                  -- linear extrapolation continues the edge cell's slope, so they are C1;
@@ -48,7 +48,7 @@ Documented causes, kilonova (whisper_gpu/models/kilonova.py):
   magfloor-cap   an epoch's magnitude reaches the mag_floor cap (min(), C0 not C1;
                  kilonova.py MAG_FLOOR block).
 
-Documented causes, TDE gaussianrise (whisper_gpu/models/tde.py):
+Documented causes, TDE gaussianrise (whisper_cbpf/models/tde.py):
   termination-cliff  an OBSERVATION crosses the envelope's termination time, which moves
                  with the parameters; past it the flux is exactly zero -> mag_floor, a
                  ~20-mag step (documented at length in _interp_photosphere: "a genuine
@@ -281,8 +281,8 @@ def _report(model, slices):
 # kilonova
 # =======================================================================================
 def _kn_setup():
-    from whisper_gpu.models import kilonova as kn
-    from whisper_gpu.models import kilonova_model
+    from whisper_cbpf.models.jax import kilonova as kn
+    from whisper_cbpf.models.jax import kilonova_model
 
     lam, W, N, fs = C.filters()
     t_obs, band_idx = C.epochs_two_bands(0.5, 25.0, 20)      # 40 observations
@@ -396,7 +396,7 @@ def test_kilonova_continuity():
 # TDE gaussianrise
 # =======================================================================================
 def _tde_setup():
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     lam, W, N, _ = C.filters()
     t_obs, band_idx = C.epochs_two_bands(1.0, 400.0, 20)     # 40 observations, 1-400 d
@@ -526,7 +526,7 @@ def test_tde_cliff_demo_observation_past_termination():
     the logL step when the moving termination time sweeps through a real detection. Not a
     pass/fail scan -- the numbers are printed and the values asserted only to be finite.
     """
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     names, fid, prior, _, mags_fn0, obs0, (t, bidx, _) = _tde_setup()
     lam, W, N, _ = C.filters()
@@ -601,7 +601,7 @@ SPAN_FRACS = (0.10, 0.50, 0.90, 0.99)
 
 
 def _tde_fid_vec():
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     return list(T.PARAMETERS_GAUSSIANRISE), np.array(
         [FID_TDE[nm] for nm in T.PARAMETERS_GAUSSIANRISE])
@@ -615,7 +615,7 @@ def _ppm_epochs(n_time, fid):
     ``n_time`` (median 10 % shorter at 500 -- CHANGE 6), each grid gets its own epochs and
     both are reported, rather than pretending one set of days means the same thing on both.
     """
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     out = T.cooling_envelope(*fid[2:], n_time=n_time)
     k = int(out["constraint"])
@@ -642,7 +642,7 @@ def _ppm_scan(n_time):
     Also returned: ``kspan``, how many grid steps the termination index itself moves over
     the window -- the mechanism behind both numbers.
     """
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     names, fid = _tde_fid_vec()
     lam, W, N, _ = C.filters()
@@ -691,7 +691,7 @@ def _ppm_property_sweep(n_draws=32, n_pts=101, n_time=500, k_min=50):
     `n_draws` prior draws whose envelope is live and resolved (constraint >= k_min), with
     the epoch fixed at 0.99 x THAT DRAW's own span.
     """
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     lam, W, N, _ = C.filters()
     prior, _ = T.default_prior_gaussianrise()
@@ -879,7 +879,7 @@ def test_tde_gaussian_rise_stitch_is_structurally_continuous():
       The limiting slope of that line is the C1 kink, and it is reported (mag/day) rather
       than asserted away -- a kink is what a stitched model is entitled to have.
     """
-    from whisper_gpu.models import tde as T
+    from whisper_cbpf.models.jax import tde as T
 
     lam, W, N, _ = C.filters()
     preset = dict(T.REDBACK_PRESETS["1.15"])
@@ -1018,7 +1018,7 @@ def test_kilonova_barnes_kasen_nodes_are_c0_with_a_derivative_kink():
     (PHYSICS_NOTES K5 documents 31-46 %), and the same two quantities propagated to the AB
     magnitude a sampler actually sees.
     """
-    from whisper_gpu.models import kilonova as kn
+    from whisper_cbpf.models.jax import kilonova as kn
 
     # --- coefficient level ------------------------------------------------------------
     mej_grid = np.linspace(0.01, 0.05, 9)          # the factory prior's own mej range

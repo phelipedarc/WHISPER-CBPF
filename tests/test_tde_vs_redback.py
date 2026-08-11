@@ -32,7 +32,7 @@ import pytest
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
-from whisper_gpu.models import tde as T  # noqa: E402
+from whisper_cbpf.models.jax import tde as T  # noqa: E402
 
 DAY = 86400.0
 
@@ -616,9 +616,9 @@ def test_adapter_does_not_recompile_per_parameter_set():
     """
     import time
 
-    import whisper_gpu
+    import whisper_cbpf
 
-    m = whisper_gpu.tde_model(["sdssg", "sdssr"], redshift=0.05, dl_cm=7e26,
+    m = whisper_cbpf.tde_model(["sdssg", "sdssr"], redshift=0.05, dl_cm=7e26,
                               n_wave=300, n_time=5000)
     t = np.linspace(1.0, 150.0, 12)
     b = np.array(["sdssg", "sdssr"] * 6)

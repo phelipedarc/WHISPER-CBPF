@@ -22,9 +22,9 @@ import pytest
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
-import whisper_gpu  # noqa: E402,F401  registers abc_gpu
-import whisper_labia as wp  # noqa: E402
-from whisper_labia.priors import LogUniform, Prior, Uniform  # noqa: E402
+import whisper_cbpf  # noqa: E402,F401  registers abc_gpu
+import whisper_cbpf as wp  # noqa: E402
+from whisper_cbpf.priors import LogUniform, Prior, Uniform  # noqa: E402
 
 N_OBS = 24
 PRIOR = Prior({"amp": Uniform(0.5, 2.0), "tau": LogUniform(1.0, 20.0)})
@@ -60,7 +60,7 @@ def model(lc):
 
 
 def _fit(lc, model, n_simulations, chunk, seed=0):
-    return whisper_gpu.samplers.abc_gpu.ABCGPUSampler().fit(
+    return whisper_cbpf.samplers.jax.abc_gpu.ABCGPUSampler().fit(
         lc, model, prior=PRIOR, predict_jax=_predict_jax, n_simulations=n_simulations,
         quantile=0.05, distance="chi2", space="flux", seed=seed, chunk=chunk, max_logl_scan=1)
 

@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 import astropy.units as u
 
-from whisper_labia import LightCurve, load_lightcurve
-from whisper_labia.io import svo
+from whisper_cbpf import LightCurve, load_lightcurve
+from whisper_cbpf.io import svo
 
 
 # --------------------------------------------------------------------------- data_mode

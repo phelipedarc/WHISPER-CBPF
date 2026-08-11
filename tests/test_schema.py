@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from whisper_labia.io.photometry import flux_density_to_mag
-from whisper_labia.io.schema import LightCurve
+from whisper_cbpf.io.photometry import flux_density_to_mag
+from whisper_cbpf.io.schema import LightCurve
 
 
 def _toy():

@@ -14,7 +14,7 @@ import jax
 assert not jax.config.jax_enable_x64, "probe must run with x64 OFF"
 import jax.numpy as jnp  # noqa: E402
 
-from whisper_gpu.models import kilonova as kn  # noqa: E402
+from whisper_cbpf.models.jax import kilonova as kn  # noqa: E402
 
 goldens, out = Path(sys.argv[1]), Path(sys.argv[2])
 gk = np.load(goldens / "kilonova_one_component.npz", allow_pickle=False)

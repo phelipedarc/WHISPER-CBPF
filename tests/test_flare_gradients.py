@@ -14,8 +14,8 @@ import pytest
 jax = pytest.importorskip("jax")
 jnp = pytest.importorskip("jax.numpy")
 
-from whisper_gpu.models import _flare_spec as spec  # noqa: E402
-from whisper_gpu.models import flare  # noqa: E402
+from whisper_cbpf.models.jax import _flare_spec as spec  # noqa: E402
+from whisper_cbpf.models.jax import flare  # noqa: E402
 
 
 def test_gradients_finite_across_the_prior_including_the_dt0_boundary():
