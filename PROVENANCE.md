@@ -20,6 +20,8 @@ source at that commit; import rewrites land in later commits and are measured ag
 | Destination | Source repo | Original path | Source commit | sha256 (12) |
 |---|---|---|---|---|
 | `whisper_cbpf/__init__.py` | WHISPER_AI | `whisper_labia/__init__.py` | `8ba3843` | `90a930a16c22` |
+| `whisper_cbpf/distance/_gpu_distances.py` | whisper-GPU | `distances.py` | `10796a0` | `e0471dea0711` |
+| `whisper_cbpf/distance/_numpy_cpu_chi2.py` | WHISPER_AI | `whisper_labia/distance.py` | `8ba3843` | `5eb11dd79a20` |
 | `whisper_cbpf/embeddings.py` | WHISPER_AI | `whisper_labia/embeddings.py` | `8ba3843` | `092db6cb2675` |
 | `whisper_cbpf/io/__init__.py` | WHISPER_AI | `whisper_labia/io/__init__.py` | `8ba3843` | `3b0e9e478af0` |
 | `whisper_cbpf/io/bands.py` | WHISPER_AI | `whisper_labia/io/bands.py` | `8ba3843` | `2b668d654176` |
@@ -29,6 +31,8 @@ source at that commit; import rewrites land in later commits and are measured ag
 | `whisper_cbpf/io/svo.py` | WHISPER_AI | `whisper_labia/io/svo.py` | `8ba3843` | `f2a7527e61c9` |
 | `whisper_cbpf/io/units.py` | WHISPER_AI | `whisper_labia/io/units.py` | `8ba3843` | `d25a57e680fc` |
 | `whisper_cbpf/likelihood.py` | WHISPER_AI | `whisper_labia/likelihood.py` | `8ba3843` | `f2e388ed5a6e` |
+| `whisper_cbpf/metrics/_jax.py` | whisper-GPU | `metrics.py` | `10796a0` | `5f7ad83ae36e` |
+| `whisper_cbpf/metrics/_numpy.py` | WHISPER_AI | `whisper_labia/metrics.py` | `8ba3843` | `a07731b134e5` |
 | `whisper_cbpf/models/__init__.py` | WHISPER_AI | `whisper_labia/models/__init__.py` | `8ba3843` | `3552077b5e08` |
 | `whisper_cbpf/models/bazin.py` | WHISPER_AI | `whisper_labia/models/bazin.py` | `8ba3843` | `486db2afd041` |
 | `whisper_cbpf/models/flare.py` | WHISPER_AI | `whisper_labia/models/flare.py` | `8ba3843` | `402d067a3a13` |
