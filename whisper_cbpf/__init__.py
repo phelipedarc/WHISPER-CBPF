@@ -78,3 +78,37 @@ __all__ = [
     "waic", "per_band_metrics", "predictive_metrics", "recovery_metrics", "posterior_predictive_check",
     "sbc_rank", "sbc_ranks",
 ]
+
+# --- JAX/GPU half ------------------------------------------------------------------------------
+# Imported last, once the CPU registries above are populated. This registers the six GPU samplers
+# and `flare_jax` WITHOUT importing jax: every entry is a lazy factory, so `import whisper_cbpf`
+# works on a machine with no jax, no CUDA, no torch and no redback, and `list_samplers()` still
+# names the GPU entries -- they are available, requiring the [gpu] extra.
+from .backends import (  # noqa: E402
+    check_gpu,
+    env_report,
+    env_script,
+    gpu_list,
+    n_jobs,
+    require_jax,
+    x64_enabled,
+)
+from .backends import _registration as _gpu_registration  # noqa: E402,F401
+
+# Model-binding factories for the photometric JAX models. These stay factories on purpose: a band
+# flux needs a filter set, a redshift and a luminosity distance, and a guessed distance silently
+# rescales every fitted mass. Resolved lazily -- naming one without the [gpu] extra installed
+# raises a message naming the extra.
+from .models.jax import (  # noqa: E402
+    register_kilonova,
+    register_supernova,
+    register_tde,
+    supernova_models,
+)
+
+__all__ += [
+    # backends / GPU environment
+    "check_gpu", "require_jax", "x64_enabled", "gpu_list", "n_jobs", "env_script", "env_report",
+    # JAX model binding factories
+    "register_kilonova", "register_tde", "register_supernova", "supernova_models",
+]
