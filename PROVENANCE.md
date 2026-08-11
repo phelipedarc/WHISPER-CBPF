@@ -19,7 +19,13 @@ source at that commit; import rewrites land in later commits and are measured ag
 
 | Destination | Source repo | Original path | Source commit | sha256 (12) |
 |---|---|---|---|---|
+| `CITATION.cff` | WHISPER_AI | `CITATION.cff` | `8ba3843` | `ea746de54d4f` |
+| `CONTRIBUTING.md` | WHISPER_AI | `CONTRIBUTING.md` | `8ba3843` | `fe7be516df3a` |
+| `LICENSE` | WHISPER_AI | `LICENSE` | `8ba3843` | `3972dc9744f6` |
+| `scripts/whisper-gpu-env.sh` | whisper-GPU | `env.sh` | `10796a0` | `dab8144ca476` |
 | `whisper_cbpf/__init__.py` | WHISPER_AI | `whisper_labia/__init__.py` | `8ba3843` | `90a930a16c22` |
+| `whisper_cbpf/backends/_env.py` | whisper-GPU | `_env.py` | `10796a0` | `7d9fc63838d9` |
+| `whisper_cbpf/backends/_registration.py` | whisper-GPU | `__init__.py` | `10796a0` | `a64777580ed6` |
 | `whisper_cbpf/distance/_gpu_distances.py` | whisper-GPU | `distances.py` | `10796a0` | `e0471dea0711` |
 | `whisper_cbpf/distance/_numpy_cpu_chi2.py` | WHISPER_AI | `whisper_labia/distance.py` | `8ba3843` | `5eb11dd79a20` |
 | `whisper_cbpf/embeddings.py` | WHISPER_AI | `whisper_labia/embeddings.py` | `8ba3843` | `092db6cb2675` |
