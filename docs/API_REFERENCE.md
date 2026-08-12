@@ -183,7 +183,18 @@ calibrated; below = over-confident, above = under-confident. Coverage from `pred
 
 **`plot_corner(posteriors, *, labels=None, parameters=None, colors=None, truths=None, bins=30,
 levels=(0.39, 0.86), smooth=1.0, log_params=None, title=None, legend_loc="upper right", save=None, **corner_kwargs)`**
-— overlay a **list of posteriors** on one publication-ready corner plot. Each posterior is a
+— overlay a **list of posteriors** on one publication-ready corner plot.
+
+> **`posteriors` is a sequence, even for one fit.** Pass `[res]`, not `res` — a bare `SamplerResult`
+> raises `TypeError: object of type 'SamplerResult' has no len()`, and a bare `DataFrame` iterates its
+> column *names* and raises `ValueError: could not convert string to float`. Neither message points at
+> the fix, so:
+>
+> ```python
+> wp.plot_corner([res])                                        # one posterior
+> wp.plot_corner([r_abc, r_mcmc], labels=["abc", "mcmc"])      # the comparison this is built for
+> ```
+ Each posterior is a
 `SamplerResult`, a `DataFrame`, a `{name: array}` dict, or a 2-D array (then pass `parameters`).
 Shared per-parameter ranges align the panels; each posterior gets a distinct dark colour
 (`CORNER_PALETTE`); 2-D panels are contour **lines** (default `levels` ≈ 1σ/2σ) and the diagonals are

@@ -11,6 +11,19 @@ import whisper_cbpf as wp
 lc  = wp.load_lightcurve("transient.csv")
 res = wp.fit(lc, "gaussian_rise", sampler="abc")      # CPU, no extras needed
 print(res.samples.describe(), res.aic, res.bic)   # posterior draws, plus AIC/BIC
+
+wp.plot_light_curve(lc)          # the data
+wp.plot_corner([res])            # the posterior — note the list, see below
+wp.plot_ppc(res, lc)             # posterior predictive check
+```
+
+The plotters take what you'd expect, with one exception worth knowing up front:
+**`plot_corner` takes a *sequence* of posteriors, even for a single fit** — it exists to overlay
+several on shared axes, so `plot_corner([res])` works and `plot_corner(res)` raises
+`TypeError: ... has no len()`. Comparing samplers is the point:
+
+```python
+wp.plot_corner([r_abc, r_mcmc], labels=["abc", "mcmc"])
 ```
 
 ## Install
