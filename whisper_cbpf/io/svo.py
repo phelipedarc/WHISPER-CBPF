@@ -130,15 +130,29 @@ def _svo() :
 
 
 def _svo_fetch_metadata(filter_id):
-    """Return ``{'WavelengthEff': <AA>, 'ZeroPoint': <Jy>, 'filter_id': ...}`` for one filter ID."""
+    """Return ``{'WavelengthEff': <AA>, 'ZeroPoint': <Jy>, 'filter_id': ...}`` for one filter ID.
+
+    There is no single-filter metadata call in astroquery (``get_filter_metadata`` never existed;
+    ``fps.php?ID=`` returns the transmission curve, and its metadata lives in VOTable PARAMs that
+    ``to_table()`` drops). The columns we need come from the per-facility filter list, which we then
+    match on the exact ``filterID``. ``instrument`` is deliberately NOT passed: for several
+    facilities the instrument segment of the ID is not an SVO instrument, and supplying it returns
+    nothing at all (``SLOAN/SDSS``, ``PAN-STARRS/PS1`` and ``2MASS/2MASS`` all fail that way). The
+    per-facility list is a few dozen rows and the result is cached by filter ID, so it is fetched once.
+    """
     SvoFps = _svo()
+    if "/" not in str(filter_id):
+        raise SvoUnavailable(
+            f"{filter_id!r} is not an SVO filter ID (expected 'Facility/Instrument.Filter').")
+    facility = str(filter_id).split("/")[0]
     try:
-        table = SvoFps.get_filter_metadata(filter_id)
+        table = SvoFps.get_filter_list(facility=facility)
     except Exception as exc:
         raise SvoUnavailable(f"SVO metadata query failed for {filter_id!r}: {exc}") from exc
-    if table is None or len(table) == 0:
+    rows = [r for r in table if str(r["filterID"]) == str(filter_id)] if table is not None else []
+    if not rows:
         raise SvoUnavailable(f"SVO returned no metadata for filter {filter_id!r}.")
-    row = table[0]
+    row = rows[0]
     return {
         "filter_id": filter_id,
         "WavelengthEff": float(row["WavelengthEff"]),   # Angstrom

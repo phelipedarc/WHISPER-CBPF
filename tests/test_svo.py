@@ -153,6 +153,19 @@ def test_empty_svo_index_with_hint_is_graceful(svo_clean, monkeypatch):
     assert r["source"] == "unresolved" and r["lambda_eff"] is None
 
 
+def test_boundary_methods_exist_on_astroquery():
+    """The three network wrappers must name astroquery methods that actually exist.
+
+    Every other test here monkeypatches those wrappers, so a wrong method name is invisible to them
+    -- which is how ``get_filter_metadata`` (a method astroquery has never had) survived. Attribute
+    presence only; no network.
+    """
+    pytest.importorskip("astroquery")
+    SvoFps = svo._svo()
+    for method in ("get_filter_list", "get_filter_index", "get_transmission_data"):
+        assert hasattr(SvoFps, method), f"astroquery.svo_fps.SvoFps has no {method}()"
+
+
 def test_resolve_bands_vectorized(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("no SVO for known bands")
