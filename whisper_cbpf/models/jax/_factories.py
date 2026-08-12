@@ -72,6 +72,7 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
     likelihood call. Fit redshift by rebuilding the model, or pin it -- which is what any real
     kilonova fit does anyway, the host being identified.
     """
+    import jax
     import jax.numpy as jnp
 
     from ...models import Model
@@ -92,26 +93,57 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
     free_tf = temperature_floor is None
     params = ["mej", "vej", "kappa"] + (["temperature_floor"] if free_tf else [])
 
-    def predict(parameters, times, bands=None):
-        """whisper contract: (parameters, times, bands) -> flux density in Jy."""
-        if bands is None:
-            raise ValueError(f"model {name!r} is photometric and needs a `bands` array")
+    # JIT ONCE, HERE -- the same reason tde_model gives, and the same measurement: the unjitted
+    # binding re-traces on every call, 65.3 ms per predict() against 0.14 ms for the identical
+    # computation under jit. Only `times` and `band_idx` and the free parameters are traced;
+    # the filter set, the redshift, the distance, `t_exp_days`, `mag_floor`, `arnett_prefactor`
+    # and a PINNED temperature_floor are closure constants, so this compiles once per n_obs.
+    # Both entry points below go through it, which is also what keeps them from drifting.
+    def _core(times, bidx, *free):
+        """Observer-frame days -> AB magnitude per observation. Traced, pure jnp."""
+        v = dict(zip(params, free))
+        tf = v["temperature_floor"] if free_tf else temperature_floor
+        t_src = kn.source_time_s(times, redshift, t_exp_days)
+        return kn.ab_magnitude(t_src, bidx, weights, norms, lam, redshift, dl_cm,
+                               v["mej"], v["vej"], v["kappa"], tf,
+                               mag_floor=mag_floor, arnett_prefactor=arnett_prefactor)
+
+    _core_jit = jax.jit(_core)
+
+    def _band_indices(bands):
         try:
-            idx = np.array([index_of[str(b)] for b in np.asarray(bands)], dtype=int)
+            return np.array([index_of[str(b)] for b in np.asarray(bands)], dtype=int)
         except KeyError as exc:
             raise KeyError(
                 f"band {exc.args[0]!r} was not bound to this model. Bound: {band_names}. "
                 "Rebuild with kilonova_model(band_names=[...]) covering every band in the data."
             ) from None
-        tf = float(parameters["temperature_floor"]) if free_tf else float(temperature_floor)
-        t_src = kn.source_time_s(np.asarray(times, dtype=float), redshift, t_exp_days)
-        mag = kn.ab_magnitude(jnp.asarray(t_src), jnp.asarray(idx), weights, norms, lam,
-                              redshift, dl_cm,
-                              float(parameters["mej"]), float(parameters["vej"]),
-                              float(parameters["kappa"]), tf, mag_floor=mag_floor,
-                              arnett_prefactor=arnett_prefactor)
+
+    def predict(parameters, times, bands=None):
+        """whisper contract: (parameters, times, bands) -> flux density in Jy."""
+        if bands is None:
+            raise ValueError(f"model {name!r} is photometric and needs a `bands` array")
+        idx = _band_indices(bands)
+        mag = _core_jit(jnp.asarray(np.asarray(times, dtype=float)), jnp.asarray(idx),
+                        *[float(parameters[k]) for k in params])
         # whisper models return FLUX; convert once, at the end. Never combine magnitudes.
         return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * np.asarray(mag, dtype=float))
+
+    def predict_jax(theta, times, band_idx=None):
+        """``predict`` for a traced caller: flat theta, integer bands, flux density in Jy.
+
+        ``theta`` is ordered by ``Model.parameters``; ``band_idx`` indexes ``band_names``. Map the
+        data's band strings once, outside the trace, with ``predict_jax.band_index(bands)`` --
+        that is the same lookup ``predict`` does, including its error message. One parameter set;
+        ``jax.vmap`` it for a batch.
+        """
+        if band_idx is None:                    # same requirement, same message, as predict
+            raise ValueError(f"model {name!r} is photometric and needs a `band_idx` array")
+        mag = _core_jit(jnp.asarray(times), jnp.asarray(band_idx),
+                        *[theta[i] for i in range(len(params))])
+        return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * mag)
+
+    predict_jax.band_index = _band_indices
 
     # redback's own defaults, verbatim from redback/priors/one_component_kilonova_model.prior,
     # so a redback-vs-whisper-GPU comparison is apples to apples. Do not substitute whisper's
@@ -121,6 +153,7 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
         dists["temperature_floor"] = LogUniform(100.0, 6000.0)
 
     return Model(name=name, predict=predict, parameters=params, default_prior=Prior(dists),
+                 predict_jax=predict_jax,
                  description=("One-component kilonova (JAX/GPU). Physics identical to redback's "
                                "_one_component_kilonova_model; the diffusion integral is "
                                "re-quadratured (see kilonova.py identity 6), so it diverges from "
@@ -133,7 +166,8 @@ def register_kilonova(band_names, redshift, dl_cm, *, name="kilonova_one_jax", *
 
     m = kilonova_model(band_names, redshift, dl_cm, name=name, **kwargs)
     register_model(name, m.predict, m.parameters, prior=m.default_prior,
-                   description=m.description, overwrite=True)
+                   description=m.description, overwrite=True,
+                   predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
     return m
 
 

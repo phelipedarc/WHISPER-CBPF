@@ -4,6 +4,56 @@ All notable changes to WHISPER-CBPF (`whisper_cbpf`). The project is in early de
 released to PyPI yet — install from GitHub
 (`pip install git+https://github.com/phelipedarc/WHISPER-CBPF.git`).
 
+## [Unreleased]
+
+### Added — a JAX half for the prior, the likelihood and the kilonova `Model`
+
+A gradient sampler previously had to be handed a hand-written log-density per model
+(`models/jax/flare.make_log_prob_jax` is the only one that exists). The three pieces it needs are
+now available separately and can be composed:
+
+- **`Model.predict_jax` and `Model.log_prob_jax`**, two optional dataclass fields, `None` on a model
+  that has no JAX implementation. `predict_jax(theta, times, band_idx) -> flux` is `predict` with
+  exactly two changes — the parameter dict becomes a flat array ordered by `parameters`, and band
+  names become integer indices — and it takes one parameter set, so batching stays the caller's
+  `jax.vmap`. `register_model` grew matching keyword arguments; a factory that does not pass them
+  registers the CPU half only.
+- **`priors.log_prob_jax(prior, names=None)`** — `Prior.log_prob` as a traceable function of a flat
+  vector, normalising constants included. `-inf` outside the support with a **finite** gradient
+  there: each branch's input is clamped into the support before the log, because `jnp.where`
+  evaluates both branches and `0 * inf = nan` otherwise survives the mask into the backward pass.
+  Refuses any distribution it cannot express rather than substituting a uniform box.
+- **`likelihood.log_likelihood_jax(like)`** — the JAX twin of `GaussianLikelihood.log_likelihood`,
+  built *from an existing likelihood object* so the two arms cannot disagree about which points are
+  in the fit, which space they are compared in, or the normalising constant. The three subclasses
+  are refused by name (`isinstance` would silently accept all three and evaluate a different
+  density). In magnitude space the flux floor is the working dtype's smallest normal when
+  `_MIN_FLUX_JY = 1e-300` is not representable in it — the same float32 trap the SNPE torch path hit.
+
+`priors.py` and `likelihood.py` became `priors/` and `likelihood/` packages with `_numpy.py` +
+`_jax.py` and a lazy `__getattr__`, matching `distance/` and `metrics/`. Every existing import path
+still resolves, including the private `_MIN_FLUX_JY` / `_MIN_PROB` / `_LN2PI` that `samplers/snpe.py`
+and `tests/test_snpe.py` name.
+
+### Fixed
+
+- **`kilonova_model`'s `predict` is now jitted**, closing the `OPEN_ITEMS.md` entry: the factory
+  called the unjitted `kn.ab_magnitude` binding and re-traced on every call — 65.3 ms per `predict`
+  against 0.14 ms for the identical computation under `jax.jit`. Both entry points now go through
+  one `_core` jitted at factory time, the way `tde_model` already did, which is also what keeps
+  `predict` and `predict_jax` from drifting (measured agreement: 2.2e-16 relative in float64).
+
+### Documentation
+
+- **`docs/GPU_SETUP.md`'s float64 cost was wrong.** It said `jax_enable_x64` makes the kilonova
+  "11–23× slower", a figure carried over from `whisper-GPU/HANDOFF.md` and never measured. Measured
+  on one idle A6000 at `n_wave=2000`, 100 epochs, 4 bands: **1.9–2.5×** for a forward pass at batch 1
+  (and that case is launch-bound — the float32 kernel is ~12 µs inside a ~45 µs launch floor, so the
+  ratio moves ±30% between runs), **4.3×** for `value_and_grad` at batch 1, which is what NUTS pays
+  per leapfrog step, and **52–57×** from batch 100 up, stable to <1%. The plateau is the hardware:
+  the A6000's FP64 rate is 1/32 of FP32 and float64 transcendentals cost more than that again.
+  The single "11–23×" number was wrong at both ends because the cost is a function of batch size.
+
 ## [0.1.0] — 2026-08-11 — the merge
 
 `whisper_labia` and `whisper_gpu` become one package, `whisper_cbpf`. **This is a reorganisation, not

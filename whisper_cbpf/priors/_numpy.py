@@ -1,8 +1,8 @@
-"""Prior distributions for model parameters.
+"""Prior distributions for model parameters — numpy backend (the default).
 
-Small, picklable distribution classes (so priors can cross process boundaries for parallel ABC) with
-the hooks future samplers need: ``sample`` (ABC/MCMC init), ``log_prob`` (MCMC), ``rescale``
-(unit-cube -> value, for nested sampling).
+The distribution classes themselves, function bodies unchanged from the single-module ``priors.py``
+this replaced. Rationale for the design is in the package docstring
+(``whisper_cbpf/priors/__init__.py``); the JAX twin of ``Prior.log_prob`` is ``_jax.log_prob_jax``.
 """
 from __future__ import annotations
 

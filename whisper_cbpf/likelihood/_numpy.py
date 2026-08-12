@@ -1,23 +1,16 @@
-"""Likelihoods for transient inference, in flux **or** apparent-magnitude space.
+"""Likelihoods for transient inference — numpy backend (the default).
 
-Whisper models predict **flux**; a likelihood compares that prediction to the data in a chosen
-``space``:
-
-* ``space='flux'`` — residuals/errors in flux (Jy). Upper limits (non-detections) can be used here.
-* ``space='magnitude'`` — the model flux is converted to AB magnitude and compared to the observed
-  magnitudes/errors.
-* ``space='auto'`` (default) — magnitude data -> magnitude space, flux data -> flux space. This is the
-  "correct" default; users override only for edge cases (e.g. outliers, non-detections).
-
-Likelihoods are picklable so they can cross process boundaries for parallel inference. Each exposes
-``log_likelihood(model_flux) -> float``.
+The classes and the ``make_likelihood`` registry, function bodies unchanged from the single-module
+``likelihood.py`` this replaced. What a likelihood *is*, and what ``space`` means, is documented once
+in the package docstring (``whisper_cbpf/likelihood/__init__.py``); the JAX twin of
+``GaussianLikelihood.log_likelihood`` is ``_jax.log_likelihood_jax``.
 """
 from __future__ import annotations
 
 import numpy as np
 from scipy.special import erf
 
-from .io.photometry import AB_ZEROPOINT_JY, POGSON, flux_density_to_mag
+from ..io.photometry import AB_ZEROPOINT_JY, POGSON, flux_density_to_mag
 
 _LN2PI = np.log(2.0 * np.pi)
 _MIN_FLUX_JY = 1e-300       # floor a (clipped) model flux before log10 in the flux->magnitude transform

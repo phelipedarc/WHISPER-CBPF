@@ -81,8 +81,27 @@ the session can run it.
 
 Two things make this awkward, and neither is hidden from you:
 
-1. **The flag is global and session-wide.** A session that fits a TDE or a supernova runs the
-   kilonova **11–23× slower**.
+1. **The flag is global and session-wide**, so a session that fits a TDE or a supernova pays for
+   float64 on the kilonova too — and what that costs depends almost entirely on the batch size:
+
+   | `kilonova.ab_magnitude` | float32 | float64 | ratio |
+   |---|---|---|---|
+   | forward, batch 1 | 62–83 µs | 157 µs | **1.9–2.5×** |
+   | `value_and_grad`, batch 1 (one NUTS leapfrog step) | 102 µs | 437 µs | **4.3×** |
+   | forward, `vmap` batch 10 | 75 µs | 992 µs | **13×** |
+   | forward, `vmap` batch 100 | 158 µs | 8.3 ms | **52×** |
+   | forward, `vmap` batch 1000 | 1.45 ms | 81.8 ms | **57×** |
+   | forward, `vmap` batch 10000 | 14.4 ms | 823 ms | **57×** |
+
+   One RTX A6000, `n_wave=2000` (the `kilonova_model` default), 100 epochs, 4 bands, jitted, best
+   of three timed loops; both dtypes on identical inputs, agreeing to 6e-8 relative. **Batch 1 is
+   not a measurement of arithmetic**: the launch floor on this machine is ~45 µs, so the float32
+   kernel is only ~12 µs of that 62 and the ratio there moves ±30% between runs. Everything from
+   batch 10 up is stable to <1%. The plateau at ~57× is the hardware: the A6000's FP64 rate is
+   1/32 of FP32, and float64 `exp`/`log`/`pow` cost more than that ratio again.
+
+   So: **NUTS on one light curve pays ~4×, batched simulation pays ~57×.** float64 is affordable
+   in the first case and is the reason SBI/ABC simulation should not run in it.
 2. **It must be set before the first array is created**, so it cannot be a model default. Nothing in
    this package sets it for you — a silent default here would quietly change the cost of every other
    model in the session.

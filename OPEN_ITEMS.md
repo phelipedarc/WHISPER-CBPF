@@ -186,7 +186,14 @@ parameter is documented as "particles per compiled call", which reads like a pur
 **Next:** add the case to GPU_SETUP's list, and say in both ABC samplers' `chunk` docstrings that it
 is bounded by XLA compile time on photometric models, not by memory.
 
-### `kilonova_model`'s `predict` is not jitted, unlike the TDE's and the supernova's
+### ~~`kilonova_model`'s `predict` is not jitted, unlike the TDE's and the supernova's~~ — CLOSED 2026-08-12
+
+**Fixed** while adding `Model.predict_jax` (see `CHANGELOG.md`, Unreleased). The factory now defines
+one `_core(times, bidx, *free)` jitted at factory time, exactly as `tde_model` does, and both
+`predict` and the new `predict_jax` go through it. The free/pinned `temperature_floor` switch is
+resolved inside `_core` (pinned → closure constant, free → a traced argument), and the band-index
+array stays a traced argument, so it compiles once per `n_obs`. Regression test:
+`tests/test_jax_backend.py::test_predict_jax_compiles_once`. Original report below.
 
 Measured on 211 points: the registered kilonova's `predict` takes **65.3 ms** per call (310 µs per
 point), against **0.14 ms** for the identical computation inside a `jax.jit`. The factory calls
@@ -203,3 +210,42 @@ work out at ~13 s, consistent with the 23 s gap between `nuts_gpu`'s 33.7 s samp
 **Next:** jit the kilonova factory's core the way `tde_model` does. It is not a one-liner — the
 free/pinned `temperature_floor` switch and the band-index array both have to stay outside the traced
 signature — which is why it is here rather than in the fixes.
+
+---
+
+## Opened by the float64 / TDE-cliff measurements (2026-08-12)
+
+### The TDE termination cliff lands inside a real data window on 16% of prior draws
+
+`tde.py`'s `_interp_photosphere` documents a genuine discontinuity: past the envelope's own last
+valid epoch the flux is exactly zero → `mag_floor`, a ~20-mag step that `jax.grad` cannot see
+because it only ever sees the smooth side. Until now nobody had measured **how often a fit actually
+straddles it**, so it read as a theoretical caveat. It is not one.
+
+10,000 draws, `z = 0.05`, both grids, seed 20260812
+(`_scratch/f64_bench/tde_termination_prior.py`, git-ignored; JSON alongside it):
+
+| prior | clock | cliff inside 0–100 d | 0–30 d | 0–200 d |
+|---|---|---|---|---|
+| `gaussianrise` (7 free, what `tde_model(rise="gaussian")` ships) | days since **disruption** (this model's own t=0) | **15.6%** | 0.4% | 40.1% |
+| `gaussianrise` | days since **fallback** | **49.6%** | 27.6% | 58.7% |
+| `cooling_envelope` (1 free — redback's file self-overrides 4 of 5) | days since fallback | **0.000%** | 0.000% | 0.000% |
+
+Numbers are at `n_time=5000`; `n_time=500` moves them by <0.5 pp (27.6→27.0, 49.6→49.2), so this is
+a property of the prior, not of the grid. Two more facts from the same sweep:
+
+- **38.0% of `gaussianrise` draws have `tfb ≥ 100 d`**, so a 100-day campaign sits entirely inside
+  the analytic Gaussian rise and never touches the envelope at all. Median `tfb` is 72.8 d.
+- **Dead envelopes** (`constraint < 2`, zero flux at *every* epoch and therefore zero gradient in
+  all parameters) are **4.96% at `n_time=500` and 0.02% at `n_time=5000`** over this prior. The
+  docstring's "empty at n_time=5000 in 512 draws" is a small-sample artefact — it is 2 in 10,000,
+  not 0. Its 6.45% / 3.1% figures are for other priors and were not reproduced here.
+- The bare `cooling_envelope` prior terminates at a median of 5993 d (`n_time=5000`) / 1819 d
+  (`n_time=500`). A factor 3.3 between grids, far more grid-sensitive than the 10.1% median quoted
+  for the other case — but at either value the cliff is nowhere near a real campaign.
+
+**Next:** the caveat in `_interp_photosphere` ("keep observations inside the envelope's own span, and
+treat a fit that pushes the termination time through the data as unconverged") needs to become a
+runtime diagnostic for `rise="gaussian"`, not a docstring — one draw in six is too many to leave to
+the reader. `envelope_exists()` / `rise_peaks_near_fallback()` are the existing closed-form
+predicates; neither bounds this.

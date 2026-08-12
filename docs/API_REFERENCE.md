@@ -20,10 +20,11 @@ whisper_cbpf/
   plotting.py          # plot_light_curve, plot_ppc, plot_calibration, plot_corner
   metrics.py           # waic, per_band_metrics, predictive_metrics (RMSE/LPD/ELPD-LOO/coverage)
   validation.py        # recovery_metrics, posterior_predictive_check, sbc_rank, sbc_ranks
-  priors.py            # Uniform, LogUniform, Prior
+  priors/              # Uniform, LogUniform, Prior; _numpy.py (default) + _jax.py (lazy: log_prob_jax)
   distance.py          # chi2_distance + the distance registry
   embeddings.py        # MLPEmbedding, TCNEmbedding, build_embedding (SNPE conditioning nets)
-  likelihood.py        # GaussianLikelihood, ...WithUpperLimits, Mixture..., make_likelihood
+  likelihood/          # GaussianLikelihood, ...WithUpperLimits, Mixture..., make_likelihood;
+                       #   _numpy.py (default) + _jax.py (lazy: log_likelihood_jax)
   models/              # Model + register/get/list + built-ins flare/bazin/gaussian_rise + physical mck19 + redback two_component_kilonova
   samplers/            # BaseSampler, SamplerResult, ABCSampler, ABCSMCSampler, MCMCSampler, SNPESampler, fit_ABC(_SMC)/fit_MCMC/fit_SNPE, fit
   io/                  # LightCurve, load_lightcurve, bands, photometry, units, svo
@@ -227,10 +228,10 @@ A model maps parameters to predicted flux: `predict(params: dict, times: np.ndar
 
 | Function | Signature | Description |
 |---|---|---|
-| `register_model` | `(name, predict, parameters, prior=None, description="", *, overwrite=False)` | Register a model by name. |
+| `register_model` | `(name, predict, parameters, prior=None, description="", *, overwrite=False, predict_jax=None, log_prob_jax=None)` | Register a model by name. The two `*_jax` slots are optional; a factory that built them must pass them through or the registered model is the CPU half only. |
 | `get_model` | `(model)` | Resolve a name (or pass a `Model`). |
 | `list_models` | `()` | Sorted registered model names. |
-| `Model` | dataclass: `name, predict, parameters, default_prior, description` | Callable: `model(params, times, bands)`. |
+| `Model` | dataclass: `name, predict, parameters, default_prior, description, predict_jax, log_prob_jax` | Callable: `model(params, times, bands)`. `predict_jax(theta, times, band_idx) -> flux` is `predict` with a flat theta and integer bands, traceable and differentiable; `log_prob_jax(theta) -> scalar` is a data-bound log-*likelihood*. Both `None` unless a factory filled them — see [§9](#9-the-jaxgpu-half). |
 
 Built-in **toy** models (band-independent, vectorized; `t` = days since explosion; scale `amplitude` to
 your flux units for real data):
@@ -707,7 +708,10 @@ bind them with a factory. See [`CHOOSING.md`](CHOOSING.md) for which to use when
 - **`flare_model()`**  
   The JAX flare as a ``whisper_cbpf.models.Model``. Self-contained, auto-registered.
 - **`kilonova_model(band_names, redshift, dl_cm, *, name='kilonova_one_jax', n_wave=2000, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', temperature_floor=None, mag_floor=40.0, t_exp_days=0.0, filter_set=None, arnett_prefactor=1.0)`**  
-  Bind dataset context to the one-component JAX kilonova and return a whisper ``Model``.
+  Bind dataset context to the one-component JAX kilonova and return a whisper ``Model``. The only
+  factory that fills `Model.predict_jax` so far: `predict_jax(theta, times, band_idx)` returns Jy
+  from a flat theta, is differentiable, and carries `predict_jax.band_index(bands)` for the
+  string → index map. Both it and `predict` go through one core jitted at factory time.
 - **`register_kilonova(band_names, redshift, dl_cm, *, name='kilonova_one_jax', **kwargs)`**  
   Build a kilonova ``Model`` for this dataset and register it under ``name``.
 - **`tde_model(band_names, redshift, dl_cm, *, name=None, rise='gaussian', n_wave=2000, n_time=None, f_debris=1.0, xi=1.0, n_pre=100, pin=None, prior=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, **engine_kwargs)`**  
@@ -755,6 +759,36 @@ bind them with a factory. See [`CHOOSING.md`](CHOOSING.md) for which to use when
   Concatenate constant per-point context (sigma, band one-hot) to the varying flux channel.
 - **`encode_bands(band_array, labels=('u', 'g', 'r', 'i', 'z', 'y'))`**  
   Map band labels to integer codes against a FIXED label list.
+
+### GPU-side prior and likelihood  (`whisper_cbpf.priors`, `whisper_cbpf.likelihood`)
+
+The JAX twins of `Prior.log_prob` and `GaussianLikelihood.log_likelihood`. With a model's
+`predict_jax` (above) these are the three pieces of a differentiable log-posterior, so a gradient
+sampler no longer needs a hand-written density per model. Both resolve lazily — a CPU-only install
+never imports JAX.
+
+- **`priors.log_prob_jax(prior, names=None)`**
+  Build `f(theta) -> scalar`, the log prior density at a flat parameter vector ordered by `names`
+  (default `prior.names` — pass it explicitly, insertion order is not a contract). Same value as
+  `Prior.log_prob`, normalising constants included, so **do not** add it to `nuts_gpu`'s
+  `log_prob_fn`, which already gets the prior from NumPyro's sample sites. `-inf` outside the
+  support with a *finite* gradient there. Refuses anything but `Uniform` / `LogUniform`.
+- **`likelihood.log_likelihood_jax(like)`**
+  Build `f(model_flux) -> scalar` from an already-constructed `GaussianLikelihood`, reading `y`,
+  `sigma`, `space` and the normalising constant off it so the two arms cannot disagree about the
+  fit. The subclasses are refused by name — each is a different density, and `isinstance` would
+  silently accept all three. Not jitted: jit the assembled log-posterior instead.
+
+```python
+ll = wp.likelihood.log_likelihood_jax(wp.GaussianLikelihood(lc, space="flux"))
+lp = wp.priors.log_prob_jax(model.default_prior, model.parameters)
+bidx = jnp.asarray(model.predict_jax.band_index(np.asarray(lc.band)))
+log_posterior = jax.jit(lambda th: ll(model.predict_jax(th, times, bidx)) + lp(th))
+```
+
+A sampler that probes far outside the prior box must clamp `theta` into it before calling
+`predict_jax`: the prior term is `-inf` there, but the *model* can be non-finite, and
+`nan + -inf = nan` because `jnp.where` picks its branch only after computing both.
 
 ### GPU-side metrics  (`whisper_cbpf.metrics`)
 
