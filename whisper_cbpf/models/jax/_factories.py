@@ -137,6 +137,83 @@ def register_kilonova(band_names, redshift, dl_cm, *, name="kilonova_one_jax", *
     return m
 
 
+# --------------------------------------------------------------------------- kilonova (2-comp)
+def kilonova_two_model(band_names, redshift, dl_cm, *, name="kilonova_two_jax", n_wave=2000,
+                       ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law="f99",
+                       mag_floor=40.0, t_exp_days=0.0, filter_set=None, prior=None):
+    """Bind dataset context to the TWO-component JAX kilonova and return a whisper ``Model``.
+
+    The two-component sibling of :func:`kilonova_model`, built the same way and for the same reason:
+    ``predict(parameters, times, bands)`` carries no filter set, no redshift and no luminosity
+    distance, so this is a factory rather than a registry entry.
+
+    Parameters are redback's, in redback's order: ``mej_1, vej_1, temperature_floor_1, kappa_1``
+    then the same four for component 2. Component 1 is conventionally the blue / lanthanide-poor
+    ejecta and component 2 the red, but **nothing enforces that** -- redback's default prior gives
+    both components the same ``kappa`` range, so the components are exchangeable and a fit can
+    label-switch. See ``OPEN_ITEMS.md`` on disjoint corridors versus an ordering constraint.
+
+    ``prior`` defaults to :func:`kilonova_two.default_prior`, which is redback's own, verbatim.
+    Note this is **not** the prior used by ``whisper_cbpf.models.two_component_kilonova``, whose
+    ``kappa_1`` range is disjoint from it -- the two are different models, not one model twice.
+    """
+    import jax.numpy as jnp
+
+    from ...io.photometry import AB_ZEROPOINT_JY
+    from ...models import Model
+
+    from . import kilonova as kn
+    from . import kilonova_two as kn2
+
+    band_names = list(band_names)
+    fs = filter_set if filter_set is not None else kn.make_filter_set(band_names, n_wave=n_wave)
+    lam = jnp.asarray(fs["lam"])
+    weights, norms = kn.ab_weights(fs["lam"], fs["trans"])
+    if ebv_mw is not None or ebv_host is not None:
+        weights = kn.extincted_weights(weights, fs["lam"], redshift=redshift,
+                                       ebv_mw=ebv_mw or 0.0, ebv_host=ebv_host or 0.0,
+                                       r_v_mw=r_v_mw, r_v_host=r_v_host, law=law)
+    index_of = {b: i for i, b in enumerate(band_names)}
+
+    params = ["mej_1", "vej_1", "temperature_floor_1", "kappa_1",
+              "mej_2", "vej_2", "temperature_floor_2", "kappa_2"]
+
+    def predict(parameters, times, bands=None):
+        """whisper contract: (parameters, times, bands) -> flux density in Jy."""
+        if bands is None:
+            raise ValueError(f"model {name!r} is photometric and needs a `bands` array")
+        try:
+            idx = np.array([index_of[str(b)] for b in np.asarray(bands)], dtype=int)
+        except KeyError as exc:
+            raise KeyError(
+                f"band {exc.args[0]!r} was not bound to this model. Bound: {band_names}. "
+                "Rebuild with kilonova_two_model(band_names=[...]) covering every band in the data."
+            ) from None
+        t_src = kn.source_time_s(np.asarray(times, dtype=float), redshift, t_exp_days)
+        mag = kn2.two_component_magnitude(
+            jnp.asarray(t_src), jnp.asarray(idx), weights, norms, lam, redshift, dl_cm,
+            *(float(parameters[p]) for p in params), mag_floor=mag_floor)
+        # whisper models return FLUX; convert once, at the end. Never combine magnitudes.
+        return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * np.asarray(mag, dtype=float))
+
+    return Model(name=name, predict=predict, parameters=params,
+                 default_prior=prior if prior is not None else kn2.default_prior(),
+                 description=("Two-component (blue + red) kilonova, JAX/GPU. Same physics as "
+                              "redback's two_component_kilonova_model; components are summed in "
+                              "flux, never in magnitude. Both components share redback's kappa "
+                              "range, so they are exchangeable under the default prior."))
+
+
+def register_kilonova_two(band_names, redshift, dl_cm, *, name="kilonova_two_jax", **kwargs):
+    """Build a two-component kilonova ``Model`` for this dataset and register it under ``name``."""
+    from ...models import register_model
+
+    m = kilonova_two_model(band_names, redshift, dl_cm, name=name, **kwargs)
+    register_model(name, m.predict, m.parameters, prior=m.default_prior,
+                   description=m.description, overwrite=True)
+    return m
+
+
 # --------------------------------------------------------------------------- TDE
 def tde_model(band_names, redshift, dl_cm, *, name=None, rise="gaussian", n_wave=2000,
               n_time=None, f_debris=1.0, xi=1.0, n_pre=100, pin=None, prior=None,

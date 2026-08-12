@@ -102,7 +102,9 @@ from .backends import _registration as _gpu_registration  # noqa: E402,F401
 from .models.jax import (  # noqa: E402
     flare_model,
     kilonova_model,
+    kilonova_two_model,
     register_kilonova,
+    register_kilonova_two,
     register_supernova,
     register_tde,
     supernova_model,
@@ -114,6 +116,7 @@ __all__ += [
     # backends / GPU environment
     "check_gpu", "require_jax", "x64_enabled", "gpu_list", "n_jobs", "env_script", "env_report",
     # JAX model binding factories
-    "register_kilonova", "register_tde", "register_supernova", "supernova_models",
-    "flare_model", "kilonova_model", "tde_model", "supernova_model",
+    "register_kilonova", "register_kilonova_two", "register_tde", "register_supernova",
+    "supernova_models",
+    "flare_model", "kilonova_model", "kilonova_two_model", "tde_model", "supernova_model",
 ]
