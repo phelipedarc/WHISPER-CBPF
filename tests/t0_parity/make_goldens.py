@@ -1,9 +1,9 @@
 """T0 golden-file generator. Run ONCE, inside the reference container, then commit the npz.
 
     docker exec phe_sbi_2 bash -lc 'export JAX_PLATFORMS=cpu; \
-        source /tf/astrodados2/phelipedata2/WHISPER/whisper-labia/jax_gpu/env.sh; \
-        cd /tf/astrodados2/phelipedata2/WHISPER/whisper-labia && \
-        python -u whisper_cbpf/tests/t0_parity/make_goldens.py'
+        cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF && \
+        source scripts/whisper-gpu-env.sh && \
+        python -u tests/t0_parity/make_goldens.py'
 
 Everything asserted by ``test_goldens.py`` is computed here FROM REDBACK ONLY -- numpy in,
 numpy out, no JAX anywhere in the reference path. The one exception is ``filterset_t0.npz``,
@@ -68,7 +68,7 @@ def provenance(extra):
         "scipy": scipy.__version__,
         "dtype": "float64",
         "generated_utc": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-        "generator": "whisper_cbpf/tests/t0_parity/make_goldens.py",
+        "generator": "tests/t0_parity/make_goldens.py",
     }
     info.update(extra)
     return json.dumps(info, indent=1)
@@ -258,7 +258,7 @@ def make_kilonova():
 def make_filterset():
     """NOT a reference output: the port's own offline sncosmo export, frozen for the tests."""
     import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from whisper_cbpf.models.jax.kilonova import make_filter_set
 
     fs = make_filter_set(BANDS, n_wave=5000)

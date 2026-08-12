@@ -15,9 +15,9 @@ RUNS ON GPU, with the env sourced and CUDA_VISIBLE_DEVICES set::
 
     docker exec phe_sbi_2 bash -lc '
       export CUDA_VISIBLE_DEVICES=0
-      source /tf/astrodados2/phelipedata2/WHISPER/whisper-labia/jax_gpu/env.sh
-      cd /tf/astrodados2/phelipedata2/WHISPER/whisper-labia
-      python -u whisper_cbpf/tests/t3_inference/stage_injection_recovery.py --n-injections 100'
+      cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF
+      source scripts/whisper-gpu-env.sh
+      python -u tests/t3_inference/stage_injection_recovery.py --n-injections 100'
 
 The script refuses to start on CPU unless ``--allow-cpu`` is passed; see stage_sbc.py's
 docstring for why CPU is nonetheless a reasonable place to run this, and shard the same

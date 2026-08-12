@@ -79,9 +79,9 @@ redback**, and every GPU model and sampler still appears in `list_models()` / `l
 |---|---|---|
 | *(none)* | `pip install whisper-cbpf` | ingestion, plotting, priors, likelihoods, ABC, ABC-SMC, MCMC |
 | `[gpu]` | `pip install "whisper-cbpf[gpu]"` | JAX/CUDA-12 models and samplers, NumPyro NUTS, ArviZ ESS |
-| `[pymc]` | `pip install "whisper-cbpf[pymc]"` | the two PyMC-fronted NUTS samplers |
+| `[pymc]` | `pip install "whisper-cbpf[gpu,pymc]"` | the two PyMC-fronted NUTS samplers — they run on JAX, so `[gpu]` is required too |
 | `[sbi]` | `pip install "whisper-cbpf[sbi]"` | SNPE / NPE (torch) |
-| `[models]` | `pip install "whisper-cbpf[models]"` | redback physical models and priors (needs a C compiler) |
+| `[models]` | `pip install "whisper-cbpf[models]"` | redback physical models; the priors *read from* redback live in the JAX half, so they need `[gpu]` too |
 | `[svo]` | `pip install "whisper-cbpf[svo]"` | SVO filter lookup for unknown bands |
 | `[loo]` | `pip install "whisper-cbpf[loo]"` | PSIS-LOO / ELPD in `predictive_metrics` |
 | `[dev]` | `pip install -e ".[dev]"` | pytest and the build tooling |

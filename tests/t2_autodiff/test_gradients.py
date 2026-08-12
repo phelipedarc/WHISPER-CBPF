@@ -59,8 +59,9 @@ Everything outside A-D is a real disagreement and is asserted on.
 Run (CPU; float64 is mandatory -- the TDE engine raises without it)::
 
     docker exec phe_sbi_2 bash -lc 'export JAX_PLATFORMS=cpu; \
-        source .../whisper-labia/jax_gpu/env.sh; cd .../whisper-labia && \
-        python -u -m pytest whisper_cbpf/tests/t2_autodiff -v'
+        cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF && \
+        source scripts/whisper-gpu-env.sh && \
+        python -u -m pytest tests/t2_autodiff -v'
 
 ``T2_DUMP=/path.json`` writes every measured table (REPORT.md was built from it); by default
 the tests write nothing. ``T2_SCALE=0.25`` shrinks every sweep for a quick pass -- the

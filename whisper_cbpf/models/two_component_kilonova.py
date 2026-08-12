@@ -8,8 +8,8 @@ cosmology); WHISPER converts them to its canonical **flux density (Jy)** so the 
 samplers treat this model exactly like any other.
 
 redback is imported lazily, so WHISPER (and ``list_models()``) work without it; only calling
-``predict`` requires it. Install with ``pip install 'whisper-labia[models]'`` (redback needs a C
-compiler for sncosmo).
+``predict`` requires it. Install with ``pip install 'whisper-cbpf[models]'`` (or ``pip install
+redback`` -- nothing here needs the extra itself, only an importable redback).
 
 Reference: redback (Sarin et al.); the two-component kilonova follows Metzger 2017 / Kasen et al. 2017.
 
@@ -102,7 +102,7 @@ def _get_redback_model():
         except Exception as exc:  # ImportError or any redback init failure
             raise ImportError(
                 "The 'two_component_kilonova' model requires the optional 'redback' package. "
-                "Install it with:  pip install 'whisper-labia[models]'  (redback needs a C compiler)."
+                "Install it with:  pip install 'whisper-cbpf[models]'  (or: pip install redback)."
             ) from exc
         _redback_fn = all_models_dict[REDBACK_MODEL]
     return _redback_fn

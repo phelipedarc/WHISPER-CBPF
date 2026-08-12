@@ -6,7 +6,7 @@ calibration failure found by the staged jobs points at the SAMPLER x MODEL pair,
 never at a second copy of the dataset conventions.
 
 These jobs need a GPU. They must run inside the ``phe_sbi_2`` container with
-``CUDA_VISIBLE_DEVICES`` set and ``jax_gpu/env.sh`` sourced; see the __main__
+``CUDA_VISIBLE_DEVICES`` set and ``scripts/whisper-gpu-env.sh`` sourced; see the __main__
 docstrings of stage_sbc.py / stage_injection_recovery.py for the exact command.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[3]
+_ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -48,7 +48,7 @@ def require_gpu(allow_cpu=False):
     if backend != "gpu" and not allow_cpu:
         raise SystemExit(
             f"jax backend is {backend!r}, not 'gpu'. These jobs are sized for an A6000; "
-            f"run inside phe_sbi_2 with CUDA_VISIBLE_DEVICES set and jax_gpu/env.sh "
+            f"run inside phe_sbi_2 with CUDA_VISIBLE_DEVICES set and scripts/whisper-gpu-env.sh "
             f"sourced (and WITHOUT JAX_PLATFORMS=cpu), or pass --allow-cpu to accept "
             f"a ~100x slowdown.")
     return backend

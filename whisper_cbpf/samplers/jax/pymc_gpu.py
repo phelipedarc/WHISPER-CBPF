@@ -184,9 +184,10 @@ class _PyMCJAXBase(BaseSampler):
             from pymc.sampling.jax import sample_numpyro_nuts
         except ImportError as exc:                      # pragma: no cover - environment dependent
             raise ImportError(
-                f"{self.name} needs PyMC (`pip install pymc`). It is an optional dependency: the "
-                f"rest of whisper-GPU does not require it, which is why the import is here rather "
-                f"than at module scope.") from exc
+                f"{self.name} needs PyMC on top of the JAX stack: "
+                f"`pip install 'whisper-cbpf[gpu,pymc]'` (or `pip install pymc`). It is an optional "
+                f"dependency -- no other sampler requires it, which is why the import is here "
+                f"rather than at module scope.") from exc
 
         prior = prior if prior is not None else model.default_prior
         if prior is None:

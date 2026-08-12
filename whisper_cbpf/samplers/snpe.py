@@ -99,7 +99,7 @@ def _require_sbi():
     except Exception as exc:  # pragma: no cover - exercised only without the extra installed
         raise ImportError(
             "SNPE needs the optional 'sbi' + 'torch' dependencies (the `[sbi]` extra). Install with "
-            "`pip install 'whisper-labia[sbi]'` (or `pip install sbi torch`).") from exc
+            "`pip install 'whisper-cbpf[sbi]'` (or `pip install sbi torch`).") from exc
     return SimpleNamespace(
         torch=torch, NPE=NPE, simulate_for_sbi=simulate_for_sbi, BoxUniform=BoxUniform,
         MultipleIndependent=MultipleIndependent, RestrictedPrior=RestrictedPrior,

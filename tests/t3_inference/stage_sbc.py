@@ -13,9 +13,9 @@ RUNS ON GPU, with the env sourced and CUDA_VISIBLE_DEVICES set::
 
     docker exec phe_sbi_2 bash -lc '
       export CUDA_VISIBLE_DEVICES=0
-      source /tf/astrodados2/phelipedata2/WHISPER/whisper-labia/jax_gpu/env.sh
-      cd /tf/astrodados2/phelipedata2/WHISPER/whisper-labia
-      python -u whisper_cbpf/tests/t3_inference/stage_sbc.py --n-replicates 300'
+      cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF
+      source scripts/whisper-gpu-env.sh
+      python -u tests/t3_inference/stage_sbc.py --n-replicates 300'
 
 The script refuses to start on CPU unless ``--allow-cpu`` is passed. **It is, however,
 perfectly runnable on CPU, and that is how the numbers in REPORT.md §4 were produced.**
