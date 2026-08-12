@@ -248,8 +248,8 @@ save("05_bayesian_model_comparison.ipynb", [
        "The preprocessed UVOIR reduction (Swift-UVOT `uvw1` dropped, SNR > 5, one point per band per "
        "epoch). We keep four well-sampled bands and the first 15 days for speed."),
     code("csv = next(p for p in [\n"
-         "    Path('../analysis/at2017gfo_villar/data/at2017gfo_full_preprocessed.csv'),\n"
-         "    Path('analysis/at2017gfo_villar/data/at2017gfo_full_preprocessed.csv')] if p.exists())\n"
+         "    Path('data/at2017gfo_full_preprocessed.csv'),\n"
+         "    Path('notebooks/data/at2017gfo_full_preprocessed.csv')] if p.exists())\n"
          "Z = 0.0098\n"
          "lc = wp.load_lightcurve(csv, redshift=Z, explosion_date=57982.529, bands=['g', 'r', 'i'])\n"
          "lc = lc[np.asarray(lc.time) <= 12.0]\n"
