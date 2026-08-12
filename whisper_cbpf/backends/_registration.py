@@ -111,10 +111,12 @@ GPU_SAMPLERS = {
 #:     wp.register_kilonova(["sdssg", "sdssr", "sdssi"], redshift=0.00984, dl_cm=1.256e26)
 #:     wp.register_tde(["ztfg", "ztfr"], redshift=0.0206, dl_cm=2.8e26)
 #:
-#: The TDE additionally requires float64 (``jax.config.update("jax_enable_x64", True)`` before the
-#: first array is created) -- its envelope ODE accumulates increments float32 cannot resolve. It
-#: raises rather than returning a plausible wrong answer, which is another thing a zero-argument
-#: registry factory could not communicate.
+#: The TDE and the twelve supernovae additionally require float64
+#: (``jax.config.update("jax_enable_x64", True)`` before the first array is created) -- the TDE's
+#: envelope ODE accumulates increments float32 cannot resolve, and the supernova engines' cgs
+#: luminosities (1e43-1e46 erg/s) overflow float32 outright. Both raise rather than returning a
+#: plausible wrong answer, which is another thing a zero-argument registry factory could not
+#: communicate.
 GPU_MODELS = ("flare_jax",)
 
 

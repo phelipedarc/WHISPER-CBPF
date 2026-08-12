@@ -301,8 +301,13 @@ class _PyMCJAXBase(BaseSampler):
         result = SamplerResult(
             sampler=self.name, model=model.name, parameters=names, samples=samples,
             summary=summarize_posterior(samples, names), best_params=best, n_data=n,
-            n_params=k, runtime_s=runtime, info=info, min_distance=None,
+            n_params=k, runtime_s=runtime, info=info,
             max_log_likelihood=max_log_likelihood, aic=aic, bic=bic)
+        # min_distance is LEFT AT ITS DEFAULT NaN, not set to None. It used to be None here, and
+        # `SamplerResult.to_dict` does `float(self.min_distance)` -- so `result.to_json()`, the
+        # documented way to save a fit, raised TypeError for these two samplers and no other.
+        # NaN is the field's declared "this sampler has no distance" value; nuts_gpu, mcmc and
+        # snpe all leave it that way.
         result.samples_by_chain = by_chain
         result.arviz_idata = idata
         attach_predictive_metrics(result, lc, space)

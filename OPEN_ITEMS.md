@@ -126,3 +126,80 @@ See `FINDINGS.md` for the full list. The ones that need a decision:
 | No `slow` marker in the GPU tests; the suite takes 47 minutes | `FINDINGS.md` §3.4 |
 | The pre-merge GPU baseline is stale — no like-for-like regression check has been run | `FINDINGS.md` §3.5 |
 | The merged API reference does not yet cover the ~110 GPU public symbols | — |
+
+---
+
+## Opened by the AT2017GFO GPU end-to-end run (2026-08-12)
+
+All six GPU samplers and the three photometric registration factories were run for real against
+`tests/data/at2017gfo.csv` at `4a5458a`; see `_scratch/gpu_e2e/REPORT.md` for the full run. Three
+defects found there are fixed; these three are not.
+
+### `scripts/whisper-gpu-env.sh` is not shipped in the wheel
+
+`pyproject.toml`'s `packages.find` includes only `whisper_cbpf*`, and `package-data` only
+`py.typed`, so a `pip install whisper-cbpf[gpu]` user gets **no `scripts/` directory at all** — and
+the shell bootstrap is the one thing standing between them and the silent CPU fallback that runs
+~50× slower with no error. `docs/GPU_SETUP.md` opens with `pip install` and then says
+`source scripts/whisper-gpu-env.sh`, which that user cannot do.
+
+`env_script()` now derives the real checkout path and `env_script_hint()` says plainly when the file
+is absent instead of printing an unusable `source` line, so the failure is at least legible. That is
+a mitigation, not the fix.
+
+**Next:** decide where the single copy lives. Moving it to `whisper_cbpf/backends/env.sh` and adding
+it to `package-data` ships it and makes the pre-merge `_env.py` path correct again, at the cost of
+`source <site-packages>/...` being an odd thing to type; keeping it at `scripts/` and adding a
+`whisper-cbpf-env` console script that prints the path is friendlier but is new surface. Do not
+solve it by keeping two copies — see `DUPLICATES.md` for why this project treats that as the worse
+outcome.
+
+### `docs/GPU_SETUP.md`'s "interpreter gotcha" and `FINDINGS.md` §3.3 describe a failure that cannot happen
+
+Both state that sourcing the env script does not put the venv interpreter on `PATH`, and that plain
+`python` afterwards gives `ModuleNotFoundError: No module named 'jax'`. Measured in `phe_sbi_2` in a
+`bash -lc` shell: before sourcing `python` → `/opt/conda/bin/python`; after sourcing → 
+`/opt/jax_gpu_venv/bin/python`, and `import jax` returns 0.10.2. `scripts/whisper-gpu-env.sh:24-27`
+exports `PATH` explicitly and has done so in its only commit (`0ab9d0b`), which predates
+`FINDINGS.md` (`c176ed9`) — so the observation was already wrong when it was written.
+
+Harmless in practice, because naming the interpreter explicitly always works and is what every run
+command in this repo does. But it is a documented trap that does not exist, which costs a reader
+trust in the traps that do.
+
+**Next:** work out what the original observation actually was (a second `docker exec` losing the
+sourced environment is the likely candidate, and *that* is a real trap worth documenting) and
+rewrite both passages, or delete them.
+
+### The unbounded-vmap trap, fifth instance: the kilonova band integral
+
+`docs/GPU_SETUP.md` lists four instances. Here is a fifth, and unlike the others it is reachable
+through a **public tuning knob**. A `jax.vmap` of `kilonova.ab_magnitude` whose batch axis is a
+simulation count blows XLA's compile time up between extent 16 and extent 128 — measured at
+`n_wave=1000` over 211 observations, first-call compile+run: batch 1 → 1.0 s, batch 16 → 2.6 s,
+batch 128 → `slow_operation_alarm` on `input_reduce_fusion` and still compiling after 5 minutes.
+
+`abc_gpu` / `abc_smc_gpu` expose exactly that extent as `chunk`. The default 16 is safely inside;
+**raising `chunk` for throughput on a photometric model is the trap**, and nothing says so — the
+parameter is documented as "particles per compiled call", which reads like a pure performance knob.
+
+**Next:** add the case to GPU_SETUP's list, and say in both ABC samplers' `chunk` docstrings that it
+is bounded by XLA compile time on photometric models, not by memory.
+
+### `kilonova_model`'s `predict` is not jitted, unlike the TDE's and the supernova's
+
+Measured on 211 points: the registered kilonova's `predict` takes **65.3 ms** per call (310 µs per
+point), against **0.14 ms** for the identical computation inside a `jax.jit`. The factory calls
+`kn.ab_magnitude` — the unjitted binding; `kn.ab_magnitude_jit` sits next to it — so every call
+re-traces.
+
+`tde_model` jits `_core` at factory time and documents this exact hazard ("831 ms against 9.1 ms
+jitted, a factor 92"); `supernova_model` jits per grid shape and lands at 1.23 ms. The kilonova has
+the same structure without the jit. It is invisible to the GPU samplers, which build their own
+jitted density, and it is paid by every CPU-side consumer: `attach_predictive_metrics`' 200 draws
+work out at ~13 s, consistent with the 23 s gap between `nuts_gpu`'s 33.7 s sampler time and its
+56.5 s wall time.
+
+**Next:** jit the kilonova factory's core the way `tde_model` does. It is not a one-liner — the
+free/pinned `temperature_floor` switch and the band-index array both have to stay outside the traced
+signature — which is why it is here rather than in the fixes.

@@ -1202,7 +1202,9 @@ def test_supernova_gradients_are_finite_and_fd_correct(filters):
     Wide priors are where the reverse pass overflows, and where an interpolation or a
     fractional power is asked for a value the forward pass merely saturates on.
 
-    This family needs no float64 (it has no accumulator, CHANGE 8), so it is swept in the
+    This family REQUIRES float64 (CHANGE 8) -- not for the TDE's reason, it has no accumulator,
+    but because its cgs luminosities of 1e43-1e46 erg/s overflow float32's 3.4e38 outright, and
+    ``build_sn_grid`` raises rather than let every band return ``mag_floor``. So it is swept in the
     ambient x64 session like the rest; the per-model table is recorded either way.
     """
     from whisper_cbpf.models.jax import supernova as sn

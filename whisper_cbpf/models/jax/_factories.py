@@ -464,7 +464,15 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
 
     Notes
     -----
-    Unlike the TDE this family does NOT require float64 -- it has no accumulator (CHANGE 8).
+    ``float64 is required``, as for the TDE, but for a different reason and at a different moment.
+    The TDE's is an accumulator: its envelope ODE adds increments below float32's epsilon. This
+    family's is range -- the engines carry bolometric luminosities in cgs, 1e43 to 1e46 erg/s,
+    against float32's 3.4e38 ceiling, so EVERY engine returns ``inf`` and every band comes back at
+    ``mag_floor`` (CHANGE 8). ``build_sn_grid`` therefore raises at FACTORY time, so
+    ``register_supernova`` itself fails; the TDE's guard is inside the engine and does not fire
+    until the first ``predict``. Enable it before creating any array::
+
+        import jax; jax.config.update("jax_enable_x64", True)
 
     ``slsn``'s redback prior carries two bilby ``Constraint`` entries (``e_rot_constraint``,
     ``t_nebula_min``) which are rejection conditions rather than distributions. whisper's prior

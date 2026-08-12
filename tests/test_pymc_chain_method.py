@@ -68,3 +68,32 @@ def test_matches_numpyros_actual_source():
     assert guard in src, (
         "NumPyro's parallel-to-sequential downgrade rule is no longer the one "
         "_effective_chain_method models. Re-read MCMC.__init__ and update both.")
+
+
+def test_result_survives_to_json():
+    """These two samplers were the only ones whose result could not be saved.
+
+    ``fit`` passed ``min_distance=None``; ``SamplerResult.to_dict`` does
+    ``float(self.min_distance)``; ``None`` is not a float. So ``result.to_json()`` -- the documented
+    way to persist a fit -- raised ``TypeError`` after a multi-minute GPU run, and only here. NaN is
+    the field's declared "this sampler has no distance" value, and ``nuts_gpu``, ``mcmc`` and
+    ``snpe`` all leave it at that default.
+
+    Checked without PyMC or a GPU, the way `test_matches_numpyros_actual_source` is: against the
+    source of the construction, plus the serialisation it has to survive.
+    """
+    import inspect
+    import json
+
+    import pandas as pd
+
+    from whisper_cbpf.samplers.base import SamplerResult
+    from whisper_cbpf.samplers.jax import pymc_gpu
+
+    assert "min_distance=None" not in inspect.getsource(pymc_gpu._PyMCJAXBase.fit)
+
+    result = SamplerResult(
+        sampler="pymc_jax_gpu_vectorized", model="m", parameters=["a"],
+        samples=pd.DataFrame({"a": [1.0]}), summary={}, best_params={"a": 1.0},
+        n_data=1, n_params=1, runtime_s=1.0, max_log_likelihood=-1.0, aic=1.0, bic=1.0)
+    assert json.loads(result.to_json())["sampler"] == "pymc_jax_gpu_vectorized"

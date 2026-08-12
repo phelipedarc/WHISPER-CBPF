@@ -16,6 +16,7 @@ from ._env import (  # noqa: F401
     check_gpu,
     env_report,
     env_script,
+    env_script_hint,
     gpu_list,
     n_jobs,
     require_jax,
@@ -23,4 +24,4 @@ from ._env import (  # noqa: F401
 )
 
 __all__ = ["check_gpu", "require_jax", "x64_enabled", "gpu_list", "n_jobs",
-           "env_script", "env_report", "MAX_GPUS", "CPU_FRACTION"]
+           "env_script", "env_script_hint", "env_report", "MAX_GPUS", "CPU_FRACTION"]

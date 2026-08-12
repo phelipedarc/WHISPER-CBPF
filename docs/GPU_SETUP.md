@@ -52,23 +52,37 @@ source scripts/whisper-gpu-env.sh
 /opt/jax_gpu_venv/bin/python3 -m pytest tests/t0_parity -q
 ```
 
-## float64 and the TDE
+## float64 and the TDE — and every supernova
 
 **The TDE model cannot run in float32.** Its envelope ODE accumulates Euler increments around 1e-6
 of the state, below float32's 1.2e-7 epsilon; in f32 the curve terminates after one step and the
 luminosity comes out `inf`. It raises rather than returning a plausible wrong answer.
+
+**Neither can any of the twelve supernova models**, for an unrelated reason: their engines carry
+bolometric luminosities in cgs, 1e43 to 1e46 erg/s, and float32 stops at 3.4e38. Every engine in
+the family returns `inf` — including at the faintest corner of redback's prior — and the guards
+would turn that into `mag_floor` in every band, so this one raises too.
+
+Only the kilonovae and the flare are safe in float32.
 
 ```python
 import jax
 jax.config.update("jax_enable_x64", True)     # BEFORE the first JAX array exists
 import whisper_cbpf as wp
 wp.register_tde(["ztfg", "ztfr"], redshift=0.0206, dl_cm=2.8e26)
+wp.register_supernova("arnett", ["ztfg", "ztfr"], redshift=0.0206, dl_cm=2.8e26)
 ```
+
+**The two guards fire at different moments.** `register_supernova` raises during registration
+(`build_sn_grid` checks before it builds the dense grid), so the model never enters the registry.
+`register_tde` **succeeds** in float32 and raises only on the first `predict`, because its guard is
+inside the engine. A registry that contains `tde_gaussianrise_jax` is therefore not evidence that
+the session can run it.
 
 Two things make this awkward, and neither is hidden from you:
 
-1. **The flag is global and session-wide.** A session that fits a TDE runs the kilonova
-   **11–23× slower**.
+1. **The flag is global and session-wide.** A session that fits a TDE or a supernova runs the
+   kilonova **11–23× slower**.
 2. **It must be set before the first array is created**, so it cannot be a model default. Nothing in
    this package sets it for you — a silent default here would quietly change the cost of every other
    model in the session.

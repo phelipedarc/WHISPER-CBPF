@@ -211,3 +211,27 @@ def test_env_helpers_never_import_jax_at_module_scope():
 
     rep = _env.env_report()
     assert set(_env.REQUIRED_ENV).issubset(rep)
+
+
+def test_env_script_names_the_file_that_actually_exists():
+    """The path in every "you are on CPU, here is the fix" message has to be real.
+
+    ``env_script`` returned ``<package>/backends/env.sh`` long after the merge renamed the script to
+    ``scripts/whisper-gpu-env.sh`` (CHANGELOG 0.1.0), so the single instruction that escapes the
+    silent CPU fallback named a file that was not there -- in ``require_jax``'s ImportError, in
+    ``check_gpu``'s message and in ``env_report``.
+    """
+    import os
+
+    from whisper_cbpf.backends import _env
+
+    path = _env.env_script()
+    assert os.path.isabs(path)
+    assert os.path.basename(path) == "whisper-gpu-env.sh"
+    # A wheel ships only `whisper_cbpf*`, so `scripts/` is absent there and the hint must say so
+    # rather than print a `source` line that cannot work.
+    if os.path.exists(path):
+        assert _env.env_script_hint() == f"source {path}"
+    else:
+        assert "not shipped in the wheel" in _env.env_script_hint()
+    assert _env.env_report()["env_script_exists"] == os.path.exists(path)

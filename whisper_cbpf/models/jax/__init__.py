@@ -13,10 +13,14 @@ rescales every fitted ejecta mass or black-hole mass. Bind the dataset context y
     wp.register_kilonova(["sdssg", "sdssr", "sdssi"], redshift=0.00984, dl_cm=1.256e26)
     wp.register_tde(["ztfg", "ztfr"], redshift=0.0206, dl_cm=2.8e26)
 
-The TDE additionally requires float64 -- ``jax.config.update("jax_enable_x64", True)`` **before the
-first array exists**. Its envelope ODE accumulates Euler increments below float32's epsilon, so in
-f32 the curve terminates after one step and the luminosity is ``inf``. The flag is global and
-session-wide, and it slows the kilonova 11-23x, so it is never set for you.
+The TDE **and every supernova** additionally require float64 --
+``jax.config.update("jax_enable_x64", True)`` **before the first array exists**. The TDE's envelope
+ODE accumulates Euler increments below float32's epsilon, so in f32 the curve terminates after one
+step and the luminosity is ``inf``; the supernova engines instead carry cgs luminosities of 1e43 to
+1e46 erg/s, over float32's 3.4e38 ceiling, so every one of them returns ``inf``. Both raise rather
+than returning a plausible wrong answer, but ``register_supernova`` raises at registration while
+``register_tde`` raises only at the first ``predict``. The flag is global and session-wide, and it
+slows the kilonova 11-23x, so it is never set for you.
 
 The two kilonova implementations here and at :mod:`whisper_cbpf.models.two_component_kilonova` are
 two models, not one model twice: they are validated against different references and use disjoint

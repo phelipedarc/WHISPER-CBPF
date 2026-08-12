@@ -1,9 +1,10 @@
 """GPU / JAX environment resolution.
 
-The shell bootstrap (``env.sh``) sets three things that must be in place **before python starts**,
-because JAX reads them at import: which device is visible, how much of it to preallocate, and where
-the CUDA shared libraries live. This module is the Python-side counterpart -- it reports what
-actually happened and explains, in words a user can act on, what to fix when it did not.
+The shell bootstrap (``scripts/whisper-gpu-env.sh``) sets three things that must be in place
+**before python starts**, because JAX reads them at import: which device is visible, how much of it
+to preallocate, and where the CUDA shared libraries live. This module is the Python-side counterpart
+-- it reports what actually happened and explains, in words a user can act on, what to fix when it
+did not.
 
 Nothing here imports jax at module scope. Importing :mod:`whisper_cbpf` must work on a machine with
 no GPU (so ``wp.list_samplers()`` still shows what is available); the failure belongs at ``fit()``
@@ -20,10 +21,33 @@ REQUIRED_ENV = ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES", "XLA_PYTHON_CLIENT_
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
+#: Checkout root, from ``<root>/whisper_cbpf/backends/_env.py``. Derived rather than hardcoded so
+#: the path follows the checkout wherever it is cloned.
+_ROOT = os.path.dirname(os.path.dirname(_HERE))
+
 
 def env_script():
-    """Absolute path to this package's ``env.sh``, whatever the package was cloned as."""
-    return os.path.join(_HERE, "env.sh")
+    """Absolute path to the shell bootstrap, ``scripts/whisper-gpu-env.sh``.
+
+    This used to return ``<package>/backends/env.sh``, which has not existed since the merge
+    renamed it (CHANGELOG 0.1.0) -- so every message telling a user how to escape the silent
+    CPU fallback named a file that was not there.
+
+    The path is NOT guaranteed to exist: ``pyproject.toml``'s ``packages.find`` ships only
+    ``whisper_cbpf*``, so an install from a wheel has no ``scripts/`` directory at all. Anything
+    putting this in front of a user should go through :func:`env_script_hint`, which says so
+    instead of printing a `source` line that cannot work.
+    """
+    return os.path.join(_ROOT, "scripts", "whisper-gpu-env.sh")
+
+
+def env_script_hint():
+    """The ``source ...`` line for an error message, or an honest pointer when it is not shipped."""
+    path = env_script()
+    if os.path.exists(path):
+        return f"source {path}"
+    return ("source the GPU environment bootstrap -- scripts/whisper-gpu-env.sh in a source "
+            "checkout of whisper-cbpf; it is not shipped in the wheel. See docs/GPU_SETUP.md.")
 
 
 def env_report():
@@ -31,6 +55,7 @@ def env_report():
     rep = {k: os.environ.get(k) for k in REQUIRED_ENV}
     rep["LD_LIBRARY_PATH"] = os.environ.get("LD_LIBRARY_PATH")
     rep["env_script"] = env_script()
+    rep["env_script_exists"] = os.path.exists(rep["env_script"])
     try:                                                  # nvidia-smi is optional
         out = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.used,memory.total",
                               "--format=csv,noheader"],
@@ -54,7 +79,7 @@ def require_jax(feature="this sampler"):
             f"{feature} requires JAX, which is not installed.\n"
             f"  pip install 'whisper-cbpf[gpu]'\n"
             f"then source the environment bootstrap so JAX can find the GPU:\n"
-            f"  source {env_script()}"
+            f"  {env_script_hint()}"
         ) from exc
     return jax, jnp
 
@@ -83,7 +108,7 @@ def check_gpu(strict=False):
                 "to CPU SILENTLY\n")
     if shutil.which("nvidia-smi") is None:
         msg += "  - nvidia-smi is not on PATH; this may be a container without GPU access\n"
-    msg += f"  fix: source {env_script()}  (before starting python)"
+    msg += f"  fix: {env_script_hint()}  (before starting python)"
     if strict:
         raise RuntimeError(msg)
     return False, msg
