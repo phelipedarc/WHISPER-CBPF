@@ -147,9 +147,12 @@ def two_component_kilonova_flux(parameters, times, bands=None):
 
     ``times`` are rest-... observer-frame days since merger; ``bands`` selects the redback LSST filter.
     """
-    fn = _get_redback_model()
+    # Validate the ARGUMENTS before resolving the optional dependency: a caller who forgot `bands`
+    # should be told that, not told to install redback. It also keeps this check testable on the
+    # minimal install the package promises to support.
     if bands is None:
         raise ValueError("two_component_kilonova is band-dependent; `bands` is required.")
+    fn = _get_redback_model()
     t = np.clip(np.asarray(times, dtype=float), _MIN_TIME_DAY, None)
     bands = np.asarray(bands)
     kw = {k: float(parameters[k]) for k in PARAMETERS}

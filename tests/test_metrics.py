@@ -9,6 +9,17 @@ from whisper_cbpf.models import get_model
 
 TRUE = {"amplitude": 5.0, "t0": 8.0, "sigma_rise": 3.0, "tau_decay": 15.0}
 
+#: PSIS-LOO is the only part of `predictive_metrics` that needs an optional dependency (the `loo`
+#: extra). The documented contract is that it degrades to None rather than failing, so both branches
+#: are asserted -- a bare `assert pm["elpd_loo"] is not None` fails the suite on exactly the minimal
+#: install the package promises to support, which is what CI runs.
+try:
+    import arviz  # noqa: F401
+
+    HAS_ARVIZ = True
+except ImportError:
+    HAS_ARVIZ = False
+
 
 def _lc():
     m = get_model("gaussian_rise")
@@ -131,9 +142,12 @@ def test_predictive_metrics_block_and_autoattach():
     assert set(pm["rmse"]["bands"]) == {"g", "r"} and np.isfinite(pm["rmse"]["overall"])
     # LPD
     assert np.isfinite(pm["lpd"]["total"]) and np.isfinite(pm["lpd"]["per_point"])
-    # ELPD (PSIS-LOO via arviz) — present with the k diagnostic
-    assert pm["elpd_loo"] is not None
-    assert {"elpd_loo", "p_loo", "se", "looic", "pareto_k_max"} <= set(pm["elpd_loo"])
+    # ELPD (PSIS-LOO via arviz) — present with the k diagnostic, or None without the `loo` extra
+    if HAS_ARVIZ:
+        assert pm["elpd_loo"] is not None
+        assert {"elpd_loo", "p_loo", "se", "looic", "pareto_k_max"} <= set(pm["elpd_loo"])
+    else:
+        assert pm["elpd_loo"] is None, "without arviz elpd_loo must degrade to None, not fail"
     # WAIC deviance vs elpd sign convention; AIC/BIC carried through
     assert pm["waic"]["waic"] == pytest.approx(-2.0 * pm["waic"]["elpd_waic"], rel=1e-6)
     assert np.isfinite(pm["aic"]) and np.isfinite(pm["bic"])
@@ -179,7 +193,8 @@ def test_predictive_metrics_scatter_aware():
     sa = wp.predictive_metrics(res, lc, space="flux", n_draws=400)          # auto -> scatter-aware
     assert sa["scatter_param"] == "sigma"
     assert sa["waic"]["p_waic"] < 50                      # sane effective #params (truth ~5)
-    assert sa["elpd_loo"] is not None and sa["elpd_loo"]["pareto_k_max"] < 0.7
+    if HAS_ARVIZ:
+        assert sa["elpd_loo"] is not None and sa["elpd_loo"]["pareto_k_max"] < 0.7
     cov95 = next(c["empirical"] for c in sa["coverage"]["overall"] if c["nominal"] == 0.95)
     assert cov95 > 0.85                                   # near-nominal (calibrated)
 
