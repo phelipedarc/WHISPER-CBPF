@@ -16,6 +16,8 @@ sbi-logs/
 # test-run output. The stage scripts in tests/t3_inference/ recreate these on demand.
 tests/t3_inference/sbc_results/
 tests/t3_inference/injection_results/
+# diagnostic PNGs test_continuity.py writes to FIGDIR on every run (18 of them, ~750K).
+tests/t3_inference/figures/
 
 # cached filter exports (rebuildable with make_filter_set, but slow)
 filters_*.npz
