@@ -10,7 +10,7 @@ structural, not tuning problems.
 |---|---|
 | Toy or analytic light curve, want a posterior fast | `abc` or `mcmc` on CPU |
 | Analytic model, want a *good* posterior | `abc_smc` — same accuracy as `abc` at ~4× fewer simulations |
-| Physical model, gradients available (JAX) | `nuts_gpu` |
+| Physical model, gradients available (JAX) | `nuts_gpu` — `wp.fit(lc, "kilonova_one_jax", sampler="nuts_gpu")` builds the density for you |
 | Physical model, no gradients, many simulations | `abc_gpu` — but see the crossover below |
 | Multimodal posterior | `abc_smc_gpu`, or dynesty on CPU. **Not NUTS** |
 | Amortised inference over many transients | `snpe` |
@@ -35,8 +35,12 @@ These are not tuning problems. They cannot be made to work by adjusting paramete
 
 | Combination | Why it cannot work |
 |---|---|
-| numpy model + `nuts_gpu` | NUTS needs gradients. A numpy simulator has none, and `jax.grad` cannot differentiate through it. |
-| numpy model + `abc_gpu` | `abc_gpu` `vmap`s the simulator. A numpy function cannot be `vmap`ped. |
+| numpy model + `nuts_gpu` or `pymc_jax_gpu_*` | NUTS needs gradients. A numpy simulator has none, and `jax.grad` cannot differentiate through it. |
+| numpy model + `abc_gpu`, `abc_smc_gpu` or `emcee_jax` | They need a batched JAX forward map (`Model.predict_jax`). A numpy model has none, and a numpy function cannot be `vmap`ped. This includes `two_component_kilonova`, which is redback + sncosmo behind a numpy `predict`. |
+| `flare_jax` + any JAX sampler | It *has* a JAX implementation, but `models/jax/flare.py`'s `predict_jax` takes a parameter **dict** rather than the flat theta `Model.predict_jax` specifies, so `flare_jax` registers without the slot. Known gap, tracked in `../OPEN_ITEMS.md`. |
+| TDE or any of the twelve supernovae in float32 | The envelope ODE's increments are below float32 epsilon; the supernova engines carry cgs luminosities of 1e43–1e46 erg/s against float32's 3.4e38 ceiling. Both raise. **Both raise at the first `predict`, not at registration** — a registry containing `tde_gaussianrise_jax` or `arnett_jax` is not evidence the session can run it. |
+| a non-`Uniform`/`LogUniform` prior + any JAX sampler | Refused rather than approximated by its bounds. Substituting a uniform for a log-uniform is a *different posterior*, not a different parameterisation: log-uniform puts half its mass below 775 K where uniform puts half below 3050 K. |
+| comparing AIC/BIC/WAIC **across spaces** | Not a sampler limit — an arithmetic one. A flux-space and a magnitude-space fit have different likelihoods over different representations of the data, so their information criteria are not on one scale. Compare models *within* a space. |
 | Any non-flare model + `snpe_gpu` | It always passes `flare_jax.predict_torch`. It raises `NotImplementedError` rather than returning flare draws under your model's parameter names. |
 | TDE in float32 | The envelope ODE's increments are below float32 epsilon; the curve dies after one step and the luminosity is `inf`. It raises. |
 | Fitting a scatter parameter with distance-based ABC | Extra simulated noise only ever increases the expected residual, so the posterior rails to the smallest allowed scatter. **The parameter is not identifiable by ABC at all** — it is a likelihood parameter. `abc_gpu` warns if you try. |

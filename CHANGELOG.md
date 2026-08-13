@@ -6,6 +6,90 @@ released to PyPI yet — install from GitHub
 
 ## [Unreleased]
 
+### Fixed — five places that returned a wrong number with no error
+
+Each was measured, not inferred. Full report in [`DEPLOYMENT_AUDIT.md`](DEPLOYMENT_AUDIT.md).
+
+- **`abc_gpu`'s magnitude floor did not floor.** `_model_in_space_jnp` clamped at a bare `1e-300`,
+  which is exactly `0.0` in float32, so `jnp.maximum` clamped nothing. Measured:
+  `_model_in_space_jnp(0.0, "magnitude")` returned `inf`, not the "~759 mag" its docstring promised.
+  `abc_gpu` never enables x64, so float32 is its default case. Now uses the same
+  `max(_MIN_FLUX_JY, finfo.tiny)` rule `likelihood/_jax.py` already had.
+- **`MixtureGaussianLikelihood` scored WAIC under a plain Gaussian.** It overrode `log_likelihood`
+  but not `log_likelihood_pointwise`, and both `waic` and `predictive_metrics` dispatch on the
+  latter. Measured on 25 points: total 29.1446 against a pointwise sum of 31.4662, so
+  `fit(..., likelihood="mixture")` reported an AIC from the mixture beside a WAIC from a Gaussian.
+- **The eleven flux→magnitude converters disagreed.** SNPE's torch path clamped at a bare
+  `finfo.tiny`, giving 769.80 mag in float64 against everyone else's 758.90. All model-side
+  converters now agree. `io.photometry.flux_density_to_mag` still returns `NaN` and now documents
+  why it is the exception: it is the **data** converter, and a negative *measured* flux must not be
+  given an invented magnitude.
+- **WAIC did not say when it was meaningless.** Measured on a 9-parameter redback kilonova against
+  88 AT2017GFO points: `p_waic = 939505` beside an `AIC = 415`, returned silently. `_loo_waic` now
+  reports `p_waic_reliable` against Gelman/Hwang/Vehtari's `p_waic <= n_data/2`, and warns.
+- **A fit on an empty light curve reported `AIC = 2k`, `BIC = -inf`.** `GaussianLikelihood` now
+  raises and names the usual cause — `select_time_window` before `set_explosion_date`.
+
+`attach_band_metrics` / `attach_predictive_metrics` were bare `except Exception: pass`. The reason a
+metric block is missing now lands in `info` and in a warning.
+
+### Added — `wp.fit` reaches the JAX/GPU samplers, and `space=` works there
+
+New `whisper_cbpf/samplers/jax/_adapters.py` turns a registered `Model` into the two callables the
+JAX samplers already document: a batched `(B,D) -> (B,n)` forward map for `abc_gpu`/`abc_smc_gpu`,
+and a scalar `theta -> scalar` density for `nuts_gpu`/`pymc_jax_gpu_*`/`emcee_jax`. Resolution order
+is explicit argument → `model.log_prob_jax` → auto-build, so it fires only where the code used to
+raise and **no existing call changes**.
+
+Measured: all five now fit `kilonova_one_jax` on AT2017GFO through `wp.fit` with nothing hand-built,
+and the two NUTS frontends agree to 4 significant figures (AIC 1222722.6 vs 1222724.0).
+
+- **`space=` is now live on the NUTS family.** It defaulted to `"flux"` and was recorded but never
+  used, so a magnitude light curve was scored in flux by every predictive metric. Default is now
+  `"auto"`. `info` records `space_source` (`density` / `declared` / `assumed`) and `log_prob_fn`.
+- **`tde_model`, `supernova_model` and `kilonova_two_model` gained `predict_jax`**, and the three
+  registrars now forward it. The supernova's requires **concrete** `times` — its grid is built from
+  the observation times and its compiled core memoised on their bytes.
+- **`band_aliases=`** on all four photometric factories, e.g. `{"g": "sdssg"}`: `make_filter_set`
+  takes sncosmo names while survey CSVs carry bare `g`/`r`/`i`. It lives on the *model* because
+  `per_band_metrics`, `predictive_metrics` and `plot_ppc` all call `model.predict(..., lc.band)`.
+- **`kilonova_two_model` now jits its core** — it was the only photometric factory that did not.
+  Measured on 211 observations at `n_wave=2000` (A6000, best of five): **134.9 ms → 1.893 ms**, a
+  factor 71.
+- **`likelihood.resolve_space` is public** (was `_resolve_space`).
+
+### Fixed — three `emcee_jax` defects
+
+- **It sampled a flat box where `nuts_gpu` used the real prior.** `fit_emcee_jax` reads only
+  `prior.distributions[nm].bounds`, so its stationary distribution is `L(θ)·1_box` — correct only if
+  every prior is Uniform. `kilonova_model` gives `temperature_floor` a `LogUniform(100, 6000)`, and
+  `nuts_gpu._numpyro_priors` documents that exact substitution as a bug it fixed (median 775 K vs
+  3050 K). The auto path now builds a log-posterior and ranks draws for AIC/BIC by the likelihood
+  twin. **If you pass your own `log_prob_fn` to `emcee_jax`, pass a log-posterior.**
+- **It hard-cast theta to `jnp.float32`**, discarding x64 where it was enabled.
+- **Its vmap extent was `nwalkers`**, user-scaled and unchunked — the sixth instance of the
+  unbounded-vmap trap. Now chunked at 16; `walker_chunk=None` restores the old behaviour.
+
+### Added — `scripts/compare_at2017gfo.py` and `INSTALL.md`
+
+The acceptance test: fits a TDE, a supernova and one- and two-component kilonovae to
+`tests/data/at2017gfo.csv`, on CPU or GPU, in flux or apparent-magnitude space, with every sampler
+that can legitimately run each combination, and prints one AIC/BIC/WAIC table. Combinations that
+cannot work print the reason rather than being skipped.
+
+`INSTALL.md` documents every extra and what needs it, the GPU bootstrap and why it cannot be a
+Python call, the float64 flag and what it costs, and a verification step per layer.
+
+### Fixed — documentation that contradicted the code
+
+**`register_supernova` does NOT raise at registration.** Measured in float32: all **12/12**
+supernovae register successfully and enter `list_models()`; the guard fires at the first `predict`,
+exactly like the TDE's. `docs/GPU_SETUP.md`, `models/jax/__init__.py` and `_factories.py` all said
+otherwise. Also corrected: `API_REFERENCE`'s two contradictory test counts, its duplicate `## 9`
+heading, its `list_distances()` (2 vs 14) and `list_samplers()` (5 vs 11) claims, its `env_script()`
+description; `TUTORIAL`'s model and sampler listings (3 vs 6, 4 vs 11); `CHOOSING`'s "all five
+metrics" over a list of six; and `CONTRIBUTING`'s `whisper_labia` title and coverage command.
+
 ### Added — a JAX half for the prior, the likelihood and the kilonova `Model`
 
 A gradient sampler previously had to be handed a hand-written log-density per model

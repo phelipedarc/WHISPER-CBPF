@@ -50,8 +50,11 @@ T_EXPLOSION_MJD = 57982.529           # GW170817 merger
 #: The light curve's own labels -> the sncosmo filter names ``make_filter_set`` needs. Stated, not
 #: guessed: this file carries both ``i`` and 30 Johnson ``I`` points, which any case-folding alias
 #: table would merge into one filter.
-BAND_ALIASES = {"g": "sdssg", "r": "sdssr", "i": "sdssi", "z": "sdssz"}
+_ALL_ALIASES = {"g": "sdssg", "r": "sdssr", "i": "sdssi", "z": "sdssz"}
 FIT_BANDS = ["g", "r", "i"]
+#: Only the bands we actually fit. Aliasing a band the filter set was not built for is refused by
+#: `_make_band_indices`, which is the correct behaviour and which this script tripped over first.
+BAND_ALIASES = {b: _ALL_ALIASES[b] for b in FIT_BANDS}
 FILTER_SET = [BAND_ALIASES[b] for b in FIT_BANDS]
 
 

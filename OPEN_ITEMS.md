@@ -171,7 +171,7 @@ trust in the traps that do.
 sourced environment is the likely candidate, and *that* is a real trap worth documenting) and
 rewrite both passages, or delete them.
 
-### The unbounded-vmap trap, fifth instance: the kilonova band integral
+### ~~The unbounded-vmap trap, fifth instance: the kilonova band integral~~ — PARTLY CLOSED 2026-08-13
 
 `docs/GPU_SETUP.md` lists four instances. Here is a fifth, and unlike the others it is reachable
 through a **public tuning knob**. A `jax.vmap` of `kilonova.ab_magnitude` whose batch axis is a
@@ -183,8 +183,14 @@ batch 128 → `slow_operation_alarm` on `input_reduce_fusion` and still compilin
 **raising `chunk` for throughput on a photometric model is the trap**, and nothing says so — the
 parameter is documented as "particles per compiled call", which reads like a pure performance knob.
 
-**Next:** add the case to GPU_SETUP's list, and say in both ABC samplers' `chunk` docstrings that it
-is bounded by XLA compile time on photometric models, not by memory.
+**Both ABC samplers' `chunk` docstrings now say it is bounded by XLA compile time, not by memory**,
+and carry the measurement (`d19c3f3`). A SIXTH instance was found and fixed in the same commit:
+`emcee_jax.py:115` vmapped over `nwalkers`, user-scaled and unchunked — harmless while the only
+density there was the analytic flare, not once a photometric model can reach that path (it now can).
+It is chunked at 16, and `make_batched_predict_jax` refuses an unchunked batch above 256 with a
+message naming `chunk=`.
+
+**Still next:** add both cases to `docs/GPU_SETUP.md`'s list, which still says "hit four times".
 
 ### ~~`kilonova_model`'s `predict` is not jitted, unlike the TDE's and the supernova's~~ — CLOSED 2026-08-12
 
@@ -249,3 +255,73 @@ treat a fit that pushes the termination time through the data as unconverged") n
 runtime diagnostic for `rise="gaussian"`, not a docstring — one draw in six is too many to leave to
 the reader. `envelope_exists()` / `rise_peaks_near_fallback()` are the existing closed-form
 predicates; neither bounds this.
+
+
+---
+
+## Opened / settled by the deployment-readiness audit (2026-08-13)
+
+Full report: [`DEPLOYMENT_AUDIT.md`](DEPLOYMENT_AUDIT.md). Commits `9ee55b3`, `d19c3f3`, `15de940`.
+
+### Settled
+
+| Item | Settled by |
+|---|---|
+| `Model.predict_jax` / `log_prob_jax` exist but no sampler reads them | `d19c3f3` — `samplers/jax/_adapters.py`; all five JAX samplers now auto-build from the model when the caller passes nothing. `wp.fit(lc, "kilonova_one_jax", sampler="nuts_gpu")` works |
+| `kilonova_two_model` is not jitted (the same defect closed for the 1-component model) | `d19c3f3` — measured 134.9 ms → 1.893 ms on 211 points at `n_wave=2000`, a factor 71 |
+| The merged API reference does not cover the GPU public symbols | **partial** — `15de940` fixed the wrong claims (`list_samplers`, `list_distances`, `env_script`, the duplicate `## 9`, two contradictory test counts). The ~110 GPU symbols are still not individually documented |
+| No `slow` marker in the GPU tests; the suite takes 47 minutes | **still open** |
+| A control test in `test_flare_gradients.py` no longer tests anything | **still open** — untouched |
+| Migrated docs link to `benchmarks/`, `analysis/`, `sanity_check/` | **still open** — ~25 links; needs a decision, see `DEPLOYMENT_AUDIT.md` §5 |
+| `jax_gpu/` not verified file-by-file | **still open** |
+| The pre-merge GPU baseline is stale | **still open** |
+| Remove `flare`, rename `flare_jax` → `gaussian_rise_jax` | **user has re-ruled 2026-08-13: rename only, do NOT remove `flare`.** Not yet executed |
+| `redback_prior` defined in both `tde.py` and `supernova.py` | **still open** — first parameter is named differently (`model_name` vs `model`); still not diffed |
+
+### The supernova float64 guard does NOT fire at registration — this document was wrong too
+
+`docs/GPU_SETUP.md`, `models/jax/__init__.py`, `_factories.py` and `../WHISPER_STATUS.md` all stated
+that `register_supernova` raises during registration so the model never enters the registry, and
+`WHISPER_STATUS.md` recorded it as a *defect found and fixed*.
+
+**Measured, float32, `phe_sbi_2`: all 12/12 supernovae register successfully and all twelve appear
+in `list_models()`.** The guard fires at the first `predict`, exactly like the TDE's.
+`build_sn_grid` does carry the check, but it is only reached at factory time when `times=` is
+passed, and the default is `times=None`. All four documents corrected in `15de940`.
+
+### WAIC is returned on a scale that is not comparable with AIC/BIC, and now says so
+
+Measured on the redback 2-component kilonova against 88 AT2017GFO points, 9 parameters:
+**`p_waic = 939505`**, returned silently beside an `AIC = 415`. Cross-checked against a
+well-specified toy at the same budget, where AIC = −200.66, WAIC = −201.64 and `p_waic = 2.75` for
+4 parameters — so the estimator is correct and the blow-up is real signal about the fit.
+
+`_loo_waic` now reports `p_waic_reliable` against Gelman/Hwang/Vehtari's `p_waic ≤ n_data/2` and
+warns. **Next:** decide whether an unreliable WAIC should be omitted from `predictive_metrics`
+entirely rather than returned with a flag — a number that is present is a number someone will quote.
+
+### `emcee_jax` samples a flat box where `nuts_gpu` uses the real prior
+
+`fit_emcee_jax` reads only `prior.distributions[nm].bounds`, so its stationary distribution is
+`L(θ)·1_box`. The two agree **only if every prior is Uniform**, and `kilonova_model` gives
+`temperature_floor` a `LogUniform(100, 6000)` — the exact substitution `nuts_gpu._numpyro_priors`
+documents as a bug it fixed (median 775 K vs 3050 K). Fixed for the auto-built path in `d19c3f3`.
+
+**Next:** any existing AT2017GFO comparison that handed one `log_prob_fn` to both arms with
+`temperature_floor` free was comparing two different posteriors. Re-running it would settle how much
+that moved the emcee arm. Not done.
+
+### The eleven flux→magnitude converters agree now, but nothing enforces it
+
+A twelfth would not be caught. `tests/test_audit_fixes.py` pins four of them.
+**Next:** a single shared helper, or a test that enumerates them by import.
+
+### `flare_jax` is the one JAX model the JAX samplers cannot reach
+
+`models/jax/flare.py:51`'s `predict_jax` takes a parameter **dict**, not the flat theta
+`Model.predict_jax` specifies, and `backends/_registration.py:134-139` registers `flare_jax` without
+the slot. So it is structurally impossible through `wp.fit` for `abc_gpu`/`nuts_gpu`/etc., which is
+odd for the one model those samplers were originally benchmarked on.
+
+**Next:** adapt the flare's hook to the flat-theta contract. Small, but it changes a model's public
+shape.
