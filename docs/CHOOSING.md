@@ -73,7 +73,7 @@ a GPU result against a CPU one.
 | `mcmc` (emcee) | `emcee_jax` | same emcee frontend, jitted JAX log-density |
 | — | `nuts_gpu` | no CPU equivalent |
 
-To compare CPU against GPU fairly, fix the distance. All five metrics (`chi2`, `mse`, `rmse`, `mae`,
+To compare CPU against GPU fairly, fix the distance. All six metrics (`chi2`, `mse`, `rmse`, `mae`,
 `wmse`, `wmae`) exist in both backends and are registered for both samplers.
 
 ## Three NUTS frontends, one kernel

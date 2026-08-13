@@ -67,6 +67,9 @@ wp.plot_corner([r_abc, r_mcmc], labels=["abc", "mcmc"])
 
 ## Install
 
+**Full instructions, with a verification step for each layer, are in
+[`INSTALL.md`](INSTALL.md).** The short version:
+
 ```bash
 pip install whisper-cbpf
 ```
@@ -162,6 +165,7 @@ Every file's origin repo, path and commit is in [`PROVENANCE.md`](PROVENANCE.md)
 
 | | |
 |---|---|
+| [`INSTALL.md`](INSTALL.md) | every extra, the GPU bootstrap, float64, and how to verify each layer |
 | [`docs/TUTORIAL.md`](docs/TUTORIAL.md) | start here |
 | [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) | the full public surface |
 | [`docs/CHOOSING.md`](docs/CHOOSING.md) | which model and sampler for which problem |

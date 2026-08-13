@@ -1,4 +1,4 @@
-# Contributing to Whisper (`whisper_labia`)
+# Contributing to Whisper (`whisper_cbpf`)
 
 Thanks for helping improve Whisper. This guide is the entry point for contributors — you should be able
 to set up, test, and extend the package without reading the source.
@@ -25,7 +25,7 @@ extras: `[models]` (redback physical models + priors), `[svo]` (SVO band fallbac
 - Mark slow tests (e.g. neural-net training) with `@pytest.mark.slow`; CI fast runs use `-m "not slow"`.
 - Stochastic code must be **reproducible**: fixed `seed` ⇒ identical output, *independent of `n_jobs`*.
   Add a determinism test for any new sampler (see `tests/test_abc.py::test_abc_reproducible_and_njobs_independent`).
-- Coverage: `pytest --cov=whisper_labia --cov-report=term-missing`.
+- Coverage: `pytest --cov=whisper_cbpf --cov-report=term-missing`.
 
 ## Extending Whisper (the four pluggable axes)
 

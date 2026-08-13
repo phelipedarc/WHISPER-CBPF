@@ -73,11 +73,17 @@ wp.register_tde(["ztfg", "ztfr"], redshift=0.0206, dl_cm=2.8e26)
 wp.register_supernova("arnett", ["ztfg", "ztfr"], redshift=0.0206, dl_cm=2.8e26)
 ```
 
-**The two guards fire at different moments.** `register_supernova` raises during registration
-(`build_sn_grid` checks before it builds the dense grid), so the model never enters the registry.
-`register_tde` **succeeds** in float32 and raises only on the first `predict`, because its guard is
-inside the engine. A registry that contains `tde_gaussianrise_jax` is therefore not evidence that
-the session can run it.
+**Both guards fire at the first `predict`, not at registration.** `register_tde` and
+`register_supernova` both **succeed** in float32 and the model **enters the registry**; the guard is
+inside the engine and raises when it is first traced. A registry that contains
+`tde_gaussianrise_jax` or `arnett_jax` is therefore not evidence that the session can run it.
+
+> This document said until 2026-08-13 that `register_supernova` raises *during* registration and
+> that the model never enters the registry. Measured, in float32 on `phe_sbi_2`: all **12/12**
+> supernovae register successfully and all twelve appear in `list_models()`. `build_sn_grid` — which
+> does carry the check — is only reached at factory time when `times=` is passed, and the default is
+> `times=None`. The claim was also in `models/jax/__init__.py` and `_factories.py`; all three are
+> corrected.
 
 Two things make this awkward, and neither is hidden from you:
 

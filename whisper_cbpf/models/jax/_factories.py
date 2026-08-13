@@ -585,13 +585,17 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
 
     Notes
     -----
-    ``float64 is required``, as for the TDE, but for a different reason and at a different moment.
-    The TDE's is an accumulator: its envelope ODE adds increments below float32's epsilon. This
-    family's is range -- the engines carry bolometric luminosities in cgs, 1e43 to 1e46 erg/s,
-    against float32's 3.4e38 ceiling, so EVERY engine returns ``inf`` and every band comes back at
-    ``mag_floor`` (CHANGE 8). ``build_sn_grid`` therefore raises at FACTORY time, so
-    ``register_supernova`` itself fails; the TDE's guard is inside the engine and does not fire
-    until the first ``predict``. Enable it before creating any array::
+    ``float64 is required``, as for the TDE, but for a different reason. The TDE's is an
+    accumulator: its envelope ODE adds increments below float32's epsilon. This family's is range --
+    the engines carry bolometric luminosities in cgs, 1e43 to 1e46 erg/s, against float32's 3.4e38
+    ceiling, so EVERY engine returns ``inf`` and every band comes back at ``mag_floor`` (CHANGE 8).
+
+    **The guard fires at the first ``predict``, exactly like the TDE's**, so ``register_supernova``
+    SUCCEEDS in float32 and the model enters the registry. This docstring claimed the opposite --
+    that ``build_sn_grid`` raises at factory time so ``register_supernova`` itself fails -- until it
+    was measured: in float32, 12/12 supernovae register and all twelve appear in ``list_models()``.
+    ``build_sn_grid`` does carry the check, but it is only reached at factory time when ``times=``
+    is passed, and the default is ``times=None``. Enable x64 before creating any array::
 
         import jax; jax.config.update("jax_enable_x64", True)
 

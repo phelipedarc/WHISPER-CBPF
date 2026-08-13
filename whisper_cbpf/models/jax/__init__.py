@@ -18,9 +18,13 @@ The TDE **and every supernova** additionally require float64 --
 ODE accumulates Euler increments below float32's epsilon, so in f32 the curve terminates after one
 step and the luminosity is ``inf``; the supernova engines instead carry cgs luminosities of 1e43 to
 1e46 erg/s, over float32's 3.4e38 ceiling, so every one of them returns ``inf``. Both raise rather
-than returning a plausible wrong answer, but ``register_supernova`` raises at registration while
-``register_tde`` raises only at the first ``predict``. The flag is global and session-wide, and it
-slows the kilonova 11-23x, so it is never set for you.
+than returning a plausible wrong answer, and **both raise at the first ``predict``, not at
+registration** -- so a registry containing ``tde_gaussianrise_jax`` or ``arnett_jax`` is not
+evidence that this session can run either. (This said ``register_supernova`` raises at registration
+until it was measured: in float32 all 12/12 supernovae register successfully and enter the registry.
+``build_sn_grid`` is only reached at factory time when ``times=`` is passed, and the default is
+``times=None``.) The flag is global and session-wide, and what it costs is a function of batch size
+-- ~4.3x for ``value_and_grad`` at batch 1, 52-57x from batch 100 up -- so it is never set for you.
 
 The two kilonova implementations here and at :mod:`whisper_cbpf.models.two_component_kilonova` are
 two models, not one model twice: they are validated against different references and use disjoint

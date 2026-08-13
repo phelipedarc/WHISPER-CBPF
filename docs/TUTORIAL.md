@@ -204,8 +204,15 @@ wp.plot_light_curve(ztf, layout="report")
 Whisper has two pluggable axes — **models** and **samplers**:
 
 ```python
-wp.list_models()     # ['bazin', 'flare', 'gaussian_rise']  (+ your own via register_model)
-wp.list_samplers()   # ['abc', 'abc_smc', 'npe', 'snpe']     (+ your own via register_sampler)
+wp.list_models()     # 6: ['bazin', 'flare', 'flare_jax', 'gaussian_rise', 'mck19',
+                     #     'two_component_kilonova']            (+ your own via register_model)
+wp.list_samplers()   # 11: ['abc', 'abc_gpu', 'abc_smc', 'abc_smc_gpu', 'emcee_jax', 'mcmc',
+                     #      'npe', 'nuts_gpu', 'pymc_jax_gpu_parallelized',
+                     #      'pymc_jax_gpu_vectorized', 'snpe']  (+ your own via register_sampler)
+
+# The photometric JAX models (kilonova / TDE / the twelve supernovae) are NOT in list_models()
+# until you bind them to a dataset: wp.register_kilonova(bands, redshift, dl_cm). They need the
+# [gpu] extra even to register. See INSTALL.md.
 ```
 
 The built-in **flare** model is `flux = A·(1 − e^(−t/t_rise))·e^(−t/t_decay)`. Fit it to AT2017GFO's

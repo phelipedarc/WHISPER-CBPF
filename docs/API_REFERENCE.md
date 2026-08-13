@@ -3,11 +3,12 @@
 Generated for **v0.1.0**. Covers data ingestion + plotting and the inference layer — four pluggable
 axes (models, samplers, likelihoods, distances) with the ABC / ABC-SMC / MCMC / SNPE samplers on CPU,
 and the JAX/GPU half (NUTS, GPU ABC/ABC-SMC, emcee-over-JAX, PyMC frontends, and the JAX kilonova,
-TDE and supernova families) in [§9](#9-the-jaxgpu-half).
+TDE and supernova families) in [§10](#10-the-jaxgpu-half).
 
 - **Environments:** `phe_sbi` (CPU, Python 3.11) and `phe_sbi_2` (GPU/JAX, needs
   `source scripts/whisper-gpu-env.sh` before Python starts — see [`GPU_SETUP.md`](GPU_SETUP.md)).
-- **Run the CPU tests:** `python -m pytest tests -q` → 234 passed, 20 skipped.
+- **Run the CPU tests:** `python -m pytest -q -m "not slow"` → **239 passed, 36 skipped,
+  6 deselected** (measured 2026-08-13 in `phe_sbi`, ~77 s). §8 has the caveat about `--collect-only`.
 - **Run the GPU tests:** in `phe_sbi_2`, with the env sourced, using the interpreter its banner names.
 - **Install:** `pip install whisper-cbpf` is CPU-complete; `[gpu]` adds the JAX half. Every GPU entry
   is listed by `list_models()` / `list_samplers()` / `list_distances()` even without the extra.
@@ -231,7 +232,7 @@ A model maps parameters to predicted flux: `predict(params: dict, times: np.ndar
 | `register_model` | `(name, predict, parameters, prior=None, description="", *, overwrite=False, predict_jax=None, log_prob_jax=None)` | Register a model by name. The two `*_jax` slots are optional; a factory that built them must pass them through or the registered model is the CPU half only. |
 | `get_model` | `(model)` | Resolve a name (or pass a `Model`). |
 | `list_models` | `()` | Sorted registered model names. |
-| `Model` | dataclass: `name, predict, parameters, default_prior, description, predict_jax, log_prob_jax` | Callable: `model(params, times, bands)`. `predict_jax(theta, times, band_idx) -> flux` is `predict` with a flat theta and integer bands, traceable and differentiable; `log_prob_jax(theta) -> scalar` is a data-bound log-*likelihood*. Both `None` unless a factory filled them — see [§9](#9-the-jaxgpu-half). |
+| `Model` | dataclass: `name, predict, parameters, default_prior, description, predict_jax, log_prob_jax` | Callable: `model(params, times, bands)`. `predict_jax(theta, times, band_idx) -> flux` is `predict` with a flat theta and integer bands, traceable and differentiable; `log_prob_jax(theta) -> scalar` is a data-bound log-*likelihood*. Both `None` unless a factory filled them — see [§10](#10-the-jaxgpu-half). |
 
 Built-in **toy** models (band-independent, vectorized; `t` = days since explosion; scale `amplitude` to
 your flux units for real data):
@@ -292,7 +293,7 @@ Distances are also a **name registry**, so a custom distance can be selected by 
 |---|---|---|
 | `register_distance` | `(name, fn, *, overwrite=False)` | Register a distance by name. |
 | `get_distance` | `(distance)` | Resolve a name (a callable passes straight through). |
-| `list_distances` | `()` | Sorted registered names (`['chi2', 'chi_square']` out of the box — aliases of the same function). |
+| `list_distances` | `()` | Sorted registered names — **14** out of the box: `chi2`, `chi_square` (an alias), `mse`, `rmse`, `mae`, `wmse`, `wmae`, and a `*_jax` twin of each. The `_jax` entries are listed even without the `[gpu]` extra. |
 
 Names are matched **case-insensitively**.
 
@@ -301,7 +302,9 @@ Names are matched **case-insensitively**.
 `fit_ABC(lc, model="flare", ...)`, `fit_ABC_SMC(lc, model="flare", ...)`, `fit_MCMC(lc, model="flare",
 ...)`, and `fit_SNPE(lc, model="flare", ...)` → `SamplerResult`. `fit(lc, model,
 sampler="abc"|"abc_smc"|"mcmc"|"snpe", **kwargs)` is the generic dispatcher. `list_samplers()` →
-`['abc', 'abc_smc', 'mcmc', 'npe', 'snpe']` (`npe` is an alias of `snpe`); `register_sampler(name, cls)`
+`['abc', 'abc_gpu', 'abc_smc', 'abc_smc_gpu', 'emcee_jax', 'mcmc', 'npe', 'nuts_gpu',
+'pymc_jax_gpu_parallelized', 'pymc_jax_gpu_vectorized', 'snpe']` — **11**, the six GPU entries
+included even without the `[gpu]` extra (`npe` is an alias of `snpe`); `register_sampler(name, cls)`
 adds your own. **ABC/ABC-SMC** use the χ² distance; **MCMC/SNPE** use the shared likelihood layer, so all
 four reach the same posterior on the same data (see `sanity_check/compare_samplers.py`).
 
@@ -620,10 +623,13 @@ Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`
 `io.units.to_canonical`, `io.svo._svo_fetch_metadata/_svo_fetch_index/_svo_fetch_transmission`
 (network boundary), `dev/{phase0_smoke,demo_abc_at2017gfo,demo_ingestion}.py`.
 
-## 8. Test coverage (219 tests, all passing)
+## 8. Test coverage
 
-> Counts are **collected** tests (parametrized cases counted individually), verified against
-> `pytest tests --collect-only -q`; 7 are marked `slow`, so `-m "not slow"` runs 212. Regenerate with
+> **239 passed, 36 skipped, 6 deselected** on a base + `[dev]` install (`phe_sbi`, `-m "not slow"`,
+> measured 2026-08-13, ~77 s). Note `--collect-only` reports **260**, not 270: ten test modules
+> `importorskip("jax")` at *module* scope, so they are never collected yet each still reports one
+> skip. The per-file table below has drifted and is not re-measured here; treat the totals above as
+> the source of truth. Regenerate with
 > `docker exec phe_sbi bash -lc 'cd <repo> && python -m pytest tests --collect-only -q | tail -1'`
 > after adding tests, and update this section — three rows had silently drifted before this check.
 
@@ -676,7 +682,7 @@ print(res, res.best_params)
 
 ---
 
-## 9. The JAX/GPU half
+## 10. The JAX/GPU half
 
 Everything below needs the `[gpu]` extra (`pip install "whisper-cbpf[gpu]"`) **and** the
 environment bootstrap sourced before Python starts. Signatures and summaries below are
@@ -699,7 +705,10 @@ bind them with a factory. See [`CHOOSING.md`](CHOOSING.md) for which to use when
 - **`n_jobs(fraction=0.6)`**  
   Worker count at the production CPU budget (60% of cores by default).
 - **`env_script()`**  
-  Absolute path to this package's ``env.sh``, whatever the package was cloned as.
+  Absolute path to `scripts/whisper-gpu-env.sh` in this checkout, derived from `__file__`. It is
+  **not guaranteed to exist**: wheels ship only `whisper_cbpf*`, so a pip-installed user has no
+  `scripts/` directory (see `OPEN_ITEMS.md`). Use `env_script_hint()`, which says so plainly instead
+  of printing an unusable `source` line.
 - **`env_report()`**  
   A dict describing the current GPU environment. Never raises, never imports jax.
 
