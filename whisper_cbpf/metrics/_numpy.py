@@ -107,8 +107,21 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=No
     elpd_i = lppd_i - p_waic_i
     n_data = ll.shape[1]
     se = float(np.sqrt(n_data * np.var(-2.0 * elpd_i, ddof=1))) if n_data > 1 else float("nan")
+    p_waic = float(np.sum(p_waic_i))
+    reliable = bool(np.isfinite(p_waic) and p_waic <= 0.5 * n_data)
+    if not reliable:
+        # Same rule and same reason as _loo_waic. The two public WAIC entry points must not
+        # disagree about whether a number is trustworthy: before this, wp.waic() returned an
+        # unflagged, unwarned p_waic (measured 765538.86 on 40 points) while predictive_metrics
+        # flagged the identical situation.
+        warnings.warn(
+            f"WAIC is unreliable for this posterior: p_waic = {p_waic:.4g} against n_data = "
+            f"{n_data} (Gelman/Hwang/Vehtari's guidance is p_waic <= n_data/2). Do NOT compare it "
+            f"against another model's, and do not read it on the same scale as AIC/BIC.",
+            stacklevel=2)
     return {"waic": float(-2.0 * np.sum(elpd_i)), "lppd": float(np.sum(lppd_i)),
-            "p_waic": float(np.sum(p_waic_i)), "se": se, "n_samples": int(n_samp), "n_data": int(n_data),
+            "p_waic": p_waic, "p_waic_reliable": reliable,
+            "se": se, "n_samples": int(n_samp), "n_data": int(n_data),
             "n_draws_dropped": n_dropped, "subsampled": bool(subsampled)}
 
 
@@ -333,6 +346,12 @@ def _loo_waic(ll):
     n_data / 2`` as the point where the estimator should not be trusted; that is what
     ``p_waic_reliable`` reports, and the caller is warned rather than handed a number that looks
     like the others.
+
+    **It flags stranded chains, not misspecification.** Adversarially re-measured: on a 4-parameter
+    fit to data generated FROM the fitted model, ``p_waic`` blew up on 5 of 12 seeds (max 2.79e8)
+    with ``converged=True`` -- traced to 3.12% of draws (one emcee walker x 300 thinned steps) at
+    logL -15950.8 against a posterior median of +112.6. Conversely the badly misspecified redback
+    kilonova gives ``p_waic = 11.73``, flagged reliable, under ABC on the same 88 points.
     """
     n_samp, n_data = ll.shape
     lppd_i = logsumexp(ll, axis=0) - np.log(n_samp)
@@ -344,9 +363,11 @@ def _loo_waic(ll):
         warnings.warn(
             f"WAIC is unreliable for this fit: p_waic = {p_waic:.4g} against n_data = {n_data} "
             f"(Gelman/Hwang/Vehtari's guidance is p_waic <= n_data/2). The posterior contains draws "
-            f"whose pointwise log-likelihood varies by orders of magnitude, which usually means an "
-            f"under-converged chain or a badly misspecified model. Do NOT compare this WAIC against "
-            f"another model's, and do not read it on the same scale as AIC/BIC.", stacklevel=3)
+            f"whose pointwise log-likelihood varies by orders of magnitude. The usual cause is ONE "
+            f"OR MORE STRANDED CHAINS -- a single walker parked in a bad region contributes a huge "
+            f"per-point variance -- so check the chains before blaming the model. Do NOT compare "
+            f"this WAIC against another model's, and do not read it on the same scale as AIC/BIC.",
+            stacklevel=3)
     waic_out = {
         "waic": float(-2.0 * np.sum(elpd_waic_i)), "elpd_waic": float(np.sum(elpd_waic_i)),
         "p_waic": p_waic, "p_waic_reliable": reliable, "n_data": int(n_data),

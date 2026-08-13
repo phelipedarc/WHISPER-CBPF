@@ -135,7 +135,11 @@ class NUTSGPUSampler(BaseSampler):
             per-parameter r-hat (via arviz). The raw NumPyro ``MCMC`` object is attached as
             ``result.numpyro_mcmc``.
         """
-        model = get_model(model)
+        # Resolve a NAME through the registry, but pass any Model-LIKE object straight through:
+        # the pre-audit docstring advertised "Needs .name and .parameters", and get_model() on a
+        # duck-typed object raises KeyError (or TypeError if it is unhashable). Only strings need
+        # looking up.
+        model = get_model(model) if isinstance(model, str) else model
         prior = prior if prior is not None else model.default_prior
         if prior is None:
             raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
@@ -145,7 +149,8 @@ class NUTSGPUSampler(BaseSampler):
         # itself, not hide behind a filter-set build or an XLA compile.
         site_dists = _numpyro_priors(prior, names)
         log_prob_fn, space, space_source, fn_source = _resolve_density(
-            lc, model, prior, log_prob_fn, space, names, include_prior=False)
+            lc, model, prior, log_prob_fn, space, names, include_prior=False,
+            sampler=self.name)
 
         def numpyro_model():
             # One site per parameter so each keeps its OWN density and support transform; stacked
@@ -253,6 +258,13 @@ class NUTSGPUSampler(BaseSampler):
         return result
 
 
-def fit_NUTSGPU(lc, model, prior=None, *, log_prob_fn, **kwargs) -> SamplerResult:
-    """Fit ``lc`` with ``model`` via NumPyro NUTS on GPU. See :meth:`NUTSGPUSampler.fit`."""
+def fit_NUTSGPU(lc, model, prior=None, *, log_prob_fn=None, **kwargs) -> SamplerResult:
+    """Fit ``lc`` with ``model`` via NumPyro NUTS on GPU. See :meth:`NUTSGPUSampler.fit`.
+
+    ``log_prob_fn`` is optional here for the same reason it is on the method: omit it and one is
+    built from ``model.predict_jax``. It stayed *required* on this wrapper after the method relaxed
+    it, so the public function could not reach the auto-build path the method advertises --
+    ``NUTSGPUSampler().fit(...)`` and ``wp.fit(...)`` worked while ``fit_NUTSGPU(...)`` raised
+    ``TypeError: missing 1 required keyword-only argument``.
+    """
     return NUTSGPUSampler().fit(lc, model, prior=prior, log_prob_fn=log_prob_fn, **kwargs)

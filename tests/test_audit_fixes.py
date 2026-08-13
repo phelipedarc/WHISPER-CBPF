@@ -39,7 +39,10 @@ def test_resolve_space_is_public_and_auto_follows_data_mode():
 def test_mixture_likelihood_pointwise_sums_to_its_total():
     """It overrode ``log_likelihood`` but not the pointwise form, so WAIC scored a plain Gaussian.
 
-    Measured before the fix: total 29.1446 against a pointwise sum of 31.4662 on the same input.
+    Measured before the fix on 25 points at sigma = 0.1 with a uniform residual of 0.05: total
+    29.1446 against a pointwise sum of 31.4662. On THIS test's own fixture (``_toy_lc()``, n = 24,
+    sigma = 0.02, model = flux x 1.05) the pre-fix pair was -5.6509 against -55.1652 -- a different
+    configuration, so do not read the two as the same measurement.
     """
     import whisper_cbpf as wp
 
@@ -53,8 +56,9 @@ def test_mixture_likelihood_pointwise_sums_to_its_total():
 
 
 def test_every_model_side_flux_to_mag_converter_agrees_on_zero_flux():
-    """Eleven converters, one floor. The SNPE torch path used a bare ``finfo.tiny``, which agreed
-    in float32 and disagreed by ~11 mag in float64 (769.80 against everyone else's 758.90)."""
+    """Eleven converters inside ``whisper_cbpf/``, one floor. The SNPE torch path used a bare
+    ``finfo.tiny``, which agreed in float32 and disagreed by **19.13 mag** in float64 -- 778.03
+    against everyone else's 758.90."""
     torch = pytest.importorskip("torch")
     from whisper_cbpf.plotting import _flux_to_quantity
     from whisper_cbpf.samplers.snpe import _torch_model_in_space

@@ -27,6 +27,31 @@ def summarize_posterior(samples, parameters):
     return summary
 
 
+#: ``type(likelihood).__name__`` (what samplers record in ``info["likelihood"]``) -> registry key.
+#: Anything unrecognised falls back to ``"auto"``, which is the pre-existing behaviour.
+_LIKELIHOOD_KINDS = {
+    "GaussianLikelihood": "gaussian",
+    "GaussianLikelihoodWithUpperLimits": "gaussian_upper_limits",
+    "GaussianLikelihoodWithScatter": "gaussian_scatter",
+    "MixtureGaussianLikelihood": "mixture",
+}
+
+
+def _warn_without_raising(message):
+    """Emit a UserWarning that cannot abort the caller, even under warnings-as-errors.
+
+    Both `attach_*` helpers report their failure by warning from inside an `except` block. Under
+    `-W error` / `simplefilter("error")` / a pytest `filterwarnings = error` that warning is itself
+    an exception, so it escapes the handler and kills a fit that had ALREADY SUCCEEDED -- measured:
+    on HEAD `simplefilter("error")` + `wp.fit_ABC(...)` raised out of `attach_predictive_metrics`
+    where the pre-audit tree returned a result. A diagnostic that destroys the thing it is
+    diagnosing is worse than the silence it replaced, so the filter is forced locally.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        warnings.warn(message, stacklevel=3)
+
+
 def attach_band_metrics(info, lc, model, best_params, space):
     """Populate ``info['band_metrics']`` with per-band MSE/MAE at the best fit (best-effort).
 
@@ -40,9 +65,8 @@ def attach_band_metrics(info, lc, model, best_params, space):
         info["band_metrics"] = per_band_metrics(lc, model, best_params, space=space)
     except Exception as exc:                                  # noqa: BLE001 - deliberate, see above
         info["band_metrics_error"] = f"{type(exc).__name__}: {exc}"
-        warnings.warn(f"per-band metrics could not be computed and are absent from this result "
-                      f"({type(exc).__name__}: {exc}). The fit itself is unaffected.",
-                      stacklevel=2)
+        _warn_without_raising(f"per-band metrics could not be computed and are absent from this "
+                              f"result ({type(exc).__name__}: {exc}). The fit itself is unaffected.")
 
 
 def attach_predictive_metrics(result, lc, space, n_draws=200):
@@ -60,14 +84,23 @@ def attach_predictive_metrics(result, lc, space, n_draws=200):
     resolve" have to be distinguishable. The reason now lands in
     ``info['predictive_metrics_error']`` and in a warning.
     """
+    # Score under the density the fit was ACTUALLY run with. `predictive_metrics` defaults to
+    # kind="auto", i.e. a plain Gaussian, so a `likelihood="mixture"` fit was being rescored under
+    # a different density -- which then made the new p_waic flag blame the model. Measured on 40
+    # points with one 30-sigma outlier: converged=True and medians within 2% of truth, yet
+    # p_waic = 324.11 and "unreliable"; rescored under the mixture it was fitted with,
+    # p_waic = 2.35 and reliable. `_LIKELIHOOD_KINDS` maps the class name samplers record in
+    # info["likelihood"] back to a registry key.
+    kind = _LIKELIHOOD_KINDS.get(str(result.info.get("likelihood", "")), "auto")
     try:
         from ..metrics import predictive_metrics
-        result.info["predictive_metrics"] = predictive_metrics(result, lc, space=space, n_draws=n_draws)
+        result.info["predictive_metrics"] = predictive_metrics(
+            result, lc, space=space, likelihood=kind, n_draws=n_draws)
     except Exception as exc:                                  # noqa: BLE001 - deliberate, see above
         result.info["predictive_metrics_error"] = f"{type(exc).__name__}: {exc}"
-        warnings.warn(f"predictive metrics (WAIC / LPD / PSIS-LOO / coverage) could not be computed "
-                      f"and are absent from this result ({type(exc).__name__}: {exc}). AIC and BIC "
-                      f"are unaffected.", stacklevel=2)
+        _warn_without_raising(f"predictive metrics (WAIC / LPD / PSIS-LOO / coverage) could not be "
+                              f"computed and are absent from this result ({type(exc).__name__}: "
+                              f"{exc}). AIC and BIC are unaffected.")
 
 
 @dataclass

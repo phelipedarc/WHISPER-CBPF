@@ -352,3 +352,48 @@ pick parameters whose exponent exceeds ~709 so it overflows in float64 too. Eith
 control regardless of collection order. Left undone deliberately: it is a judgement about what the
 control should assert, which is why `FINDINGS.md` left it alone in the first place. `FINDINGS.md`
 §1.1 itself still needs its explanation corrected.
+
+
+### The flux→magnitude map has ~13 UNFLOORED copies outside the package
+
+The audit's "eleven converters, now agreeing" is correct for `whisper_cbpf/` and wrong for the
+repository. Counting `notebooks/` and `tests/` there are ~24 copies of `-2.5 log10(F/3631)`, and the
+~13 outside the package have **no floor at all**: `notebooks/_build_notebooks.py:121`,
+`notebooks/02_models.ipynb:280`, `tests/test_import_and_registry.py:89,183`,
+`tests/test_two_component_kilonova.py:79,104,117`, `tests/test_mck19.py:80,93`,
+`tests/test_supernova_vs_redback.py:344`, `tests/test_benchmark_kilonova.py:35` (×2),
+`tests/test_review_fixes.py:80`.
+
+None of them meets a zero flux today, so this is latent rather than live. But nothing stops a
+twelfth in-package copy either: `tests/test_audit_fixes.py` pins only four of the eleven.
+
+**Next:** one shared helper the whole repo imports, or a test that enumerates the converters by
+import and asserts they agree at zero flux in both dtypes.
+
+### `p_waic` blow-ups mean STRANDED CHAINS, not misspecification
+
+Recorded because the audit initially drew the opposite conclusion. Adversarial re-measurement:
+
+* On a 4-parameter `gaussian_rise` fit to data generated **from the fitted model itself**, `p_waic`
+  blew up on **5 of 12 seeds** (max 2.79e8) with `converged=True`. Mechanism: 3.12% of draws — one
+  emcee walker × 300 thinned steps — pinned at logL −15950.8 against a posterior median of +112.6.
+* The badly misspecified redback kilonova gives `p_waic = 11.73`, flagged **reliable**, under ABC on
+  the same 88 points.
+* The same model on the same points spans five orders of magnitude across legitimate configurations:
+  flux/seed 1 → 1.01e6, magnitude/seed 0 → 618, ABC → 11.73.
+
+So the flag is right and the *diagnosis text* was not. The warning now leads with the stranded-chain
+reading.
+
+**Next:** the estimator could report the offending draw fraction alongside `p_waic`, which would turn
+"unreliable" into "walker 7 is stuck" — the thing a user can act on.
+
+### `flare_jax` is still unreachable by the JAX samplers
+
+`models/jax/flare.py:51`'s `predict_jax` takes a parameter **dict**, not the flat theta
+`Model.predict_jax` specifies, so `backends/_registration.py:134-139` registers `flare_jax` without
+the slot. It is therefore the one JAX model that `abc_gpu` / `nuts_gpu` / `emcee_jax` cannot reach
+through `wp.fit` — odd, since it is the model those samplers were originally benchmarked on.
+
+**Next:** adapt the flare's hook to the flat-theta contract. Small, but it changes a model's public
+shape, which is why the audit did not do it unasked.

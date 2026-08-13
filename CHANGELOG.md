@@ -25,12 +25,15 @@ Each was measured, not inferred. Full report in [`DEPLOYMENT_AUDIT.md`](DEPLOYME
   latter. Measured on 25 points: total 29.1446 against a pointwise sum of 31.4662, so
   `fit(..., likelihood="mixture")` reported an AIC from the mixture beside a WAIC from a Gaussian.
 - **The eleven flux→magnitude converters disagreed.** SNPE's torch path clamped at a bare
-  `finfo.tiny`, giving 769.80 mag in float64 against everyone else's 758.90. All model-side
-  converters now agree. `io.photometry.flux_density_to_mag` still returns `NaN` and now documents
+  `finfo.tiny`, giving **778.03 mag** in float64 against everyone else's 758.90 -- a 19.13-magnitude
+  backend-dependent floor. All model-side converters now agree. `io.photometry.flux_density_to_mag` still returns `NaN` and now documents
   why it is the exception: it is the **data** converter, and a negative *measured* flux must not be
   given an invented magnitude.
 - **WAIC did not say when it was meaningless.** Measured on a 9-parameter redback kilonova against
-  88 AT2017GFO points: `p_waic = 939505` beside an `AIC = 415`, returned silently. `_loo_waic` now
+  88 AT2017GFO points, `mcmc` in **flux** space, seed 1, nsteps=4000/burnin=1000/nwalkers=32:
+  `p_waic = 1,012,027` beside an `AIC = 415.19`, returned silently. (Magnitude space on the same
+  points gives 618, and ABC gives 11.73 and is flagged reliable -- the spread is five orders of
+  magnitude across legitimate configurations, which is itself the point.) `_loo_waic` now
   reports `p_waic_reliable` against Gelman/Hwang/Vehtari's `p_waic <= n_data/2`, and warns.
 - **A fit on an empty light curve reported `AIC = 2k`, `BIC = -inf`.** `GaussianLikelihood` now
   raises and names the usual cause — `select_time_window` before `set_explosion_date`.

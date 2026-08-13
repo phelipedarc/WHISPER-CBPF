@@ -718,12 +718,24 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
         try:
             t_src = np.asarray(_source_time(np.asarray(times, dtype=float), redshift, t_exp_days),
                                dtype=float)
-        except Exception as exc:                # a tracer cannot become a numpy array
+        except (TypeError, ValueError, jax.errors.TracerArrayConversionError) as exc:
             raise TypeError(
                 f"model {name!r}: predict_jax needs CONCRETE times -- the dense grid is built from "
                 f"them and the compiled core is memoised on their bytes. vmap over theta only "
                 f"(in_axes=(0, None, None)) and keep `times` outside the trace.") from exc
-        mag = _core_for(t_src)(jnp.asarray(band_idx), *[theta[i] for i in range(len(params))])
+        # BUILD THE GRID OUTSIDE THE CALLER'S TRACE. `_core_for` may build a NEW dense grid, and
+        # `build_sn_grid`'s jnp calls would then produce tracers belonging to whatever trace we are
+        # being called from -- vmap's, or jit's. Those tracers are closed over by `_core` and
+        # memoised in `_cores` FOREVER, so the entry is poisoned the moment that trace ends: the
+        # next call raises UnexpectedTracerError, and because `predict` shares the same cache it
+        # breaks too, taking per_band_metrics / predictive_metrics / plot_ppc with it. Measured on
+        # HEAD before this guard: register_supernova(...) then a vmapped abc_gpu fit raised
+        # `UnexpectedTracerError (float64[1000] = dense_times)`. It is order-dependent -- a
+        # concrete predict() first leaves the entry clean -- which is why the tests missed it.
+        # ensure_compile_time_eval forces the grid to be built as concrete data.
+        with jax.ensure_compile_time_eval():
+            core = _core_for(t_src)
+        mag = core(jnp.asarray(band_idx), *[theta[i] for i in range(len(params))])
         return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * mag)
 
     predict_jax.band_index = _band_indices

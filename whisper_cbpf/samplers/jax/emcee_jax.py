@@ -44,19 +44,29 @@ from ...samplers.base import (  # noqa: E402
 DEFAULT_WALKER_CHUNK = 16
 
 
-def _map_in_walker_chunks(jax, jnp, batched, theta, width):
-    """``lax.map`` ``batched`` over padded blocks of ``width`` walkers, then trim.
+def _make_walker_mapper(jax, jnp, batched, width):
+    """Build a JITTED ``theta -> logp`` that ``lax.map``s ``batched`` over blocks of ``width``.
 
-    Constant memory, one compile, regardless of ``nwalkers``. Padding keeps every block the same
-    shape so there is exactly one compiled kernel — the same construction ``abc_gpu`` uses.
+    Constant memory, regardless of ``nwalkers``. Padding keeps every block the same shape so there
+    is exactly one compiled kernel — the construction ``abc_gpu`` uses.
+
+    **The jit is not optional.** emcee calls this once PER STEP, and an un-jitted ``lax.map`` is
+    re-traced and re-lowered on every one of those calls. Measured, ``nwalkers=64, nsteps=60``:
+    0.462 s with a wide vmap against **22.587 s** chunked-without-jit, for a byte-identical
+    ``aic = -128.451599`` — a 49x regression introduced by the chunking itself. Per call:
+    0.11-0.14 ms wide, 189-207 ms chunked-unjitted, 0.232 ms chunked-and-jitted. ``abc_gpu``, which
+    this mirrors, issues one ``lax.scan`` per *fit*, not per step, which is why it never showed.
     """
-    b = int(theta.shape[0])
-    n_blocks = -(-b // width)
-    pad = n_blocks * width - b
-    if pad:
-        theta = jnp.concatenate([theta, jnp.repeat(theta[-1:], pad, axis=0)], axis=0)
-    out = jax.lax.map(batched, theta.reshape(n_blocks, width, theta.shape[-1]))
-    return out.reshape(-1)[:b]
+    @jax.jit
+    def mapped(theta):
+        b = theta.shape[0]
+        n_blocks = -(-b // width)
+        pad = n_blocks * width - b
+        t = jnp.concatenate([theta, jnp.repeat(theta[-1:], pad, axis=0)], axis=0) if pad else theta
+        out = jax.lax.map(batched, t.reshape(n_blocks, width, t.shape[-1]))
+        return out.reshape(-1)[:b]
+
+    return mapped
 
 
 from ...models.jax._flare_spec import PARAMETERS as _PARAMS  # noqa: E402
@@ -143,7 +153,7 @@ def fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nstep
 
     from ._adapters import float_dtype, resolve_density as _resolve_density
 
-    model = get_model(model)
+    model = get_model(model) if isinstance(model, str) else model
     prior = prior if prior is not None else model.default_prior
     if prior is None:
         raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
@@ -161,16 +171,17 @@ def fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nstep
     batched = jax.jit(jax.vmap(log_prob_fn))
     dt = float_dtype()          # was a hard jnp.float32, which threw away x64 when it was enabled
 
+    # BOUND THE VMAP EXTENT, ONCE. `nwalkers` is user-scaled, and a vmap sized by a user-scaled
+    # count is the trap that has stalled this project's compiles five times (see GPU_SETUP.md). It
+    # was harmless while the only density here was the analytic flare; it is not once a photometric
+    # model can reach this path. `walker_chunk=None` restores the single wide vmap. The mapper is
+    # built ONCE here rather than per step -- see _make_walker_mapper for what per-step costs.
+    _chunked = (_make_walker_mapper(jax, jnp, batched, int(walker_chunk))
+                if walker_chunk and nwalkers > walker_chunk else None)
+
     def log_prob_batch(theta_batch):
         theta = jnp.asarray(theta_batch, dtype=dt)
-        # BOUND THE VMAP EXTENT. `nwalkers` is user-scaled, and a vmap sized by a user-scaled count
-        # is the trap that has stalled this project's compiles five times (see GPU_SETUP.md). It
-        # was harmless while the only density here was the analytic flare; it is not once a
-        # photometric model can reach this path. `walker_chunk=None` restores the single wide vmap.
-        if walker_chunk and theta.shape[0] > walker_chunk:
-            out = _map_in_walker_chunks(jax, jnp, batched, theta, int(walker_chunk))
-        else:
-            out = batched(theta)
+        out = _chunked(theta) if _chunked is not None else batched(theta)
         return np.asarray(jax.block_until_ready(out), dtype=float)
 
     # Compile on a throwaway ensemble so JIT time is reported separately from sampling time.
@@ -317,4 +328,4 @@ class EmceeJAXSampler(BaseSampler):
         no prior mechanism of its own, so a pure log-likelihood silently imposes a flat box. That
         differs from ``nuts_gpu``, which wants a pure likelihood; see :func:`fit_emcee_jax`.
         """
-        return fit_emcee_jax(lc, get_model(model), log_prob_fn, prior=prior, **kwargs)
+        return fit_emcee_jax(lc, model, log_prob_fn, prior=prior, **kwargs)

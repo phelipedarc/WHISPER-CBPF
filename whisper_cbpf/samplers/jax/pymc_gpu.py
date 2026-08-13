@@ -198,7 +198,7 @@ class _PyMCJAXBase(BaseSampler):
                 f"dependency -- no other sampler requires it, which is why the import is here "
                 f"rather than at module scope.") from exc
 
-        model = get_model(model)
+        model = get_model(model) if isinstance(model, str) else model
         prior = prior if prior is not None else model.default_prior
         if prior is None:
             raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")

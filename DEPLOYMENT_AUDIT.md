@@ -138,6 +138,14 @@ shape fitters, not physics.
 **Rows `docs/CHOOSING.md` was missing, now added:** the `emcee_jax` row, the float32+supernova row,
 the non-Uniform-prior row, and the statement that **AIC/BIC/WAIC compare models, not spaces**.
 
+On that last one, the deterministic statement rather than a sampled one: for an identical, perfect
+fit on those 88 points, `AIC_flux − AIC_mag = −1675.47`, which is exactly `−2·Σ log(POGSON/F_i)` —
+the Jacobian of the flux→magnitude map. Expressing the same fluxes in µJy shifts the flux-space AIC
+by a further **2431.53**, so the flux-space value is not even unit-invariant. Strictly the comparison
+is not impossible *in principle* — adding `Σ log|dm/dF|` would reconcile them — it is not comparable
+**as this package computes it**. (An earlier draft of this report quoted a 5642.77 / 3477.06 pair
+which could not be reproduced and has been withdrawn.)
+
 ---
 
 ## 2. Blocking defects — all fixed, each with a regression test
@@ -164,27 +172,50 @@ Gaussian, presented as comparable, with no warning.
 
 ### 2.3 The eleven flux→magnitude converters disagreed (silent-wrong) — FIXED `9ee55b3`
 
-The AB zero point (3631 Jy) and the magnitude→flux direction agree everywhere. The flux→magnitude
-direction had **four** distinct non-positive-flux behaviours:
+Inside `whisper_cbpf/` there are eleven. The AB zero point (3631 Jy) and the magnitude→flux
+direction agree everywhere. The flux→magnitude direction had **five** distinct non-positive-flux
+behaviours:
 
 | implementation | float64 floor | note |
 |---|---|---|
 | `io/photometry.py:43` | `NaN` + warning | the **data** converter — deliberate, now documented |
 | `likelihood/_numpy.py:55`, `_jax.py:63`, `plotting.py:169`, `models/mck19.py:136` | 758.90 mag | |
-| `samplers/snpe.py:265` | **769.80 mag** | bare `finfo.tiny`; agreed in f32, disagreed by ~11 mag in f64 |
+| `samplers/snpe.py:265` | **778.03 mag** | bare `finfo.tiny`; agreed in f32, disagreed by **19.13 mag** in f64 |
 | `samplers/jax/abc_gpu.py:96` | `inf` in f32 | §2.1 |
 | `models/jax/{kilonova,tde,supernova,kilonova_two}.py` | `mag_floor` = 40 | a different layer; the likelihood floor never fires on these |
 
 Now one rule everywhere on the model side: `max(_MIN_FLUX_JY, finfo.tiny)` → 758.90 in f64, 103.72
 in f32. `flux_density_to_mag` keeps returning NaN and now says why it is the exception.
 
+**Scope correction.** "Eleven" is right for `whisper_cbpf/` and wrong for the repository: counting
+`notebooks/` and `tests/` there are ~24 copies of the flux→magnitude map, and the ~13 outside the
+package have **no floor at all** (`notebooks/_build_notebooks.py:121`, `tests/test_import_and_registry.py:89,183`,
+`tests/test_two_component_kilonova.py:79,104,117`, `tests/test_mck19.py:80,93`, and others). None of
+them meets a zero flux today, so this is latent rather than live — but nothing stops a twelfth
+in-package copy either. Opened in `OPEN_ITEMS.md`.
+
 ### 2.4 WAIC did not say when it was meaningless (silent-wrong) — FIXED `9ee55b3`
 
-**Measured**, redback 2-component kilonova, 88 AT2017GFO points, 9 parameters:
-`p_waic = 939505` beside an `AIC = 415`, returned with no warning. `p_waic` estimates the effective
-number of parameters; 939505 against 88 data points is not a number. Cross-checked against a
-well-specified toy at the same budgets, where AIC = −200.66 and WAIC = −201.64 with `p_waic = 2.75`
-for 4 parameters — so the estimator is fine and the blow-up is real signal about the fit.
+**Measured**, redback 2-component kilonova, 88 AT2017GFO r-band points, 9 parameters, `mcmc` in
+**flux** space, seed 1, `nsteps=4000 / burnin=1000 / nwalkers=32`: **`p_waic = 1,012,027`** beside
+an **`AIC = 415.19`**, returned with no warning. `p_waic` estimates the effective number of
+parameters; a million against 88 data points is not a number.
+
+*(An earlier draft of this report quoted `p_waic = 939505` without recording the configuration. The
+pipeline is deterministic given (model, data, space, seed, budget), and that value could not be
+reproduced in 12 attempts — the configuration is now stated so it can be. `AIC = 415` reproduces
+exactly.)*
+
+**What a p_waic blow-up actually means — corrected.** This report first concluded "the estimator is
+fine and the blow-up is real signal about the fit". That is wrong, and adversarial re-measurement
+settled it: on a 4-parameter `gaussian_rise` fit to data generated **from the fitted model itself**,
+`p_waic` blew up on **5 of 12 seeds** (max 2.79e8) with `converged=True`; and the badly misspecified
+kilonova gives `p_waic = 11.73`, flagged **reliable**, under ABC on the same points. The mechanism is
+stranded chains, not misspecification: 3.12% of draws — one emcee walker × 300 thinned steps — sat
+at logL −15950.8 against a posterior median of +112.6. The same model on the same points spans five
+orders of magnitude of `p_waic` across legitimate configurations (flux/seed 1 → 1.01e6; magnitude/
+seed 0 → 618; ABC → 11.73). The flag and warning remain the right fix; the diagnosis they suggest
+should read "one or more chains is stranded" first.
 
 `_loo_waic` now returns `p_waic_reliable` against Gelman/Hwang/Vehtari's `p_waic ≤ n_data/2` and
 warns when it fails. `scripts/compare_at2017gfo.py` marks those cells `!`.
@@ -192,9 +223,13 @@ warns when it fails. `scripts/compare_at2017gfo.py` marks those cells `!`.
 ### 2.5 A fit on an EMPTY light curve reported an AIC (silent-wrong) — FIXED `9ee55b3`
 
 Found by the acceptance script, whose own bug it was. `select_time_window(0.4, 12)` applied *before*
-`set_explosion_date` compares day bounds against raw MJD (~57983) and drops every row. Every sampler
-then completed and reported `AIC = 2k`, `BIC = -inf` (`k·log(0)`). `GaussianLikelihood.__init__` now
-raises and names that ordering.
+`set_explosion_date` compares day bounds against raw MJD (~57983) and drops every row.
+
+Of the four CPU samplers, **two** — `fit_MCMC` and `fit_ABC` — then completed and reported
+`AIC = 2k`, `BIC = -inf` (`k·log(0)`). `fit_ABC_SMC` completed with `max_logL = aic = bic = nan`, and
+`fit_SNPE` crashed inside torch (`RuntimeError: There are 0 sized dimensions…`) before any AIC was
+formed. (An earlier draft said "every sampler".) `GaussianLikelihood.__init__` now raises for all of
+them and names that ordering.
 
 ### 2.6 The GPU samplers were unreachable through `wp.fit` — FIXED `d19c3f3`
 

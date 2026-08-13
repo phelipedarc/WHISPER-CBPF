@@ -263,7 +263,7 @@ def _torch_model_in_space(space, zeropoint_jy, torch):
     :func:`whisper_cbpf.likelihood._jax.log_likelihood_jax` and
     :func:`whisper_cbpf.samplers.jax.abc_gpu._model_in_space_jnp`. It used to be a bare
     ``finfo.tiny``, which agreed with them in float32 but not in float64 — there ``tiny`` is
-    2.2e-308, giving 769.80 mag where every other backend gives 758.90. An 11-magnitude
+    2.2e-308, giving **778.03 mag** where every other backend gives 758.90. A 19.13-magnitude
     backend-dependent floor is exactly the sort of thing that makes a cross-sampler comparison
     incomparable, which is what this package exists to do.
     """

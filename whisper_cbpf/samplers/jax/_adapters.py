@@ -35,7 +35,12 @@ __all__ = ["MAX_UNCHUNKED_BATCH", "float_dtype", "resolve_band_index",
 #: user-tunable number, and on a photometric model XLA's compile time explodes long before memory
 #: does. ``abc_gpu`` measured B=256 as "did not finish compiling in 6 minutes", which is where this
 #: number comes from. Raise it only for a cheap analytic model with no wavelength axis.
-MAX_UNCHUNKED_BATCH = 256
+#:
+#: Set to 64, not 256, and compared with >=. 256 was the width abc_gpu measured as "did not finish
+#: compiling in 6 minutes", so a guard that ADMITS 256 admits the documented hang. Re-measured here
+#: on the cited configuration (n_wave=1000, 213 observations, GPU): first-call compile+run was
+#: 86.3 s at B=64 and 586.9 s at B=128. 64 is the last width that is merely slow.
+MAX_UNCHUNKED_BATCH = 64
 
 
 def float_dtype():
@@ -148,10 +153,10 @@ def make_batched_predict_jax(lc, model, *, names=None, times=None,
         _check_times(times, t_source, np)
         b = int(theta_2d.shape[0])
         if chunk is None:
-            if max_batch is not None and b > max_batch:
+            if max_batch is not None and b >= max_batch:
                 raise ValueError(
                     f"make_batched_predict_jax was asked to vmap {b} parameter sets in one "
-                    f"compiled call, above max_batch={max_batch}. A vmap whose extent is a "
+                    f"compiled call, at or above max_batch={max_batch}. A vmap whose extent is a "
                     f"simulation count is the trap that has stalled this project's compiles five "
                     f"times. Pass chunk=<width> (abc_gpu's own default is 16), or raise max_batch "
                     f"if your forward model is analytic and has no wavelength axis.")
@@ -176,6 +181,16 @@ def _check_times(times, t_source, np_mod):
     """
     if times is None:
         return
+    # SHAPE FIRST, and unconditionally: a tracer has a .shape even though it has no value, so the
+    # cheap check that catches "wrong number of epochs" must not sit behind the conversion that
+    # only concrete arrays survive. This used to `return` from inside the except, so under a
+    # tracer NO check ran at all and a 7-element traced `times` was silently evaluated on the
+    # closed-over 24-epoch grid.
+    shape = getattr(times, "shape", None)
+    if shape is not None and tuple(shape) != t_source.shape:
+        raise ValueError(
+            f"times has shape {tuple(shape)} but this forward map was built for "
+            f"{t_source.shape}. Rebuild the adapter for the new epochs.")
     try:
         arr = np_mod.asarray(times, dtype=float)
     except Exception:
@@ -184,12 +199,18 @@ def _check_times(times, t_source, np_mod):
         raise ValueError(
             f"times has shape {arr.shape} but this forward map was built for {t_source.shape}. "
             f"Rebuild the adapter for the new epochs.")
-    # rtol=1e-5, not exact equality: the ABC samplers hand back their own on-device copy of
-    # ``lc.time``, which in a float32 session has round-tripped through single precision and no
-    # longer compares equal to the float64 source. 1e-5 is two orders above float32 eps (1.2e-7)
-    # and still catches any genuinely different epoch grid -- the failure this guards against
-    # shifts or rescales the times, it does not perturb them at the ULP level.
-    if not np_mod.allclose(arr, t_source, rtol=1e-5, atol=0.0):
+    # Tolerance sized to the float32 round-trip and NOTHING more. The ABC samplers hand back their
+    # own on-device copy of ``lc.time``, which in a float32 session has passed through single
+    # precision and no longer compares equal to the float64 source; float32 eps is 1.2e-7, so 1e-6
+    # covers it with margin.
+    #
+    # It used to be 1e-5, which is near-inert on MJD-valued times -- exactly what whisper's own
+    # loader produces. At MJD 58000 a relative 1e-5 permits a 0.58 DAY epoch error, so shifts of
+    # 0.001-0.5 d were all accepted; on a days-since-explosion grid the same rtol correctly
+    # rejected 1e-5 d. Four orders of magnitude of behaviour depending on the caller's time origin
+    # is not a check. Scaling by the SPAN rather than the values removes the origin dependence.
+    span = float(np_mod.ptp(t_source)) or 1.0
+    if not np_mod.allclose(arr, t_source, rtol=0.0, atol=1e-6 * span):
         raise ValueError(
             "times differs from the array this forward map was built for. The epochs are closed "
             "over (the supernova family compiles its grid from them), so passing a different "
@@ -203,13 +224,15 @@ def _mapped_in_chunks(jax, jnp, vmapped, theta_2d, width):
     ragged tail keeps every block the same shape, so there is exactly one compiled kernel.
     """
     b = int(theta_2d.shape[0])
+    if b == 0:                                   # an ABC round can legitimately accept nothing;
+        return vmapped(theta_2d)                 # reshape(0, -1) cannot infer the trailing dim
     n_blocks = -(-b // width)
     pad = n_blocks * width - b
     if pad:
         theta_2d = jnp.concatenate([theta_2d, jnp.repeat(theta_2d[-1:], pad, axis=0)], axis=0)
     blocks = theta_2d.reshape(n_blocks, width, theta_2d.shape[-1])
     out = jax.lax.map(vmapped, blocks)
-    return out.reshape(n_blocks * width, -1)[:b]
+    return out.reshape(n_blocks * width, out.shape[-1])[:b]
 
 
 def make_log_prob_jax(lc, model, prior=None, *, space="auto", names=None,
@@ -259,6 +282,21 @@ def make_log_prob_jax(lc, model, prior=None, *, space="auto", names=None,
 
     lows, highs = _box_bounds(prior, names, model.name)
     perm = _gather_permutation(names, model.parameters, getattr(model, "name", "?"))
+    # A prior-only column is fine for the FORWARD MAP (make_batched_predict_jax drops it, which is
+    # the scatter_param case). It is NOT fine here: nothing downstream consumes it -- the JAX
+    # likelihood takes model_flux alone and refuses GaussianLikelihoodWithScatter -- so the density
+    # would be exactly CONSTANT in that parameter. Measured: logL = 71.834030 identically at
+    # sigma = 0.02, 0.1 and 0.4, with d(logL)/d(sigma) == 0.0, where the CPU twin gives 63.516 /
+    # 32.737 / -0.094. The sampler would converge and report the PRIOR as that parameter's
+    # marginal, labelled as a fit. Refuse, as the missing-parameter case does.
+    extra = [n for n in names if n not in set(model.parameters)]
+    if extra:
+        raise ValueError(
+            f"parameter(s) {extra} are in the sampling order but not in model {model.name!r}, so "
+            f"the automatic density would be exactly constant in them and their posterior would be "
+            f"the prior. This is what a `scatter_param` looks like here: the JAX likelihood scores "
+            f"model flux only. Drop them from the prior for this sampler, or pass log_prob_fn= "
+            f"with a density that actually uses them.")
 
     like = likelihood if likelihood is not None else make_likelihood(lc, space=space)
     try:
@@ -369,7 +407,23 @@ def resolve_density(lc, model, prior, log_prob_fn, space, names, *,
 
     from_model = getattr(model, "log_prob_jax", None)
     if from_model is not None:
-        return from_model, resolve_space(lc, space), "declared", "model.log_prob_jax"
+        if include_prior:
+            # `Model.log_prob_jax` is contractually a pure log-LIKELIHOOD (models/__init__.py:40).
+            # emcee has no prior mechanism of its own, so handing it this slot unchanged would
+            # impose a flat box and reinstate the exact defect the auto-build path exists to fix --
+            # measured on a LogUniform tau: -17.2056 from this branch against a correct posterior
+            # -26.0258, and a tau median of 258.78 (P(tau>100) = 0.810) against 29.02 (0.264).
+            # Adding the prior here is possible but would silently redefine a public slot's
+            # meaning, so refuse and say which sampler wants what.
+            raise ValueError(
+                f"{sampler} needs a log-POSTERIOR (it has no prior mechanism of its own), but "
+                f"model {model.name!r} supplies `log_prob_jax`, which is contractually a pure "
+                f"log-LIKELIHOOD. Using it here would impose a flat box in place of your prior. "
+                f"Pass log_prob_fn= with the prior already included, or clear model.log_prob_jax "
+                f"so a correct density is built from model.predict_jax.")
+        declared = space is not None and str(space).lower() != "auto"
+        return (from_model, resolve_space(lc, space),
+                ("declared" if declared else "assumed"), "model.log_prob_jax")
 
     if getattr(model, "predict_jax", None) is None:
         raise ValueError(

@@ -34,7 +34,7 @@ def log_likelihood_jax(like):
     float32** — the same trap the SNPE torch path hit (see CHANGELOG, "The float32 floor is
     finfo.tiny"). The floor here is therefore the working dtype's smallest normal whenever
     ``_MIN_FLUX_JY`` is not representable in it. For a model with a magnitude cap (the JAX
-    kilonova's ``mag_floor = 40`` gives flux >= 3.6e-16 Jy) the clamp never fires at all.
+    kilonova's ``mag_floor = 40`` gives flux >= 3.631e-13 Jy) the clamp never fires at all.
     """
     import jax.numpy as jnp
 

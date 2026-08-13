@@ -45,7 +45,7 @@ def flux_density_to_mag(flux, flux_err=None, zeropoint_jy=AB_ZEROPOINT_JY):
     * :func:`whisper_cbpf.samplers.snpe._torch_model_in_space`
     * :func:`whisper_cbpf.plotting._flux_to_quantity`
 
-    The JAX photometric models cap earlier still, at ``mag_floor = 40`` (flux >= 3.63e-16 Jy), so on
+    The JAX photometric models cap earlier still, at ``mag_floor = 40`` (flux >= 3.631e-13 Jy), so on
     those models the likelihood-layer floor never fires. See ``docs/PHYSICS_NOTES.md``.
     """
     flux = np.asarray(flux, dtype=float)
