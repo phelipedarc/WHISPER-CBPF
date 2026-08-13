@@ -397,3 +397,54 @@ through `wp.fit` — odd, since it is the model those samplers were originally b
 
 **Next:** adapt the flare's hook to the flat-theta contract. Small, but it changes a model's public
 shape, which is why the audit did not do it unasked.
+
+
+---
+
+## Opened by the nested-sampling / cleanup / benchmark work (2026-08-13)
+
+### `ln Z` lives in `info`, not on `SamplerResult` — needs a decision
+
+`nested` reports `result.info["log_evidence"]` and `["log_evidence_err"]`, beside `result.aic`.
+Promoting them to first-class dataclass fields is a 4-line change to `samplers/base.py` (two
+defaulted fields after `bic`, two lines in `to_dict()`), and would read better: the evidence is the
+whole reason this sampler exists.
+
+**If you promote them, default to `float("nan")`, NOT `None`.** `SamplerResult.to_dict()` calls
+`float(...)` on every promoted field, and `float(None)` raises — the exact defect that made
+`to_json()` fail for the two pymc samplers (fixed in `ec608a7`). Every other sampler would then
+report `nan`, which is correct: they do not compute an evidence.
+
+Left undone deliberately: it is a public API change, and the current placement is tested
+(`tests/test_nested.py::test_nested_returns_log_evidence`) and documented (`docs/CHOOSING.md`).
+
+### `n_jobs` on `nested` is a LOSS on cheap models — and the break-even is unknown
+
+Measured on `flare`, `nlive=400`, `dlogz=0.1`: serial **6.28 s** against `n_jobs=4` **13.80 s** at
+essentially equal `ncall` (25 624 vs 25 072) — **2.2× slower**, process overhead swamping a
+microsecond-scale `predict`. The default is therefore serial.
+
+**Next:** the break-even per-call cost is unknown. A sweep of artificial `predict` costs against
+`n_jobs` would settle when the pool starts paying — worth knowing before anyone runs `nested` on a
+radiative-transfer model.
+
+### The benchmark PRODUCTION run never happened
+
+`docs/BENCHMARKS.md` is a **smoke run** and says so in its first paragraph: tiny budgets, unconverged
+posteriors, WAICs that all carry their own `!`. The agent tasked with the production sweep hit a
+session limit before running it.
+
+One honest apples-to-apples number did survive: kilonova-1c with `mcmc`, same budget, **6.16 s on
+CPU-JAX against 1.31 s on GPU (4.7×)**.
+
+**Next:** `python scripts/benchmark_samplers.py --preset production --two-stage` on an idle card.
+Until then nothing in this repository ranks samplers by speed.
+
+### `docs/CHOOSING.md`'s 50,000-simulation crossover is still unmeasured
+
+The claim "the GPU crosses over at roughly 50,000 simulations" has **no measurement anywhere in this
+repository**. The benchmark harness can test it (`--crossover`: fits `wall(N) = a + b·N` per arm,
+solves for `N*`, bootstraps a 95% CI, and reports warm and cold separately against each CPU
+baseline) but that run has not been done.
+
+It is also unqualified as written: `n_jobs=1` and `n_jobs=8` cannot both be the crossover.

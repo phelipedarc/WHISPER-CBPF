@@ -447,6 +447,12 @@ skip. 260 + 10 = 270 = 235 + 35.
 
 **Measurements I could not run:**
 
+0. **The benchmark production sweep.** `docs/BENCHMARKS.md` is a smoke run — the agent tasked with
+   the real matrix hit a session limit. So this repository still contains no defensible sampler
+   speed ranking, and `docs/CHOOSING.md`'s "the GPU crosses over at roughly 50,000 simulations"
+   remains unmeasured. `scripts/benchmark_samplers.py --preset production --two-stage` and
+   `--crossover` are the commands.
+
 13. Whether the **redback prior-file loaders** in `tde.py:1549` and `supernova.py:1471` are the same
     function twice. `DUPLICATES.md`'s one pending decision; needs the two diffed.
 14. Whether **`jax_gpu/`** (excluded from the merge as a legacy precursor) holds anything unique.
