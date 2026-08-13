@@ -3,6 +3,13 @@
 A hands-on tour of what Whisper can do today — **data ingestion, plotting, and fitting** (ABC, ABC-SMC,
 and SNPE). Import once:
 
+> **Figures and demo scripts linked below are not in this package.** This repository ships code, not
+> analyses, so `dev/` and `sanity_check/` were deliberately left behind at the merge (see
+> [`../INVENTORY.md`](../INVENTORY.md) §1.2). Every such link points into the frozen legacy
+> repositories [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI) @ `8ba3843` and
+> [whisper-GPU](https://github.com/phelipedarc/whisper-GPU) @ `10796a0`, pinned at the commits
+> [`../PROVENANCE.md`](../PROVENANCE.md) records, so they cannot rot if those repos move on.
+
 ```python
 import whisper_cbpf as wp
 ```
@@ -166,7 +173,9 @@ astroquery), the load degrades gracefully and you can supply the band by hand:
 wp.register_manual_band("my_filter", lambda_eff=9000.0, zero_point=3631.0)
 ```
 > SVO needs the optional `[svo]` extra (`pip install 'whisper-cbpf[svo]'`, which adds `astroquery`).
-> A runnable, **offline** tour of all four features is in [`dev/demo_ingestion.py`](../dev/demo_ingestion.py).
+> A runnable, **offline** tour of all four features is in
+> [`dev/demo_ingestion.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_ingestion.py)
+> (WHISPER_AI, not in this package).
 
 ## 6. Plot
 
@@ -174,13 +183,13 @@ wp.register_manual_band("my_filter", lambda_eff=9000.0, zero_point=3631.0)
 ```python
 wp.plot_light_curve(lc, layout="report")
 ```
-![report](../dev/figures/at2017gfo_report.png)
+![report](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/at2017gfo_report.png)
 
 ### Per-band grid: one box per band, choose the quantity
 ```python
 wp.plot_light_curve(lc, layout="grid", quantity="apparent_mag", ncols=4)
 ```
-![grid](../dev/figures/at2017gfo_grid_mag.png)
+![grid](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/at2017gfo_grid_mag.png)
 
 `quantity` can be `"apparent_mag"`, `"flux"`, or `"absolute_mag"` (the latter needs `redshift=` set on
 the curve, e.g. `load_lightcurve(..., redshift=0.0099)`).
@@ -195,7 +204,7 @@ The same one-liner on raw ZTF photometry (`zg`/`zr` → `ztfg`/`ztfr`, with the 
 ztf = wp.load_lightcurve("tests/data/ztf18aarlhfw.csv", flag_filters={"catflags": 0})
 wp.plot_light_curve(ztf, layout="report")
 ```
-![ztf](../dev/figures/ztf18aarlhfw_report.png)
+![ztf](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/ztf18aarlhfw_report.png)
 
 ---
 
@@ -234,7 +243,7 @@ res.best_params            # best-fit parameter dict
 res.to_json("fit.json")    # AIC, BIC, max-likelihood, posterior summary, diagnostics
 ```
 
-![ABC flare fit](../dev/figures/at2017gfo_abc_flare_r.png)
+![ABC flare fit](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/at2017gfo_abc_flare_r.png)
 
 The flare model tracks the r-band decline well. (Its reduced χ² is high only because the photometry
 is high-SNR — tiny error bars magnify any model imperfection; physically-motivated models come later.)
@@ -285,7 +294,7 @@ A full **model-comparison report** (3 models × both samplers on AT2017GFO) is i
 [`REPORT_at2017gfo.md`](REPORT_at2017gfo.md) — there ABC-SMC matches flat ABC's fit with **~4× fewer
 simulations**.
 
-![model comparison](../dev/figures/at2017gfo_model_comparison.png)
+![model comparison](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/at2017gfo_model_comparison.png)
 
 ### A physical, band-dependent model: `mck19`
 
@@ -301,9 +310,11 @@ res = wp.fit_MCMC(lc, "mck19", nsteps=2000)   # params: v_kick, M_smbh, M_bh, r_
 ```
 
 Because the data is in magnitude space the likelihood compares in magnitude automatically (the model
-predicts flux). `dev/demo_mck19.py` renders the light curve:
+predicts flux).
+[`dev/demo_mck19.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_mck19.py)
+(WHISPER_AI, not in this package) renders the light curve:
 
-![mck19 light curve](../dev/figures/mck19_lightcurve.png)
+![mck19 light curve](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/mck19_lightcurve.png)
 
 ### A redback-backed model: `two_component_kilonova`
 
@@ -320,10 +331,11 @@ res = wp.fit_SNPE(lc, "two_component_kilonova", num_simulations=3000)   # SNPE s
 It's an expensive simulator (~50 ms/call), so **SNPE** (which amortizes simulation cost) is the natural
 sampler; ABC/MCMC work with modest budgets. Because AT2017GFO is a real kilonova, this model fits it
 well (low residual, no prior-railing) — the clean counterpart to the `mck19` exercise above.
-`dev/demo_kilonova.py` renders the light curve (note the blue bands fading faster — kilonova
-reddening):
+[`dev/demo_kilonova.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_kilonova.py)
+(WHISPER_AI, not in this package) renders the light curve (note the blue bands fading faster —
+kilonova reddening):
 
-![kilonova light curve](../dev/figures/kilonova_lightcurve.png)
+![kilonova light curve](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/kilonova_lightcurve.png)
 
 ### Likelihoods & space (flux vs magnitude)
 
@@ -359,10 +371,12 @@ a point instead. Sampling is **seeded and reproducible**.
 ### All samplers agree — a sanity check
 
 ABC, ABC-SMC, MCMC and SNPE share Whisper's model + prior + likelihood, so on the same data they reach
-**the same posterior**. [`sanity_check/compare_samplers.py`](../sanity_check/compare_samplers.py) fits all four to
-`gaussian_rise` and overlays them in one corner plot:
-
-![sampler comparison](../sanity_check/figures/sampler_comparison_corner.png)
+**the same posterior**.
+[`sanity_check/compare_samplers.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/compare_samplers.py)
+(WHISPER_AI, not in this package) fits all four to `gaussian_rise` and overlays them in one corner
+plot. Its output figure was never committed to either repository, so run the script to regenerate it;
+a four-sampler AT2017GFO corner *is* published in
+[`sanity_check/BENCHMARK.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/BENCHMARK.md).
 
 ### Neural posterior estimation (SNPE)
 
@@ -413,7 +427,9 @@ res = wp.fit_SNPE(
   the TCN is a Temporal Convolutional Network — dilated causal convolutions specialized for time
   series), trained jointly with the estimator to `embedding_latent` features; or pass any
   `torch.nn.Module`. In the Bazin benchmark the MLP was the *fastest* config and the TCN the *most
-  accurate* (see `sanity_check/figures/REPORT.md`).
+  accurate* (see
+  [`sanity_check/figures/REPORT.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/figures/REPORT.md),
+  WHISPER_AI, not in this package).
 - **`density_estimator`** — a name (`'maf'`/`'nsf'`/`'mdn'`) **or** a pre-built `posterior_nn(...)`
   factory; `hidden_features` / `num_transforms` / `num_bins` tune the built-in architectures.
 - **`proposal_mode='restricted'`** — truncated SNPE (`RestrictedPrior` + `get_density_thresholder`),
@@ -424,8 +440,10 @@ res = wp.fit_SNPE(
 - **`device`** — train on a GPU: `'cpu'` (default), `'cuda'` / `'gpu'` / `'cuda:N'`, or **`'auto'`**
   (CUDA when available, else CPU; a GPU request with no CUDA warns and falls back). With
   `predict_torch` the GPU also runs the simulator; `training_batch_size`/`stop_after_epochs` (passed
-  through to `sbi`) are the training-speed levers — `sanity_check/benchmark_snpe_device.py` and
-  [`sanity_check/BENCHMARK.md`](../sanity_check/BENCHMARK.md) carry the measurements.
+  through to `sbi`) are the training-speed levers —
+  [`sanity_check/benchmark_snpe_device.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/benchmark_snpe_device.py)
+  and [`sanity_check/BENCHMARK.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/BENCHMARK.md)
+  (WHISPER_AI, not in this package) carry the measurements.
 - **Amortized reuse** — with `num_rounds=1` (NPE) the trained `result.posterior` infers a **new**
   same-grid observation in ~10–100 ms: `result.posterior.sample((2000,), x=result.format_x(new_flux))`
   — no refit per object.
@@ -435,7 +453,8 @@ res = wp.fit_SNPE(lc, "two_component_kilonova", device="auto", num_rounds=2, num
 ```
 
 > `snpe` needs the optional `[sbi]` extra (`pip install 'whisper-cbpf[sbi]'`, adds `sbi` + `torch`).
-> Runnable: [`dev/demo_snpe.py`](../dev/demo_snpe.py) and the notebook
+> Runnable: [`dev/demo_snpe.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_snpe.py)
+> (WHISPER_AI, not in this package) and the notebook
 > [`examples/at2017gfo_quickstart.ipynb`](../examples/at2017gfo_quickstart.ipynb). Training is the slow
 > part — its tests are marked `slow` (`pytest -m "not slow"` skips them).
 
@@ -452,8 +471,9 @@ fig = wp.plot_corner(
 ```
 
 It uses a dark, colourblind-distinct palette (`wp.CORNER_PALETTE`), shared axis ranges, contour lines +
-filled marginals, and a legend — publication-ready. See [`sanity_check/BENCHMARK.md`](../sanity_check/BENCHMARK.md) for the
-four-sampler AT2017GFO corner.
+filled marginals, and a legend — publication-ready. See
+[`sanity_check/BENCHMARK.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/BENCHMARK.md)
+(WHISPER_AI, not in this package) for the four-sampler AT2017GFO corner.
 
 For **model selection**, `AIC`/`BIC` on each result are now computed from the exact Gaussian likelihood
 and are comparable across samplers (lower = better). For a fully-Bayesian score that uses the *whole*

@@ -2,7 +2,10 @@
 
 One row per place the JAX code is **not arithmetically identical** to the reference
 (redback; the installed 1.15.1 in `phe_sbi_2` unless a row says 1.12.0). Every impact
-number is *measured* by a test or an audit script in `_scratch/`, not estimated.
+number is *measured*, not estimated. Where the "Test that bounds it" column names a file under
+`tests/`, it is in this repository and you can re-run it. Some rows were instead measured by
+throwaway audit scripts that were never committed to any repository; those are marked **(script not
+preserved)**, and re-deriving the measurement from scratch is the only thing that would settle them.
 Empty is the goal; honest is the requirement.
 
 Project rules governing this ledger (user directives, 2026-08-08):
@@ -12,7 +15,7 @@ Project rules governing this ledger (user directives, 2026-08-08):
 - **Priors are never changed.** They are read from `redback.priors.get_priors()` at run
   time, delta functions included.
 
-## Kilonova (`models/kilonova.py`, `kilonova_two.py`)
+## Kilonova (`whisper_cbpf/models/jax/kilonova.py`, `kilonova_two.py`)
 
 | ID | What differs | Why | Max impact | Test that bounds it | Approved |
 |----|--------------|-----|-----------|---------------------|----------|
@@ -22,15 +25,15 @@ Project rules governing this ledger (user directives, 2026-08-08):
 | K4 | `arnett_prefactor` flag. **Default 1.0 = redback**, whose diffusion kernel integrates to ½ (measured `L/L_in → 0.500055` at 100 t_diff where Arnett/Chatzopoulos/Villar → 1). `2.0` selects the standard normalisation | the reference is wrong (uniform **0.7526 mag** too faint; T low by 2^0.25, R_floor low by √2) but §8.4 applies: do not fix the reference in the port | 0 by default (bitwise, compared at trace time); 2× in L when enabled | `test_kilonova_vs_redback.py::test_arnett_prefactor…` | **user, 2026-08-08: "keep as redback, expose a flag"** |
 | K5 | Barnes–Kasen bilinear table uses a strict `>` count | reproduces scipy RGI values exactly; derivative is one-sided **at** nodes | value C⁰ everywhere; derivative kink **up to 162.5 %** (T3; an earlier row said 31–46 % from a smaller probe) — but **bitwise C¹ at the vej = 0.4 edge node**, so "it kinks at every node" is false | `t3_inference/test_continuity.py` | inherited from reference |
 
-## TDE (`models/tde.py`)
+## TDE (`whisper_cbpf/models/jax/tde.py`)
 
 | ID | What differs | Why | Max impact | Test that bounds it | Approved |
 |----|--------------|-----|-----------|---------------------|----------|
-| D1 | Termination: `stop = (Ee≤0)|(Me≤0)|(Rv<Rcirc/2)` on one trajectory, replacing redback's `min(first(Rv<Rcirc/2), first(Me<0))` + shared try/except | redback's index is read off a **diverged** trajectory: redback vs itself under a 1-ulp β nudge differs on 10 % of draws (max 4–12 steps); a port built to reproduce the index missed by up to 1793 | constraint exact 81.9–85.3 % (vs redback-self 89.3–93.5 %), max 5/14 steps at n=500/5000; termination-time p99 1.2–5.0 % | `test_tde_vs_redback.py::test_termination_is_the_models_own_criterion`, `_scratch/constraint_conditioning.py` | forced by JAX + measurement |
+| D1 | Termination: `stop = (Ee≤0)|(Me≤0)|(Rv<Rcirc/2)` on one trajectory, replacing redback's `min(first(Rv<Rcirc/2), first(Me<0))` + shared try/except | redback's index is read off a **diverged** trajectory: redback vs itself under a 1-ulp β nudge differs on 10 % of draws (max 4–12 steps); a port built to reproduce the index missed by up to 1793 | constraint exact 81.9–85.3 % (vs redback-self 89.3–93.5 %), max 5/14 steps at n=500/5000; termination-time p99 1.2–5.0 % | `test_tde_vs_redback.py::test_termination_is_the_models_own_criterion`; the constraint-conditioning probe behind the 81.9–85.3 % figure is **(script not preserved)** | forced by JAX + measurement |
 | D2 | `valid`/`meaningful` masks replace the data-dependent slice; `constraint == 0` → zero flux where redback 1.15.1 returns a **full curve** (its `constraint_1 = 5000` sentinel) | shapes must be static under jit; the envelope is born inside R_circ/2 on **0.431 %** of the prior (closed form: `β·(R_t/R★) < 20`, predicate `envelope_exists`) | largest single divergence from installed redback: 0 pts vs 389–4817 pts on 0.43 % of the prior | `t…::test_envelope_exists_predicts…`, `…short_lived_envelope…` | forced (jit) + physical rule |
 | D3 | Zero flux outside the envelope's own time span; `R_phot` clamped ≥ 0 before interpolation | redback: flat/extrapolated curves past termination (a `constraint==1` draw produced a flat 400-day curve at AB 20.5 on **9.85 %** of the prior at n=500); negative R_phot squared into a blackbody on **3.6 %** of draws (≤ 3.89 mag local) | a genuine cliff in t and θ that `jax.grad` cannot see — documented; keep data inside the span | `…::test_short_lived…`, `…::test_zero_flux_outside…`, `…::test_negative_photosphere…` | physical rule, user-endorsed 2026-08-08 |
-| D4 | Exact bandpass integral vs redback's 100-pt SED → sncosmo spline | same choice as K2 | envelope mags: median 0.02–3.9 mmag, **max 19.2 mmag**; gaussianrise ≤ 100 mmag at the final epoch | `benchmarks/tde_vs_redback/compare.py` (figures) | pre-existing design |
-| D5 | Interpolate (T, R) onto observation epochs, then integrate the band — redback's own `cooling_envelope` convention (its `gaussianrise` integrates then interpolates) | 12.5× memory/compute; and measured *more* accurate vs a cubic reference in 15/17 cases | ≤ 7.2e-3 mag at n=5000 (3-day cadence 3.8e-3); up to **0.596 mag at n=500** — one more reason not to fit at `REDBACK_PRESETS["1.15"]` | verifier round 3, `_scratch/v*` | convention chosen from redback itself |
+| D4 | Exact bandpass integral vs redback's 100-pt SED → sncosmo spline | same choice as K2 | envelope mags: median 0.02–3.9 mmag, **max 19.2 mmag**; gaussianrise ≤ 100 mmag at the final epoch | [`benchmarks/tde_vs_redback/compare.py`](https://github.com/phelipedarc/whisper-GPU/blob/10796a0/benchmarks/tde_vs_redback/compare.py) (whisper-GPU, not in this package; its figures were gitignored and committed nowhere — see `FINDINGS.md` §1.2) | pre-existing design |
+| D5 | Interpolate (T, R) onto observation epochs, then integrate the band — redback's own `cooling_envelope` convention (its `gaussianrise` integrates then interpolates) | 12.5× memory/compute; and measured *more* accurate vs a cubic reference in 15/17 cases | ≤ 7.2e-3 mag at n=5000 (3-day cadence 3.8e-3); up to **0.596 mag at n=500** — one more reason not to fit at `REDBACK_PRESETS["1.15"]` | verifier round 3 **(scripts not preserved)** | convention chosen from redback itself |
 | D6 | Gaussian rise evaluated analytically in magnitude (a parabola), normalisation cancelled on paper | redback samples 100 nodes and interpolates (error 0.0128 mag at σ_t=2 d) and its normalising ratio underflows → NaN mags *and* grads on 0.27 % of the prior at z=0.5 | exact to **5.4e-13 mag** vs 60-digit mpmath; NaN rate now 0 in 2.88 M evaluations | verifier round 3; `…::test_gaussian_rise_is_continuous…` | forced (NaN grads) |
 | D7 | Flux-branch rise exponent clamped at 700 (saturates ≈1e304) | flux cannot represent exp(931) that magnitude represents as −800 mag; unclamped: +inf forward, NaN/−inf grads on 0.31 % of prior at z=0.5 | monotone saturation in a regime no observation reaches | `…::test_gaussianrise_flux_density_never_overflows` | forced (overflow) |
 | D8 | `dilation` flag; **default True** | the (1+z) is a relativity correction (`dν_obs = dν_src/(1+z)`); 1.12.0 is missing the term, 1.15.1 has it | `False` reproduces 1.12.0 exactly (ratio ≡ 1/(1+z), ≤1e-10); worth 0.011–0.43 mag at z = 0.01–0.5 | `…::test_dilation_is_exactly_one_plus_z` | user framing 2026-08-08 |
@@ -50,7 +53,7 @@ meets and the forward-side ledger above does not describe.
 | G1 | **Zero-gradient plateau.** Where `constraint < 2` the flux is exactly 0 at every epoch, so ∂/∂θ is **exactly 0 in all five engine parameters** | **6.45 %** of redback's own prior at `n_time=500`; **empty** at 5000 (512 draws); 3.1 % of `tde_model(rise="gaussian", n_time=500)`'s prior | a flat region HMC can neither escape nor detect the edge of. `envelope_exists()` bounds only the closed-form 0.431 % | `t2_autodiff/test_gradients.py` |
 | G2 | **The zero-flux cliff moves with the parameters** and AD is blind to it (D3, gradient side) | epoch held fixed: **24.52 mag** under a 1e-6 relative nudge on any of the five, at n=500; termination index moves +4…+6 steps, **0** at n=5000; 7/32 live prior draws | a likelihood straddling the cliff is discontinuous in a way HMC cannot see | `t3_inference/test_continuity.py` |
 | G3 | `Model.predict` is **not differentiable** — both factories cast with `float(...)` and return NumPy | `jax.grad` raises `ConcretizationTypeError`; the two paths are pinned equal (kilonova rtol < 1e-12, TDE jitted-vs-eager 4.2e-15) | gradient samplers must call the module functions, not `predict` | `t2_autodiff/test_gradients.py` |
-| G4 | **NUTS does not converge over redback's untruncated shipped prior** | **0 of 12** fits; median r-hat **2.55**, median divergence rate **50 %**. Injection #5 recovered 7/7 truths in its 90 % CI, but every fit has r-hat ≥ 1.83 | truncate the prior before any production fit; see HANDOFF | `t3_inference/stage_sbc.py`, `stage_injection_recovery.py` |
+| G4 | **NUTS does not converge over redback's untruncated shipped prior** | **0 of 12** fits; median r-hat **2.55**, median divergence rate **50 %**. Injection #5 recovered 7/7 truths in its 90 % CI, but every fit has r-hat ≥ 1.83 | truncate the prior before any production fit; see whisper-GPU's [`HANDOFF.md`](https://github.com/phelipedarc/whisper-GPU/blob/10796a0/HANDOFF.md) (not in this package) | `t3_inference/stage_sbc.py`, `t3_inference/stage_injection_recovery.py` |
 
 ## Reference defects found, NOT fixed in the ports (§8.4 register)
 

@@ -4,7 +4,12 @@ Everything noticed during the merge and **not** acted on, plus every deviation f
 brief, with the reason. The migration was reorganisation only: no function body was changed, no
 parameter renamed, no default altered, no documented bug fixed.
 
-Source refs: `WHISPER_AI` @ `8ba3843`, `whisper-GPU` @ `10796a0`.
+Source refs: [`WHISPER_AI`](https://github.com/phelipedarc/WHISPER_AI) @ `8ba3843`,
+[`whisper-GPU`](https://github.com/phelipedarc/whisper-GPU) @ `10796a0`.
+
+> **Paths in backticks below usually name files in those legacy repositories, not in this one.**
+> This is a merge-time record written in the source repos' layout; for where a file ended up here,
+> see [`PROVENANCE.md`](PROVENANCE.md).
 
 ---
 
@@ -100,7 +105,8 @@ and citable. Not yet done.
 
 `conftest.py` skips:
 
-- `tests/test_benchmark_kilonova.py` (3 tests) — loads `sanity_check/benchmark_kilonova_modes.py`
+- `tests/test_benchmark_kilonova.py` (3 tests) — loads
+  [`sanity_check/benchmark_kilonova_modes.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/benchmark_kilonova_modes.py)
   by path, and that tree is excluded by 2.7. **This is the only reduction against the pre-merge CPU
   count**: 222 → 219 contributed.
 - `tests/t3_inference/` when JAX is absent — `_t3_common` does a bare `import jax` because it must
@@ -162,6 +168,7 @@ suite, not a like-for-like comparison. A true regression check would run the sam
 Not acted on — the source repos are frozen and were never written to.
 
 - Both would benefit from a deprecation note pointing at WHISPER-CBPF.
-- `whisper-GPU/HANDOFF.md` is stale on repo state: it says six commits are unpushed with
+- whisper-GPU's [`HANDOFF.md`](https://github.com/phelipedarc/whisper-GPU/blob/10796a0/HANDOFF.md)
+  is stale on repo state: it says six commits are unpushed with
   `origin/main` at `45bfe0f` and that the TDE work is uncommitted. All of that has since landed.
 - The `.gitignore` rule that excluded the TDE evidence figures (1.2) is worth revisiting there.

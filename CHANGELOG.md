@@ -576,7 +576,7 @@ A systematic, adversarially-verified review (physical consistency, Bayesian rigo
   (`skipif` no CUDA).
 
 ### Kilonova flux-vs-magnitude benchmark
-- New **timed benchmark + sanity check** ([`sanity_check/BENCHMARK.md`](sanity_check/BENCHMARK.md),
+- New **timed benchmark + sanity check** ([`sanity_check/BENCHMARK.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/BENCHMARK.md) — in WHISPER_AI, not in this package,
   `sanity_check/benchmark_kilonova_modes.py`): `two_component_kilonova` fit to AT2017GFO (g/r/i) in
   **flux** vs **magnitude** space with ABC / MCMC / SNPE (6 configs). Records per-config **runtime**,
   AIC, RMS and posterior size; each config writes its own result file so the six run in parallel.

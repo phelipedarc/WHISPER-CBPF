@@ -17,7 +17,12 @@ Models: `flare`, `bazin` (SN rise+fall), `gaussian_rise` (Gaussian rise + exp de
 
 **Best (lowest AIC): `gaussian_rise` via ABC** (AIC=5277, chi2/dof=62.7).
 
-![comparison](figures/at2017gfo_model_comparison.png)
+![comparison](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/at2017gfo_model_comparison.png)
+
+> The figure lives in [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI) @ `8ba3843`, not in
+> this package, which ships code rather than analyses. It is the figure for this table: its six
+> legend entries read χ²/dof = 67 / 86 (flare, ABC / ABC-SMC), 64 / 64 (bazin), 63 / 63
+> (gaussian_rise), which round-match all six rows above.
 
 ## Best-fit parameters (ABC-SMC)
 

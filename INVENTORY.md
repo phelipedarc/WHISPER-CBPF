@@ -2,6 +2,12 @@
 
 Read-only inventory. Nothing was written to either source repo; nothing was written to the target.
 
+> **Paths in backticks below name files in the legacy repositories**
+> [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI) @ `8ba3843` and
+> [whisper-GPU](https://github.com/phelipedarc/whisper-GPU) @ `10796a0`, **not in this repository.**
+> This is a pre-merge census, so it is written in the source repos' layout throughout; for where a
+> file ended up here, see [`PROVENANCE.md`](PROVENANCE.md).
+
 ## 0. What was inspected
 
 | Repo | Ref | SHA | Date |

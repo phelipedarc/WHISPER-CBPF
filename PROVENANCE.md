@@ -17,6 +17,12 @@ Both source repos are frozen legacy and were never written to.
 `sha256` is the source file's digest at copy time. Every row below is **byte-identical** to its
 source at that commit; import rewrites land in later commits and are measured against this baseline.
 
+The digest is therefore unaffected by anything that happened after the copy. Where a copied file was
+later **split**, the Destination column names the file(s) that hold its body **at HEAD**, and the
+split itself is recorded under "Files created during the merge" below — so the two sections are two
+views of one fact, not a contradiction. Four rows are in that state today (`distance/`, `likelihood`,
+`priors`), from commits `c9403cf` and `3f23e66`, both of which git recorded as renames.
+
 | Destination | Source repo | Original path | Source commit | sha256 (12) |
 |---|---|---|---|---|
 | `CITATION.cff` | WHISPER_AI | `CITATION.cff` | `8ba3843` | `ea746de54d4f` |
@@ -26,8 +32,8 @@ source at that commit; import rewrites land in later commits and are measured ag
 | `whisper_cbpf/__init__.py` | WHISPER_AI | `whisper_labia/__init__.py` | `8ba3843` | `90a930a16c22` |
 | `whisper_cbpf/backends/_env.py` | whisper-GPU | `_env.py` | `10796a0` | `7d9fc63838d9` |
 | `whisper_cbpf/backends/_registration.py` | whisper-GPU | `__init__.py` | `10796a0` | `a64777580ed6` |
-| `whisper_cbpf/distance/_gpu_distances.py` | whisper-GPU | `distances.py` | `10796a0` | `e0471dea0711` |
-| `whisper_cbpf/distance/_numpy_cpu_chi2.py` | WHISPER_AI | `whisper_labia/distance.py` | `8ba3843` | `5eb11dd79a20` |
+| `whisper_cbpf/distance/_numpy.py` (`mse`/`rmse`/`mae`/`wmse`/`wmae`) + `whisper_cbpf/distance/_jax.py` (`jnp_distance`) — split at `c9403cf`, imported as `_gpu_distances.py` | whisper-GPU | `distances.py` | `10796a0` | `e0471dea0711` |
+| `whisper_cbpf/distance/_numpy.py` (`chi2_distance`) + `whisper_cbpf/distance/__init__.py` (registry) — split at `c9403cf`, imported as `_numpy_cpu_chi2.py` | WHISPER_AI | `whisper_labia/distance.py` | `8ba3843` | `5eb11dd79a20` |
 | `whisper_cbpf/embeddings.py` | WHISPER_AI | `whisper_labia/embeddings.py` | `8ba3843` | `092db6cb2675` |
 | `whisper_cbpf/io/__init__.py` | WHISPER_AI | `whisper_labia/io/__init__.py` | `8ba3843` | `3b0e9e478af0` |
 | `whisper_cbpf/io/bands.py` | WHISPER_AI | `whisper_labia/io/bands.py` | `8ba3843` | `2b668d654176` |
@@ -36,7 +42,7 @@ source at that commit; import rewrites land in later commits and are measured ag
 | `whisper_cbpf/io/schema.py` | WHISPER_AI | `whisper_labia/io/schema.py` | `8ba3843` | `a6446580ed63` |
 | `whisper_cbpf/io/svo.py` | WHISPER_AI | `whisper_labia/io/svo.py` | `8ba3843` | `f2a7527e61c9` |
 | `whisper_cbpf/io/units.py` | WHISPER_AI | `whisper_labia/io/units.py` | `8ba3843` | `d25a57e680fc` |
-| `whisper_cbpf/likelihood.py` | WHISPER_AI | `whisper_labia/likelihood.py` | `8ba3843` | `f2e388ed5a6e` |
+| `whisper_cbpf/likelihood/_numpy.py` — split at `3f23e66`, imported as `likelihood.py` | WHISPER_AI | `whisper_labia/likelihood.py` | `8ba3843` | `f2e388ed5a6e` |
 | `whisper_cbpf/metrics/_jax.py` | whisper-GPU | `metrics.py` | `10796a0` | `5f7ad83ae36e` |
 | `whisper_cbpf/metrics/_numpy.py` | WHISPER_AI | `whisper_labia/metrics.py` | `8ba3843` | `a07731b134e5` |
 | `whisper_cbpf/models/__init__.py` | WHISPER_AI | `whisper_labia/models/__init__.py` | `8ba3843` | `3552077b5e08` |
@@ -53,7 +59,7 @@ source at that commit; import rewrites land in later commits and are measured ag
 | `whisper_cbpf/models/mck19.py` | WHISPER_AI | `whisper_labia/models/mck19.py` | `8ba3843` | `38186b87a7e4` |
 | `whisper_cbpf/models/two_component_kilonova.py` | WHISPER_AI | `whisper_labia/models/two_component_kilonova.py` | `8ba3843` | `c1324bb64db3` |
 | `whisper_cbpf/plotting.py` | WHISPER_AI | `whisper_labia/plotting.py` | `8ba3843` | `50511319d629` |
-| `whisper_cbpf/priors.py` | WHISPER_AI | `whisper_labia/priors.py` | `8ba3843` | `021a7cd8c945` |
+| `whisper_cbpf/priors/_numpy.py` — split at `3f23e66`, imported as `priors.py` | WHISPER_AI | `whisper_labia/priors.py` | `8ba3843` | `021a7cd8c945` |
 | `whisper_cbpf/samplers/__init__.py` | WHISPER_AI | `whisper_labia/samplers/__init__.py` | `8ba3843` | `5e41f631928f` |
 | `whisper_cbpf/samplers/abc.py` | WHISPER_AI | `whisper_labia/samplers/abc.py` | `8ba3843` | `e983cdf50b61` |
 | `whisper_cbpf/samplers/abc_smc.py` | WHISPER_AI | `whisper_labia/samplers/abc_smc.py` | `8ba3843` | `400499d229a9` |
@@ -80,6 +86,10 @@ copied file — no new numerics. Where a body came from a source file it is note
 | `whisper_cbpf/distance/_jax.py` | jnp implementations | `jnp_distance` verbatim from whisper-GPU `distances.py` @ `10796a0` |
 | `whisper_cbpf/distance/__init__.py` | registry + re-exports, numpy default, `_jax` lazy | `register_distance`/`get_distance`/`list_distances` verbatim from WHISPER_AI `whisper_labia/distance.py` @ `8ba3843`, extended with `*_jax` lazy resolution |
 | `whisper_cbpf/metrics/__init__.py` | re-export layer, `_jax` slot lazy | new; re-exports only |
+| `whisper_cbpf/likelihood/__init__.py` | re-export layer + `make_likelihood`/`resolve_space`, `_jax` slot lazy | body verbatim from WHISPER_AI `whisper_labia/likelihood.py` @ `8ba3843`, split at `3f23e66` |
+| `whisper_cbpf/likelihood/_jax.py` | `log_likelihood_jax`, reads `y`/`sigma`/`space` off an already-built likelihood object | new at `3f23e66`; no new numerics — the same Gaussian form as `_numpy.py` |
+| `whisper_cbpf/priors/__init__.py` | re-export layer, `_jax` slot lazy | body verbatim from WHISPER_AI `whisper_labia/priors.py` @ `8ba3843`, split at `3f23e66` |
+| `whisper_cbpf/priors/_jax.py` | `log_prob_jax`, the same density over a flat vector | new at `3f23e66`; term-for-term `Prior.log_prob`, normalising constants included |
 
 ### One duplicate collapsed — recorded, not silent
 

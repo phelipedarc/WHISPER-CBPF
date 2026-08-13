@@ -255,7 +255,9 @@ and `list_models()` work without it; only `predict` needs the `[models]` extra. 
 `two_component_kilonova_model`, mapping WHISPER bands → redback LSST filters and converting redback's AB
 magnitude to flux density (a machine-precision round-trip). It is an **expensive** simulator (~50 ms per
 band-call), so **SNPE** (amortized) is the natural sampler; ABC/MCMC want modest budgets. See
-`dev/demo_kilonova.py` and `dev/fit_kilonova_at2017gfo.py`.
+[`dev/demo_kilonova.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_kilonova.py)
+and [`dev/fit_kilonova_at2017gfo.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/fit_kilonova_at2017gfo.py)
+(WHISPER_AI, not in this package).
 
 `mck19` is **band-dependent** — it returns flux density (Jy) at each `(time, band)`, evaluating the
 hotspot + disk blackbody at the band's effective wavelength (via Whisper's band system) and the redshift
@@ -263,7 +265,8 @@ hotspot + disk blackbody at the band's effective wavelength (via Whisper's band 
 observer-frame delay `t_ram`. Self-contained (astropy constants/cosmology only — no `speclite`); the AB
 magnitude is the monochromatic-at-`λ_eff` approximation to the original LSST filter integration. Fixed
 disk constants (`mdot=0.05` Edd, `alpha=0.1`) do not enter the light-curve *shape*. See
-`dev/demo_mck19.py` for the g/r/i light curve.
+[`dev/demo_mck19.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_mck19.py)
+(WHISPER_AI, not in this package) for the g/r/i light curve.
 
 > For **parallel** ABC (`n_jobs>1`) the `predict` function must be picklable (module-level, not a
 > closure/lambda). Closures work with `n_jobs=1`.
@@ -306,7 +309,9 @@ sampler="abc"|"abc_smc"|"mcmc"|"snpe", **kwargs)` is the generic dispatcher. `li
 'pymc_jax_gpu_parallelized', 'pymc_jax_gpu_vectorized', 'snpe']` — **11**, the six GPU entries
 included even without the `[gpu]` extra (`npe` is an alias of `snpe`); `register_sampler(name, cls)`
 adds your own. **ABC/ABC-SMC** use the χ² distance; **MCMC/SNPE** use the shared likelihood layer, so all
-four reach the same posterior on the same data (see `sanity_check/compare_samplers.py`).
+four reach the same posterior on the same data (see
+[`sanity_check/compare_samplers.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/compare_samplers.py),
+WHISPER_AI, not in this package).
 
 Registry helpers: `register_sampler(name, sampler_cls, *, overwrite=False)`,
 **`get_sampler(name)`** → a *fresh instance* of the registered class (`KeyError` listing the available
@@ -436,7 +441,10 @@ keeps out-of-prior draws out of the returned posterior. `num_rounds=1` is amorti
 - **Device (GPU):** `device` = `'cpu'` (default), `'cuda'`/`'gpu'`/`'cuda:N'`, or `'auto'` (CUDA when
   available, else CPU). The torch prior + observed data are placed on the device; a GPU request without
   one warns and falls back to CPU. The GPU accelerates *training* (not the CPU simulator), so it helps
-  most with many simulations / large nets — see `sanity_check/benchmark_snpe_device.py` (`sanity_check/figures/snpe_device_benchmark.png`).
+  most with many simulations / large nets — see
+  [`sanity_check/benchmark_snpe_device.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/benchmark_snpe_device.py)
+  and [its figure](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/sanity_check/figures/snpe_device_benchmark.png)
+  (WHISPER_AI, not in this package).
 
 Extra kwargs pass to `NPE.train` (e.g. `max_num_epochs`, `training_batch_size`, `stop_after_epochs`).
 `max_log_likelihood`/`AIC`/`BIC` are the exact Gaussian values at the best posterior draw. The trained
@@ -578,7 +586,8 @@ in `to_json()`. Note that broad tolerance/under-converged posteriors (ABC, un-co
 ### 6.7 Validation — recovery, PPC, SBC  (`whisper_cbpf.validation`)
 
 Sampler-agnostic checks that a fit **recovered the truth** with **reliable uncertainties** (used by
-`sanity_check/sanity_check.py`); all take a `SamplerResult` (or its `.samples`) so they work for every sampler.
+[`sanity_check/sanity_check.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/sanity_check.py),
+WHISPER_AI, not in this package); all take a `SamplerResult` (or its `.samples`) so they work for every sampler.
 
 **`recovery_metrics(result, truth)`** — per-parameter recovery of a known `truth` (dict): posterior
 `median`/`mean`/`std`, 68% (16–84) and 95% (2.5–97.5) credible intervals, `bias = median − true`, the
@@ -597,7 +606,8 @@ histogram + a **χ²-of-uniformity p-value** per parameter (∪-shape = overconf
 underconfident, slope = biased) and a `_summary` with `min_uniformity_p` + a `calibrated` verdict.
 
 Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`, `wp.sbc_ranks`. See
-`sanity_check/figures/REPORT.md` for the full synthetic-recovery benchmark across all five samplers.
+[`sanity_check/figures/REPORT.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/figures/REPORT.md)
+(WHISPER_AI, not in this package) for the full synthetic-recovery benchmark across all five samplers.
 
 ## Notes & limitations (review findings)
 
@@ -621,7 +631,10 @@ Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`
 `io.loader._resolve_columns`, `schema.LightCurve._subset/_copy`, `plotting._categories/_scatter`,
 `samplers.abc._simulate_batch/_worker`, `samplers.base.summarize_posterior`,
 `io.units.to_canonical`, `io.svo._svo_fetch_metadata/_svo_fetch_index/_svo_fetch_transmission`
-(network boundary), `dev/{phase0_smoke,demo_abc_at2017gfo,demo_ingestion}.py`.
+(network boundary), and — in WHISPER_AI, not in this package —
+[`dev/phase0_smoke.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/phase0_smoke.py),
+[`dev/demo_abc_at2017gfo.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_abc_at2017gfo.py),
+[`dev/demo_ingestion.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_ingestion.py).
 
 ## 8. Test coverage
 
@@ -660,9 +673,12 @@ Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`
 | `test_mcmc.py` | 4 | MCMC recovery + reproducibility, data-mode-consistent likelihood space, and ABC↔MCMC posterior agreement. |
 | `test_mck19.py` | 7 | `mck19` AGN-disk BBH flare: registration, finite/positive flux, band-dependence, peak at `t_ram`, redshift dimming, no-bands warning, and end-to-end MCMC recovery in magnitude space (`slow`). |
 | `test_two_component_kilonova.py` | 9 | redback kilonova: registry/prior + band-mapping + no-bands error (no redback needed); flux finite/positive, band-dependence, machine-precision redback round-trip, mixed-band predict, and SNPE recovery (`slow`) — all guarded by `importorskip("redback")`. |
-| `test_benchmark_kilonova.py` | 3 | flux-vs-magnitude benchmark: `setup` (data + prior) and the magnitude-space χ² distance (no redback), plus a `slow` end-to-end fit→publication-report render. |
+| `test_benchmark_kilonova.py` | 3, **none collected here** | flux-vs-magnitude benchmark: `setup` (data + prior) and the magnitude-space χ² distance (no redback), plus a `slow` end-to-end fit→publication-report render. It loads `sanity_check/benchmark_kilonova_modes.py` by path, and `sanity_check/` is not part of this package, so `conftest.py` excludes the file from collection; run it against [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/tests/test_benchmark_kilonova.py) instead. |
 
-Fixtures: `tests/data/at2017gfo.csv`, `tests/data/ztf18aarlhfw.csv`. Figures + ABC JSON in `sanity_check/figures/` (via `test_benchmark_kilonova.py`'s benchmark render).
+Fixtures: `tests/data/at2017gfo.csv`, `tests/data/ztf18aarlhfw.csv`. The figures + ABC JSON that
+`test_benchmark_kilonova.py`'s render produced live in
+[`sanity_check/figures/`](https://github.com/phelipedarc/WHISPER_AI/tree/8ba3843/sanity_check/figures)
+(WHISPER_AI, not in this package — see the row above).
 All SVO/network calls are **mocked** — no live network in CI. See
 [`REPORT_ingestion_upgrade.md`](REPORT_ingestion_upgrade.md) for the full per-test results.
 
