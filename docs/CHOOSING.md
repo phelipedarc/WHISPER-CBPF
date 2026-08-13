@@ -13,6 +13,7 @@ structural, not tuning problems.
 | Physical model, gradients available (JAX) | `nuts_gpu` — `wp.fit(lc, "kilonova_one_jax", sampler="nuts_gpu")` builds the density for you |
 | Physical model, no gradients, many simulations | `abc_gpu` — but see the crossover below |
 | Multimodal posterior | `abc_smc_gpu`, or dynesty on CPU. **Not NUTS** |
+| You want a **Bayes factor**, not an information criterion | `nested` (alias `dynesty`) — the only sampler that returns `ln Z`, in `result.info["log_evidence"]`. Report `log_evidence_err` with it, and remember `ln Z` **depends on your prior widths in a way AIC/BIC do not**: measured on the same `flare` fit, widening one prior 100× moved `ln Z` by −4.1 ± 0.4 nats (analytic Occam expectation −ln 100 = −4.61) and moved AIC and BIC by −0.01. Only compare models whose priors you would defend *before* seeing the data. **Higher `ln Z` is better; lower AIC/BIC is better.** |
 | Amortised inference over many transients | `snpe` |
 
 ## CPU or GPU: the crossover is real and it is high
@@ -42,7 +43,6 @@ These are not tuning problems. They cannot be made to work by adjusting paramete
 | a non-`Uniform`/`LogUniform` prior + any JAX sampler | Refused rather than approximated by its bounds. Substituting a uniform for a log-uniform is a *different posterior*, not a different parameterisation: log-uniform puts half its mass below 775 K where uniform puts half below 3050 K. |
 | comparing AIC/BIC/WAIC **across spaces** | Not a sampler limit — an arithmetic one. A flux-space and a magnitude-space fit have different likelihoods over different representations of the data, so their information criteria are not on one scale. Compare models *within* a space. |
 | Any non-flare model + `snpe_gpu` | It always passes `flare_jax.predict_torch`. It raises `NotImplementedError` rather than returning flare draws under your model's parameter names. |
-| TDE in float32 | The envelope ODE's increments are below float32 epsilon; the curve dies after one step and the luminosity is `inf`. It raises. |
 | Fitting a scatter parameter with distance-based ABC | Extra simulated noise only ever increases the expected residual, so the posterior rails to the smallest allowed scatter. **The parameter is not identifiable by ABC at all** — it is a likelihood parameter. `abc_gpu` warns if you try. |
 
 ## The two SNPE paths
@@ -75,6 +75,7 @@ a GPU result against a CPU one.
 | `abc` | `abc_gpu` | JAX port of the same rejection scheme |
 | `abc_smc` | `abc_smc_gpu` | JAX port; the importance weights are *literally the same code* |
 | `mcmc` (emcee) | `emcee_jax` | same emcee frontend, jitted JAX log-density |
+| `nested` (dynesty) | — | no GPU equivalent, and this one is not a gap to fill: dynesty is a CPU library, and a GPU nested sampler (`jaxns`) is a *different algorithm*, not a port. Cross-check `nested` against `mcmc` instead — both are exact-likelihood samplers over the same prior, so they must agree (`tests/test_nested.py::test_nested_agrees_with_mcmc`) |
 | — | `nuts_gpu` | no CPU equivalent |
 
 To compare CPU against GPU fairly, fix the distance. All six metrics (`chi2`, `mse`, `rmse`, `mae`,

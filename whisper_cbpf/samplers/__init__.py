@@ -14,11 +14,15 @@ from .base import (
     summarize_posterior,
 )
 from .mcmc import MCMCSampler, fit_MCMC
+from .nested import NestedSampler, fit_nested
 from .snpe import SNPESampler, fit_SNPE
 
 # "snpe" and "npe" both map to the same sampler (num_rounds=1 is amortized NPE, >1 is sequential).
+# "nested" and "dynesty" are likewise the same sampler ("dynesty" names the library it wraps); a
+# result from either reports sampler="nested", so the comparison table carries one label.
 _SAMPLERS = {
     "abc": ABCSampler, "abc_smc": ABCSMCSampler, "mcmc": MCMCSampler,
+    "nested": NestedSampler, "dynesty": NestedSampler,
     "snpe": SNPESampler, "npe": SNPESampler,
 }
 
@@ -40,14 +44,14 @@ def list_samplers():
 
 
 def fit(lc, model, sampler="abc", **kwargs) -> SamplerResult:
-    """Generic dispatch: ``fit(lc, model, sampler='abc'|'abc_smc'|'snpe', ...)``."""
+    """Generic dispatch: ``fit(lc, model, sampler='abc'|'abc_smc'|'mcmc'|'nested'|'snpe', ...)``."""
     return get_sampler(sampler).fit(lc, model, **kwargs)
 
 
 __all__ = [
     "BaseSampler", "SamplerResult", "summarize_posterior",
     "ABCSampler", "fit_ABC", "ABCSMCSampler", "fit_ABC_SMC", "MCMCSampler", "fit_MCMC",
-    "SNPESampler", "fit_SNPE", "fit",
+    "NestedSampler", "fit_nested", "SNPESampler", "fit_SNPE", "fit",
     "register_sampler", "get_sampler", "list_samplers",
 ]
 

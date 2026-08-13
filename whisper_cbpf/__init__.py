@@ -2,7 +2,7 @@
 
 **Four pluggable axes**, each a small name registry with matching ``register_*`` / ``list_*`` helpers:
 **models** (``register_model`` / ``list_models``), **samplers** (``register_sampler`` / ``list_samplers``
-— ABC, ABC-SMC, MCMC and SNPE today; Dynesty planned), **likelihoods** (``register_likelihood`` /
+— ABC, ABC-SMC, MCMC, nested sampling (dynesty) and SNPE), **likelihoods** (``register_likelihood`` /
 ``list_likelihoods``) and **distances** (``register_distance`` / ``list_distances``). The data ingestion,
 samplers, likelihoods, plots and outputs are Whisper's own and run standalone; physical models + priors
 can optionally be supplied by the external redback package (the ``[models]`` extra), used only as a
@@ -50,6 +50,7 @@ from .samplers import (
     fit_ABC,
     fit_ABC_SMC,
     fit_MCMC,
+    fit_nested,
     fit_SNPE,
     list_samplers,
     register_sampler,
@@ -72,8 +73,8 @@ __all__ = [
     "GaussianLikelihood", "GaussianLikelihoodWithScatter", "GaussianLikelihoodWithUpperLimits",
     "MixtureGaussianLikelihood", "make_likelihood", "register_likelihood", "list_likelihoods",
     # samplers (registry)
-    "fit_ABC", "fit_ABC_SMC", "fit_MCMC", "fit_SNPE", "fit", "SamplerResult", "register_sampler",
-    "list_samplers",
+    "fit_ABC", "fit_ABC_SMC", "fit_MCMC", "fit_nested", "fit_SNPE", "fit", "SamplerResult",
+    "register_sampler", "list_samplers",
     # metrics + validation
     "waic", "per_band_metrics", "predictive_metrics", "recovery_metrics", "posterior_predictive_check",
     "sbc_rank", "sbc_ranks",

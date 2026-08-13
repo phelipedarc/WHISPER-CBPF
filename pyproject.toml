@@ -49,7 +49,6 @@ svo = ["astroquery>=0.4.6"]   # SVO Filter Profile Service fallback for unknown 
 dev = ["pytest", "pytest-cov", "build", "astroquery>=0.4.6"]
 sbi = ["sbi", "torch"]        # SNPE / NPE sampler (whisper_cbpf.samplers.snpe)
 loo = ["arviz>=0.15"]         # PSIS-LOO / ELPD in predictive_metrics (degrades to None without it)
-abc = ["pyabc"]
 
 # The JAX/GPU half: nuts_gpu, abc_gpu, abc_smc_gpu, emcee_jax, the JAX models (kilonova, TDE, the
 # twelve supernovae) and the *_jax distances. CUDA 12 is pinned because that is the platform this
