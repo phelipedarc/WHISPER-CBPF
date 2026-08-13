@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -31,13 +32,17 @@ def attach_band_metrics(info, lc, model, best_params, space):
 
     Shared by every sampler so the per-band goodness-of-fit lands in ``SamplerResult.to_json``.
     Wrapped in a broad guard — a metric failure (e.g. a slow/failing forward model) must never
-    break an otherwise-successful fit.
+    break an otherwise-successful fit — but the failure is **reported**, not swallowed. See
+    :func:`attach_predictive_metrics` for why.
     """
     try:
         from ..metrics import per_band_metrics
         info["band_metrics"] = per_band_metrics(lc, model, best_params, space=space)
-    except Exception:
-        pass
+    except Exception as exc:                                  # noqa: BLE001 - deliberate, see above
+        info["band_metrics_error"] = f"{type(exc).__name__}: {exc}"
+        warnings.warn(f"per-band metrics could not be computed and are absent from this result "
+                      f"({type(exc).__name__}: {exc}). The fit itself is unaffected.",
+                      stacklevel=2)
 
 
 def attach_predictive_metrics(result, lc, space, n_draws=200):
@@ -45,14 +50,24 @@ def attach_predictive_metrics(result, lc, space, n_draws=200):
 
     RMSE (posterior-mean), LPD, ELPD (PSIS-LOO), WAIC, AIC/BIC and the coverage-calibration curve —
     see :func:`whisper_cbpf.metrics.predictive_metrics`. Called after the result is built (it reuses
-    the fit's ``aic`` / ``bic``); ``n_draws`` bounds the extra forward-model evaluations. Best-effort:
-    a failure (slow/failing model, no likelihood) leaves the fit untouched.
+    the fit's ``aic`` / ``bic``); ``n_draws`` bounds the extra forward-model evaluations.
+
+    Best-effort: a failure (slow/failing model, no likelihood) leaves the fit untouched. It does
+    **not** leave the user uninformed, which it used to — this was a bare ``except Exception:
+    pass``, so a model whose ``predict`` raised produced a fit with no WAIC, no message, and no way
+    to tell that from a model for which WAIC is simply undefined. Since WAIC is one of the three
+    numbers this package exists to put side by side, "absent" and "absent because your bands did not
+    resolve" have to be distinguishable. The reason now lands in
+    ``info['predictive_metrics_error']`` and in a warning.
     """
     try:
         from ..metrics import predictive_metrics
         result.info["predictive_metrics"] = predictive_metrics(result, lc, space=space, n_draws=n_draws)
-    except Exception:
-        pass
+    except Exception as exc:                                  # noqa: BLE001 - deliberate, see above
+        result.info["predictive_metrics_error"] = f"{type(exc).__name__}: {exc}"
+        warnings.warn(f"predictive metrics (WAIC / LPD / PSIS-LOO / coverage) could not be computed "
+                      f"and are absent from this result ({type(exc).__name__}: {exc}). AIC and BIC "
+                      f"are unaffected.", stacklevel=2)
 
 
 @dataclass

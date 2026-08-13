@@ -32,6 +32,21 @@ def flux_density_to_mag(flux, flux_err=None, zeropoint_jy=AB_ZEROPOINT_JY):
 
     Non-positive flux densities have no AB magnitude (``log10`` of <= 0): they map to ``NaN`` (with a
     warning) rather than a silent NaN/negative-error pair. Keep such data in flux space instead.
+
+    **This is the DATA converter, and it is the only one in the package that returns NaN.** That is
+    deliberate, not an oversight: a *measured* flux can legitimately be negative on a faint source,
+    and inventing a magnitude for it would fabricate a detection. The *model*-side converters floor
+    instead, because a model that predicts zero flux should score as "very faint" rather than poison
+    a fit with NaN. The floored ones, all agreeing at 758.90 mag in float64 and ~103.72 in float32:
+
+    * :meth:`whisper_cbpf.likelihood.GaussianLikelihood.model_in_space` (pre-clips, then calls this)
+    * :func:`whisper_cbpf.likelihood._jax.log_likelihood_jax`
+    * :func:`whisper_cbpf.samplers.jax.abc_gpu._model_in_space_jnp`
+    * :func:`whisper_cbpf.samplers.snpe._torch_model_in_space`
+    * :func:`whisper_cbpf.plotting._flux_to_quantity`
+
+    The JAX photometric models cap earlier still, at ``mag_floor = 40`` (flux >= 3.63e-16 Jy), so on
+    those models the likelihood-layer floor never fires. See ``docs/PHYSICS_NOTES.md``.
     """
     flux = np.asarray(flux, dtype=float)
     bad = ~(flux > 0)

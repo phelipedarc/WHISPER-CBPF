@@ -87,13 +87,23 @@ AB_ZEROPOINT_JY = 3631.0
 def _model_in_space_jnp(jnp, flux, space, zeropoint_jy):
     """jnp counterpart of ``GaussianLikelihood.model_in_space``.
 
-    Identity in flux space; in magnitude space ``-2.5 log10(clip(F, 1e-300) / zp)``. The clip is
-    load-bearing and is copied verbatim: it maps a non-positive model flux to a finite ~759 mag
-    (hence a huge chi2) instead of a NaN that would silently poison the acceptance quantile.
+    Identity in flux space; in magnitude space ``-2.5 log10(clip(F, floor) / zp)``. The clip is
+    load-bearing: it maps a non-positive model flux to a finite magnitude (hence a huge chi2)
+    instead of an ``inf`` that would silently poison the acceptance quantile.
+
+    The floor is the working dtype's smallest normal whenever ``_MIN_FLUX_JY`` is not
+    representable in it, exactly as :func:`whisper_cbpf.likelihood._jax.log_likelihood_jax` does.
+    This module used a bare ``1e-300``, which is **exactly 0.0 in float32** and therefore clamped
+    nothing at all: measured, ``_model_in_space_jnp(0.0, "magnitude")`` returned ``inf``, not the
+    ~759 mag the docstring promised. ``abc_gpu`` never enables x64, so float32 is its default case,
+    not its edge case.
     """
     if space == "flux":
         return flux
-    return -2.5 * jnp.log10(jnp.maximum(flux, _MIN_FLUX_JY) / zeropoint_jy)
+    mf = jnp.asarray(flux)
+    tiny = jnp.finfo(mf.dtype).tiny
+    floor = _MIN_FLUX_JY if _MIN_FLUX_JY > tiny else tiny
+    return -2.5 * jnp.log10(jnp.maximum(mf, floor) / zeropoint_jy)
 
 
 def _prior_rescale_arrays(prior, names):
@@ -131,12 +141,18 @@ class ABCGPUSampler(BaseSampler):
 
         Parameters
         ----------
-        predict_jax : callable
+        predict_jax : callable, optional
             ``predict_jax(theta_2d, times) -> flux_2d`` mapping ``(B, D)`` parameters and ``(n,)``
-            times to ``(B, n)`` model **flux**, on device. Required: this sampler exists to
-            vectorise the forward model, and falling back to the numpy ``model.predict`` in a
-            python loop would just be the CPU sampler with extra steps. Parameter columns are in
-            ``prior.names`` order.
+            times to ``(B, n)`` model **flux**, on device. Parameter columns are in ``prior.names``
+            order.
+
+            **Optional since the adapter layer landed.** When omitted it is built from
+            ``model.predict_jax`` by
+            :func:`whisper_cbpf.samplers.jax._adapters.make_batched_predict_jax`, so any model
+            registered through the JAX factories just works. An explicitly passed callable always
+            wins. A model with no ``predict_jax`` still raises, naming ``sampler='abc'`` -- falling
+            back to the numpy ``model.predict`` in a python loop would be the CPU sampler with
+            extra steps.
         distance : str
             One of ``chi2`` (default, matching whisper's CPU ABC), ``mse``, ``rmse``, ``mae``,
             ``wmse``, ``wmae``. See :mod:`whisper_cbpf.distance` for what each implies -- the
@@ -146,13 +162,13 @@ class ABCGPUSampler(BaseSampler):
             ``scatter_param`` adds that draw's scatter to the SIMULATED noise; it does not make the
             parameter fittable (see the warning raised below).
         chunk : int
-            Particles per compiled call.
+            Particles per compiled call. **This is a compile-time bound, not a memory one.** On a
+            photometric model the fused kernel's XLA compile time grows steeply with this extent:
+            measured at ``n_wave=1000`` over 211 observations, first-call compile+run was 1.0 s at
+            extent 1, 2.6 s at 16, and still compiling after 5 minutes at 128. The default 16 is
+            safely inside. Raise it only for a cheap analytic model with no wavelength axis.
         """
         jax, jnp = require_jax("abc_gpu")
-        if predict_jax is None:
-            raise ValueError(
-                "abc_gpu needs predict_jax(theta_2d, times) -> flux_2d, a batched JAX forward "
-                "model. Without it there is nothing to vectorise -- use sampler='abc' instead.")
 
         dist_fn = jnp_distance(distance)
         model = get_model(model)
@@ -160,6 +176,24 @@ class ABCGPUSampler(BaseSampler):
         if prior is None:
             raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
         names = list(prior.names)
+
+        predict_jax_source = "caller"
+        if predict_jax is None:
+            if getattr(model, "predict_jax", None) is None:
+                raise ValueError(
+                    f"abc_gpu needs predict_jax(theta_2d, times) -> flux_2d, a batched JAX forward "
+                    f"model, and model {model.name!r} carries no predict_jax to build one from. "
+                    f"Register it through a JAX factory (register_kilonova / register_kilonova_two "
+                    f"/ register_tde / register_supernova), pass predict_jax= yourself, or use "
+                    f"sampler='abc' instead.")
+            from ._adapters import make_batched_predict_jax
+            # names=prior.names: the adapter reorders into model.parameters order internally and
+            # drops a prior-only column (scatter_param) rather than feeding it to the physics.
+            # chunk stays None -- this sampler already bounds the batch through its own `chunk`,
+            # so a lax.map here would only add a trip-count-1 scan.
+            predict_jax = make_batched_predict_jax(lc, model, names=names,
+                                                   chunk=None, max_batch=None)
+            predict_jax_source = "auto"
         if scatter_param is not None:
             if scatter_param not in names:
                 raise ValueError(f"scatter_param {scatter_param!r} is not in the prior ({names}).")
@@ -314,6 +348,7 @@ class ABCGPUSampler(BaseSampler):
             "chunk": int(chunk),
             "device": str(jax.devices()[0]),
             "x64": bool(jax.config.jax_enable_x64),
+            "predict_jax": predict_jax_source,
             "seed": int(seed),
         }
         attach_band_metrics(info, lc, model.name, best, space)

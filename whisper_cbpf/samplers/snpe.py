@@ -29,6 +29,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
+from ..likelihood import _MIN_FLUX_JY
 from ..models import get_model
 from .base import (
     BaseSampler,
@@ -251,18 +252,28 @@ def _torch_model_in_space(space, zeropoint_jy, torch):
 
     Identity in flux space; in magnitude space ``-2.5 log10(clamp(F) / zp)``.
 
-    THE FLOOR IS NOT 1e-300. The numpy likelihood clamps at ``_MIN_FLUX_JY = 1e-300``, which is fine
-    in float64 and silently useless here: these tensors are float32, where 1e-300 underflows to
-    exactly 0 and the clamp stops clamping — log10(0) then gives -inf and the whole simulation batch
-    becomes NaN. (The same defect, in the same form, is documented as identity 8 in whisper-GPU's
-    kilonova model.) Clamping at the dtype's smallest normal keeps a non-positive model flux finite
-    at ~104 mag, which is far fainter than any real detection and therefore harmless.
+    THE FLOOR IS NOT ALWAYS 1e-300. The numpy likelihood clamps at ``_MIN_FLUX_JY = 1e-300``, which
+    is fine in float64 and silently useless here: these tensors are usually float32, where 1e-300
+    underflows to exactly 0 and the clamp stops clamping — log10(0) then gives -inf and the whole
+    simulation batch becomes NaN. (The same defect, in the same form, is documented as identity 8 in
+    whisper-GPU's kilonova model.) Clamping at the dtype's smallest normal keeps a non-positive model
+    flux finite at ~104 mag in float32, far fainter than any real detection and therefore harmless.
+
+    The rule is ``max(_MIN_FLUX_JY, finfo.tiny)``, identical to
+    :func:`whisper_cbpf.likelihood._jax.log_likelihood_jax` and
+    :func:`whisper_cbpf.samplers.jax.abc_gpu._model_in_space_jnp`. It used to be a bare
+    ``finfo.tiny``, which agreed with them in float32 but not in float64 — there ``tiny`` is
+    2.2e-308, giving 769.80 mag where every other backend gives 758.90. An 11-magnitude
+    backend-dependent floor is exactly the sort of thing that makes a cross-sampler comparison
+    incomparable, which is what this package exists to do.
     """
     if space == "flux":
         return lambda f: f
 
     def to_mag(f):
-        return -2.5 * torch.log10(torch.clamp(f, min=torch.finfo(f.dtype).tiny) / zeropoint_jy)
+        tiny = torch.finfo(f.dtype).tiny
+        floor = _MIN_FLUX_JY if _MIN_FLUX_JY > tiny else tiny
+        return -2.5 * torch.log10(torch.clamp(f, min=floor) / zeropoint_jy)
 
     return to_mag
 

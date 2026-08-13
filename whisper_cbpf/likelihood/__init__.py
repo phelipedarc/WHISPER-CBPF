@@ -32,6 +32,7 @@ from ._numpy import (  # noqa: F401
     list_likelihoods,
     make_likelihood,
     register_likelihood,
+    resolve_space,
 )
 # Not public API, re-exported because they were importable from the flat ``likelihood.py`` this
 # package replaced and are referenced by name elsewhere (``samplers/snpe.py``'s float32 floor,
@@ -42,7 +43,7 @@ from ._numpy import _LN2PI, _MIN_FLUX_JY, _MIN_PROB  # noqa: F401
 __all__ = ["GaussianLikelihood", "GaussianLikelihoodWithUpperLimits",
            "MixtureGaussianLikelihood", "GaussianLikelihoodWithScatter",
            "register_likelihood", "list_likelihoods", "make_likelihood",
-           "log_likelihood_jax"]
+           "resolve_space", "log_likelihood_jax"]
 
 _LAZY = {"log_likelihood_jax": "._jax"}
 

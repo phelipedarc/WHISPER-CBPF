@@ -322,14 +322,34 @@ def _loo_waic(ll):
     WAIC is the standard plug-in estimator (Watanabe 2010 / Gelman et al. 2014). LOO uses ``arviz``'s
     Pareto-smoothed importance sampling (Vehtari et al. 2017) with its ``k`` diagnostic when installed;
     without arviz, ``elpd_loo`` is ``None`` (PSIS smoothing is not reimplemented here).
+
+    **``p_waic`` is returned with a reliability flag.** ``p_waic`` estimates the effective number of
+    parameters, so on a well-behaved fit it lands at or below the model's parameter count. When the
+    posterior contains draws whose pointwise log-likelihood differs by orders of magnitude — an
+    under-converged chain, or a badly misspecified model whose draws range over tens of thousands of
+    sigma — the per-point variance explodes and WAIC stops being on a comparable scale with AIC/BIC
+    at all. Measured on a 9-parameter redback kilonova against 88 AT2017GFO points:
+    ``p_waic = 939505`` beside an AIC of 415. Gelman, Hwang & Vehtari (2014) §4 give ``p_waic >
+    n_data / 2`` as the point where the estimator should not be trusted; that is what
+    ``p_waic_reliable`` reports, and the caller is warned rather than handed a number that looks
+    like the others.
     """
     n_samp, n_data = ll.shape
     lppd_i = logsumexp(ll, axis=0) - np.log(n_samp)
     p_waic_i = np.var(ll, axis=0, ddof=1)
     elpd_waic_i = lppd_i - p_waic_i
+    p_waic = float(np.sum(p_waic_i))
+    reliable = bool(np.isfinite(p_waic) and p_waic <= 0.5 * n_data)
+    if not reliable:
+        warnings.warn(
+            f"WAIC is unreliable for this fit: p_waic = {p_waic:.4g} against n_data = {n_data} "
+            f"(Gelman/Hwang/Vehtari's guidance is p_waic <= n_data/2). The posterior contains draws "
+            f"whose pointwise log-likelihood varies by orders of magnitude, which usually means an "
+            f"under-converged chain or a badly misspecified model. Do NOT compare this WAIC against "
+            f"another model's, and do not read it on the same scale as AIC/BIC.", stacklevel=3)
     waic_out = {
         "waic": float(-2.0 * np.sum(elpd_waic_i)), "elpd_waic": float(np.sum(elpd_waic_i)),
-        "p_waic": float(np.sum(p_waic_i)),
+        "p_waic": p_waic, "p_waic_reliable": reliable, "n_data": int(n_data),
         "se": float(np.sqrt(n_data * np.var(-2.0 * elpd_waic_i, ddof=1))) if n_data > 1 else float("nan")}
     loo_out = None
     try:

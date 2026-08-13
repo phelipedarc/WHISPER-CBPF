@@ -17,7 +17,17 @@ _MIN_FLUX_JY = 1e-300       # floor a (clipped) model flux before log10 in the f
 _MIN_PROB = 1e-30          # floor a probability before log() (upper-limit / mixture terms)
 
 
-def _resolve_space(lc, space):
+def resolve_space(lc, space):
+    """Normalise a ``space=`` argument against the light curve's own data mode.
+
+    ``"auto"`` (or ``None``) follows ``lc.data_mode``: magnitude data is fitted in magnitude space,
+    everything else in flux. ``"mag"``/``"magnitude"`` and ``"flux"``/``"flux_density"``/
+    ``"luminosity"`` are the accepted explicit spellings; anything else raises.
+
+    Public because the samplers need the rule *without* building a likelihood — a caller who
+    supplies their own ``log_prob_fn`` still needs a resolved space to label the predictive metrics
+    with, and a second copy of this rule is how the two would drift.
+    """
     if space is None or str(space).lower() == "auto":
         return "magnitude" if lc.data_mode == "magnitude" else "flux"
     s = str(space).lower()
@@ -26,6 +36,10 @@ def _resolve_space(lc, space):
     if s in ("flux", "flux_density", "luminosity"):
         return "flux"
     raise ValueError(f"space must be 'flux', 'magnitude', or 'auto'; got {space!r}")
+
+
+#: Back-compat alias — this was private until the samplers needed the rule too.
+_resolve_space = resolve_space
 
 
 class GaussianLikelihood:
@@ -43,6 +57,16 @@ class GaussianLikelihood:
             raise ValueError(f"GaussianLikelihood in {self.space} space requires y values and errors.")
         self.y = np.asarray(self.y, dtype=float)
         self.sigma = np.asarray(self.sigma, dtype=float)
+        # An EMPTY light curve is not a degenerate fit, it is a mistake upstream -- and without
+        # this guard every sampler completes on it and reports `AIC = 2k` with `BIC = -inf`
+        # (k*log(0)), which looks like a result. The usual cause is ordering: `select_time_window`
+        # applied before `set_explosion_date` compares day-since-explosion bounds against raw MJD
+        # and silently drops every row.
+        if self.y.size == 0:
+            raise ValueError(
+                "the light curve has no data points, so there is nothing to fit. A common cause is "
+                "calling select_time_window(...) BEFORE set_explosion_date(...) -- the window is "
+                "then compared against raw MJD. Check lc.n_points after each selection step.")
         self._log_norm = -0.5 * np.sum(_LN2PI + 2.0 * np.log(self.sigma))
 
     def model_in_space(self, model_flux):
@@ -145,13 +169,27 @@ class MixtureGaussianLikelihood(GaussianLikelihood):
         self.sigma_out = self.sigma * float(sigma_out_scale)
 
     def log_likelihood(self, model_flux):
+        """Total log-likelihood: the log-sum-exp of the inlier and outlier components."""
+        return float(np.sum(self.log_likelihood_pointwise(model_flux)))
+
+    def log_likelihood_pointwise(self, model_flux):
+        """Per-point mixture log-density; sums exactly to :meth:`log_likelihood`.
+
+        This override is load-bearing. Without it the class inherited
+        :meth:`GaussianLikelihood.log_likelihood_pointwise`, a *plain Gaussian*, while
+        :meth:`log_likelihood` computed the mixture — so ``waic`` and ``predictive_metrics``,
+        which both dispatch on ``hasattr(lik, "log_likelihood_pointwise")``, scored a mixture fit
+        under a density it was not fitted with, and reported it beside an AIC that came from the
+        mixture. Measured on 25 points: total 29.1446 against a pointwise sum of 31.4662.
+        """
         res = self.y - self.model_in_space(model_flux)
         logp_in = -0.5 * _LN2PI - np.log(self.sigma) - 0.5 * (res / self.sigma) ** 2
         logp_out = -0.5 * _LN2PI - np.log(self.sigma_out) - 0.5 * (res / self.sigma_out) ** 2
-        return float(np.sum(np.logaddexp(np.log(self.alpha) + logp_in,
-                                         np.log(1.0 - self.alpha) + logp_out)))
+        return np.logaddexp(np.log(self.alpha) + logp_in,
+                            np.log(1.0 - self.alpha) + logp_out)
 
     def summary(self):
+        """Identifying metadata for the fit record: kind, space, point count and ``alpha``."""
         return {"likelihood": "mixture_gaussian", "space": self.space,
                 "n_data": int(self.y.size), "alpha": self.alpha}
 
