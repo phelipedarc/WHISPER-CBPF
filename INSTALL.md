@@ -43,8 +43,10 @@ Core dependencies, installed automatically: `numpy>=1.23`, `scipy>=1.9`, `pandas
 pip install whisper-cbpf
 ```
 
-That is a complete package: ingestion, plotting, priors, likelihoods, and the `abc`, `abc_smc` and
-`mcmc` samplers. It imports with **no JAX, no CUDA, no torch and no redback**, and every GPU model
+That is a complete package: ingestion, plotting, priors, likelihoods, and the `abc`, `abc_smc`,
+`mcmc` and `nested` samplers — `nested` (dynesty) is the one that returns a log-evidence, and
+dynesty is a core dependency, so it needs no extra. It imports with **no JAX, no CUDA, no torch and
+no redback**, and every GPU model
 and sampler still appears in `list_models()` / `list_samplers()` / `list_distances()` — you can see
 what exists before deciding to install it.
 
@@ -138,7 +140,7 @@ Each step checks one layer. Run the ones that match what you installed.
 ```bash
 # 1. base package
 python -c "import whisper_cbpf as wp; print(wp.__version__, len(wp.list_models()), len(wp.list_samplers()))"
-#    -> 0.1.0 6 11
+#    -> 0.1.0 6 13     (6 models, 13 samplers; verified 2026-08-13)
 
 # 2. [gpu] — is JAX actually on a GPU?
 source scripts/whisper-gpu-env.sh
