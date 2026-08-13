@@ -19,9 +19,17 @@ structural are documented in the place a user will look.**
 ## 1. The matrix
 
 Rows are model families; columns are (space × device). Each cell states the status **per sampler**.
-`wp.list_samplers()` returns 11: `abc`, `abc_gpu`, `abc_smc`, `abc_smc_gpu`, `emcee_jax`, `mcmc`,
-`npe`, `nuts_gpu`, `pymc_jax_gpu_parallelized`, `pymc_jax_gpu_vectorized`, `snpe` (`npe` is an alias
-of `snpe`, so there are 10 distinct samplers). `snpe_gpu` exists but is deliberately unregistered.
+`wp.list_samplers()` returned **11** when this matrix was built: `abc`, `abc_gpu`, `abc_smc`,
+`abc_smc_gpu`, `emcee_jax`, `mcmc`, `npe`, `nuts_gpu`, `pymc_jax_gpu_parallelized`,
+`pymc_jax_gpu_vectorized`, `snpe` (`npe` aliases `snpe`, so 10 distinct samplers). `snpe_gpu` exists
+but is deliberately unregistered.
+
+**It now returns 13.** `nested` and its alias `dynesty` landed after this matrix was measured
+(commit `fdda7df`), so **the matrix below does not cover them.** `nested` is a CPU, likelihood-based
+sampler on the same contract as `mcmc`, needs no extra (dynesty is a core dependency), and is the
+only sampler that returns a log-evidence. Its own correctness evidence is in `tests/test_nested.py`
+and in that commit's message — it is not folded into the cells here, and should be when the matrix
+is next re-run.
 
 **"CPU" splits in two, and the docs did not say so.** The minimal install (no JAX) **cannot register
 any photometric JAX model at all** — `register_kilonova`, `register_kilonova_two`, `register_tde`
