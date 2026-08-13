@@ -87,25 +87,25 @@ class ABCSMCGPUSampler(BaseSampler):
 
         Parameters
         ----------
-        predict_jax : callable
+        predict_jax : callable, optional
             ``predict_jax(theta_2d, times) -> flux_2d`` mapping ``(B, D)`` parameters and ``(n,)``
-            times to ``(B, n)`` model **flux**, on device. Required -- this sampler exists to
-            vectorise the forward model. Columns are in ``prior.names`` order.
+            times to ``(B, n)`` model **flux**, on device. Columns are in ``prior.names`` order.
+            **Optional**: when omitted it is built from ``model.predict_jax`` by
+            :func:`whisper_cbpf.samplers.jax._adapters.make_batched_predict_jax`. An explicitly
+            passed callable always wins.
         n_particles, n_rounds, epsilon_schedule, quantile, min_epsilon, simulate_noise, space,
         scatter_param, seed
             As :meth:`whisper_cbpf.samplers.abc_smc.ABCSMCSampler.fit`.
         distance : str
             ``chi2`` (default), ``mse``, ``rmse``, ``mae``, ``wmse``, ``wmae``.
         chunk : int
-            Particles per vmapped block inside the scan.
+            Particles per vmapped block inside the scan. **Bounded by XLA compile time, not by
+            memory** — see ``abc_gpu.fit``'s ``chunk`` for the measurement. The default 16 is safe;
+            raising it on a photometric model is the trap.
         attempts_per_wave : int, optional
             Attempts per host synchronisation. Defaults to ``WAVE_MULTIPLIER * n_particles``.
         """
         jax, jnp = require_jax("abc_smc_gpu")
-        if predict_jax is None:
-            raise ValueError(
-                "abc_smc_gpu needs predict_jax(theta_2d, times) -> flux_2d, a batched JAX forward "
-                "model. Without it there is nothing to vectorise -- use sampler='abc_smc' instead.")
 
         dist_fn = jnp_distance(distance)
         model = get_model(model)
@@ -114,6 +114,19 @@ class ABCSMCGPUSampler(BaseSampler):
             raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
         names = list(prior.names)
         k = len(names)
+
+        predict_jax_source = "caller"
+        if predict_jax is None:
+            if getattr(model, "predict_jax", None) is None:
+                raise ValueError(
+                    f"abc_smc_gpu needs predict_jax(theta_2d, times) -> flux_2d, a batched JAX "
+                    f"forward model, and model {model.name!r} carries no predict_jax to build one "
+                    f"from. Register it through a JAX factory, pass predict_jax= yourself, or use "
+                    f"sampler='abc_smc' instead.")
+            from ._adapters import make_batched_predict_jax
+            predict_jax = make_batched_predict_jax(lc, model, names=names,
+                                                   chunk=None, max_batch=None)
+            predict_jax_source = "auto"
 
         if scatter_param is not None:
             if scatter_param not in names:
@@ -331,6 +344,8 @@ class ABCSMCGPUSampler(BaseSampler):
             "attempts_per_wave": int(wave),
             "device": str(jax.devices()[0]),
             "backend": "jax-vmap-scan",
+            "x64": bool(jax.config.jax_enable_x64),
+            "predict_jax": predict_jax_source,
         }
         attach_band_metrics(info, lc, model.name, best, lik_space.space)
 

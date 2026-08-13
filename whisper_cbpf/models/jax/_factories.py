@@ -26,8 +26,54 @@ import numpy as np
 AB_ZEROPOINT_JY = 3631.0
 
 __all__ = ["flare_model", "kilonova_model", "register_kilonova",
+           "kilonova_two_model", "register_kilonova_two",
            "tde_model", "register_tde",
            "supernova_model", "register_supernova", "supernova_models"]
+
+
+def _make_band_indices(band_names, rebuild_hint, band_aliases=None):
+    """Build the band-string -> integer-index lookup every photometric factory needs.
+
+    Returns a plain function ``bands -> int array``, attached to each factory's ``predict_jax`` as
+    ``.band_index`` so a traced caller can do the lookup **once, outside the trace** and hand the
+    result in. ``rebuild_hint`` is the factory call to name in the error, e.g.
+    ``"tde_model(band_names=[...])"``.
+
+    ``band_aliases`` maps *your data's* labels onto the filter-set names, e.g.
+    ``{"g": "sdssg", "r": "sdssr"}``. This is needed more often than not: ``make_filter_set`` takes
+    sncosmo names (``sdssg``, ``ztfr``, ``lsstg``) while survey CSVs — including
+    ``tests/data/at2017gfo.csv`` — carry bare ``g``/``r``/``i``.
+
+    It lives on the **model**, not on the sampler call, on purpose. Everything downstream of a fit
+    — ``per_band_metrics``, ``predictive_metrics``, ``plot_ppc`` — calls ``model.predict(params,
+    times, lc.band)`` with the light curve's own labels. A mapping that existed only inside the
+    sampler would give you a fit whose WAIC silently failed to compute.
+
+    There is **no default alias table**. AT2017GFO's 29 labels include both ``i`` and 30 Johnson
+    ``I`` points, which any case-folding table would merge into one filter. State the mapping and
+    it is auditable; guess it and the wrong answer has no error.
+    """
+    index_of = {b: i for i, b in enumerate(band_names)}
+    aliases = {str(k): str(v) for k, v in (band_aliases or {}).items()}
+    unknown = sorted(v for v in aliases.values() if v not in index_of)
+    if unknown:
+        raise ValueError(
+            f"band_aliases maps onto {unknown}, which are not in band_names {list(band_names)}. "
+            f"The alias target must be a band this model was bound to.")
+
+    def band_indices(bands):
+        try:
+            return np.array([index_of[aliases.get(str(b), str(b))] for b in np.asarray(bands)],
+                            dtype=int)
+        except KeyError as exc:
+            raise KeyError(
+                f"band {exc.args[0]!r} was not bound to this model. Bound: {list(band_names)}"
+                + (f"; aliases: {aliases}" if aliases else "")
+                + f". Rebuild with {rebuild_hint} covering every band in the data, or pass "
+                f"band_aliases={{'{exc.args[0]}': '<filter-set name>'}}."
+            ) from None
+
+    return band_indices
 
 
 # --------------------------------------------------------------------------- flare
@@ -41,7 +87,7 @@ def flare_model():
 def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wave=2000,
                    ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law="f99",
                    temperature_floor=None, mag_floor=40.0, t_exp_days=0.0, filter_set=None,
-                   arnett_prefactor=1.0):
+                   arnett_prefactor=1.0, band_aliases=None):
     """Bind dataset context to the one-component JAX kilonova and return a whisper ``Model``.
 
     Parameters
@@ -88,7 +134,6 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
         weights = kn.extincted_weights(weights, fs["lam"], redshift=redshift,
                                         ebv_mw=ebv_mw or 0.0, ebv_host=ebv_host or 0.0,
                                         r_v_mw=r_v_mw, r_v_host=r_v_host, law=law)
-    index_of = {b: i for i, b in enumerate(band_names)}
 
     free_tf = temperature_floor is None
     params = ["mej", "vej", "kappa"] + (["temperature_floor"] if free_tf else [])
@@ -110,14 +155,7 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
 
     _core_jit = jax.jit(_core)
 
-    def _band_indices(bands):
-        try:
-            return np.array([index_of[str(b)] for b in np.asarray(bands)], dtype=int)
-        except KeyError as exc:
-            raise KeyError(
-                f"band {exc.args[0]!r} was not bound to this model. Bound: {band_names}. "
-                "Rebuild with kilonova_model(band_names=[...]) covering every band in the data."
-            ) from None
+    _band_indices = _make_band_indices(band_names, "kilonova_model(band_names=[...])", band_aliases)
 
     def predict(parameters, times, bands=None):
         """whisper contract: (parameters, times, bands) -> flux density in Jy."""
@@ -174,7 +212,8 @@ def register_kilonova(band_names, redshift, dl_cm, *, name="kilonova_one_jax", *
 # --------------------------------------------------------------------------- kilonova (2-comp)
 def kilonova_two_model(band_names, redshift, dl_cm, *, name="kilonova_two_jax", n_wave=2000,
                        ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law="f99",
-                       mag_floor=40.0, t_exp_days=0.0, filter_set=None, prior=None):
+                       mag_floor=40.0, t_exp_days=0.0, filter_set=None, prior=None,
+                       band_aliases=None):
     """Bind dataset context to the TWO-component JAX kilonova and return a whisper ``Model``.
 
     The two-component sibling of :func:`kilonova_model`, built the same way and for the same reason:
@@ -191,6 +230,7 @@ def kilonova_two_model(band_names, redshift, dl_cm, *, name="kilonova_two_jax", 
     Note this is **not** the prior used by ``whisper_cbpf.models.two_component_kilonova``, whose
     ``kappa_1`` range is disjoint from it -- the two are different models, not one model twice.
     """
+    import jax
     import jax.numpy as jnp
 
     from ...io.photometry import AB_ZEROPOINT_JY
@@ -207,31 +247,58 @@ def kilonova_two_model(band_names, redshift, dl_cm, *, name="kilonova_two_jax", 
         weights = kn.extincted_weights(weights, fs["lam"], redshift=redshift,
                                        ebv_mw=ebv_mw or 0.0, ebv_host=ebv_host or 0.0,
                                        r_v_mw=r_v_mw, r_v_host=r_v_host, law=law)
-    index_of = {b: i for i, b in enumerate(band_names)}
-
     params = ["mej_1", "vej_1", "temperature_floor_1", "kappa_1",
               "mej_2", "vej_2", "temperature_floor_2", "kappa_2"]
+
+    # JIT ONCE, HERE -- the same reason, and the same structure, as kilonova_model above. This
+    # factory was the only photometric one that called its physics function unjitted, so every
+    # predict() re-traced `two_component_magnitude`; `kilonova_two.py`'s own jitted-symbol list
+    # does not include it. Measured on 211 observations at n_wave=2000 on an A6000, best of five:
+    # 134.9 ms unjitted against 1.893 ms here, a factor 71. Only `times`, `band_idx` and the eight
+    # free parameters are traced; the
+    # filter set, redshift, distance, `t_exp_days` and `mag_floor` are closure constants, so this
+    # compiles once per n_obs. Both entry points go through it, which is what keeps them from
+    # drifting apart.
+    def _core(times_s, bidx, *free):
+        """SOURCE-frame seconds -> AB magnitude per observation. Traced, pure jnp."""
+        return kn2.two_component_magnitude(
+            times_s, bidx, weights, norms, lam, redshift, dl_cm, *free, mag_floor=mag_floor)
+
+    _core_jit = jax.jit(_core)
+
+    _band_indices = _make_band_indices(band_names, "kilonova_two_model(band_names=[...])", band_aliases)
 
     def predict(parameters, times, bands=None):
         """whisper contract: (parameters, times, bands) -> flux density in Jy."""
         if bands is None:
             raise ValueError(f"model {name!r} is photometric and needs a `bands` array")
-        try:
-            idx = np.array([index_of[str(b)] for b in np.asarray(bands)], dtype=int)
-        except KeyError as exc:
-            raise KeyError(
-                f"band {exc.args[0]!r} was not bound to this model. Bound: {band_names}. "
-                "Rebuild with kilonova_two_model(band_names=[...]) covering every band in the data."
-            ) from None
+        idx = _band_indices(bands)
         t_src = kn.source_time_s(np.asarray(times, dtype=float), redshift, t_exp_days)
-        mag = kn2.two_component_magnitude(
-            jnp.asarray(t_src), jnp.asarray(idx), weights, norms, lam, redshift, dl_cm,
-            *(float(parameters[p]) for p in params), mag_floor=mag_floor)
+        mag = _core_jit(jnp.asarray(t_src), jnp.asarray(idx),
+                        *(float(parameters[p]) for p in params))
         # whisper models return FLUX; convert once, at the end. Never combine magnitudes.
         return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * np.asarray(mag, dtype=float))
 
+    def predict_jax(theta, times, band_idx=None):
+        """``predict`` for a traced caller: flat theta, integer bands, flux density in Jy.
+
+        ``theta`` is ordered by ``Model.parameters``; ``band_idx`` indexes ``band_names``. Map the
+        data's band strings once, outside the trace, with ``predict_jax.band_index(bands)``. One
+        parameter set; ``jax.vmap`` it for a batch -- and see ``kilonova_two.py``'s memory note,
+        the intermediate is ``(n_comp, n_obs, n_wave)``, so a batched caller must chunk.
+        """
+        if band_idx is None:                    # same requirement, same message, as predict
+            raise ValueError(f"model {name!r} is photometric and needs a `band_idx` array")
+        t_src = kn.source_time_s(times, redshift, t_exp_days)
+        mag = _core_jit(jnp.asarray(t_src), jnp.asarray(band_idx),
+                        *[theta[i] for i in range(len(params))])
+        return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * mag)
+
+    predict_jax.band_index = _band_indices
+
     return Model(name=name, predict=predict, parameters=params,
                  default_prior=prior if prior is not None else kn2.default_prior(),
+                 predict_jax=predict_jax,
                  description=("Two-component (blue + red) kilonova, JAX/GPU. Same physics as "
                               "redback's two_component_kilonova_model; components are summed in "
                               "flux, never in magnitude. Both components share redback's kappa "
@@ -244,7 +311,8 @@ def register_kilonova_two(band_names, redshift, dl_cm, *, name="kilonova_two_jax
 
     m = kilonova_two_model(band_names, redshift, dl_cm, name=name, **kwargs)
     register_model(name, m.predict, m.parameters, prior=m.default_prior,
-                   description=m.description, overwrite=True)
+                   description=m.description, overwrite=True,
+                   predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
     return m
 
 
@@ -252,7 +320,8 @@ def register_kilonova_two(band_names, redshift, dl_cm, *, name="kilonova_two_jax
 def tde_model(band_names, redshift, dl_cm, *, name=None, rise="gaussian", n_wave=2000,
               n_time=None, f_debris=1.0, xi=1.0, n_pre=100, pin=None, prior=None,
               mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None,
-              r_v_mw=3.1, r_v_host=3.1, law="f99", filter_set=None, **engine_kwargs):
+              r_v_mw=3.1, r_v_host=3.1, law="f99", filter_set=None, band_aliases=None,
+              **engine_kwargs):
     """Bind dataset context to the JAX cooling-envelope TDE and return a whisper ``Model``.
 
     Photometric, so it is a factory rather than a registry entry -- for exactly the reason
@@ -334,7 +403,6 @@ def tde_model(band_names, redshift, dl_cm, *, name=None, rise="gaussian", n_wave
         xi_mw = kn.extinction_shape(fs["lam"], redshift, r_v=r_v_mw, law=law, frame="observer")
     if ebv_host is not None:
         xi_host = kn.extinction_shape(fs["lam"], redshift, r_v=r_v_host, law=law, frame="rest")
-    index_of = {b: i for i, b in enumerate(band_names)}
 
     # redback's OWN prior, read from redback rather than transcribed -- including its FIXED
     # parameters. `cooling_envelope.prior` pins mbh_6=1, eta=0.1, alpha=0.1, beta=0.9 (bilby
@@ -398,28 +466,46 @@ def tde_model(band_names, redshift, dl_cm, *, name=None, rise="gaussian", n_wave
 
     _core_jit = jax.jit(_core)
 
+    _band_indices = _make_band_indices(band_names, "tde_model(band_names=[...])", band_aliases)
+
     def predict(parameters, times, bands=None):
         """whisper contract: (parameters, times, bands) -> flux density in Jy."""
         if bands is None:
             raise ValueError(f"model {name!r} is photometric and needs a `bands` array")
-        try:
-            idx = np.array([index_of[str(b)] for b in np.asarray(bands)], dtype=int)
-        except KeyError as exc:
-            raise KeyError(
-                f"band {exc.args[0]!r} was not bound to this model. Bound: {band_names}. "
-                "Rebuild with tde_model(band_names=[...]) covering every band in the data."
-            ) from None
+        idx = _band_indices(bands)
         t = jnp.asarray(np.asarray(times, dtype=float))
         bidx = jnp.asarray(idx)
         mag = _core_jit(t, bidx, *[float(parameters[k]) for k in params])
         # whisper models return FLUX; convert once, at the end. Never combine magnitudes.
         return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * np.asarray(mag, dtype=float))
 
+    def predict_jax(theta, times, band_idx=None):
+        """``predict`` for a traced caller: flat theta, integer bands, flux density in Jy.
+
+        ``theta`` is ordered by ``Model.parameters``; ``band_idx`` indexes ``band_names``. Map the
+        data's band strings once, outside the trace, with ``predict_jax.band_index(bands)``. One
+        parameter set; ``jax.vmap`` it for a batch.
+
+        **Requires float64** -- the envelope ODE's guard raises on the first trace, not here. And
+        note the termination cliff: past the envelope's own last valid epoch the flux is exactly
+        zero and the magnitude pins to ``mag_floor``, a step ``jax.grad`` cannot see. Measured over
+        10,000 draws of redback's ``gaussianrise`` prior, that cliff lands inside a 0-100 d window
+        on 15.6% of draws, so a gradient-based sampler on this model is not a safe default.
+        """
+        if band_idx is None:                    # same requirement, same message, as predict
+            raise ValueError(f"model {name!r} is photometric and needs a `band_idx` array")
+        mag = _core_jit(jnp.asarray(times), jnp.asarray(band_idx),
+                        *[theta[i] for i in range(len(params))])
+        return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * mag)
+
+    predict_jax.band_index = _band_indices
+
     what = ("Gaussian rise + Sarin & Metzger cooling envelope"
             if rise == "gaussian" else "Sarin & Metzger cooling envelope (post-circularisation only)")
     pin_note = ("; redback pins " + ", ".join(f"{k}={v:g}" for k, v in sorted(pinned.items()))
                 if pinned else "")
     return Model(name=name, predict=predict, parameters=params, default_prior=prior,
+                 predict_jax=predict_jax,
                  description=(f"TDE: {what} (JAX/GPU){pin_note}. Physics identical to redback's "
                                f"_cooling_envelope at n_time={n_time}; the light curve ends at "
                                f"the envelope's own death rather than at redback's diverged "
@@ -432,7 +518,8 @@ def register_tde(band_names, redshift, dl_cm, *, name=None, **kwargs):
 
     m = tde_model(band_names, redshift, dl_cm, name=name, **kwargs)
     register_model(m.name, m.predict, m.parameters, prior=m.default_prior,
-                   description=m.description, overwrite=True)
+                   description=m.description, overwrite=True,
+                   predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
     return m
 
 
@@ -448,7 +535,7 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
                     t_exp_days=0.0, dense_resolution=None, magnetar_convention="1.15",
                     interaction=True, dilation=True, pin=None, prior=None, mag_floor=40.0,
                     ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law="f99",
-                    filter_set=None, times=None):
+                    filter_set=None, times=None, band_aliases=None):
     """Bind dataset context to one of the JAX supernova models and return a whisper ``Model``.
 
     Photometric, so it is a factory rather than a registry entry -- for exactly the reason
@@ -535,7 +622,6 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
         xi_mw = kn.extinction_shape(fs["lam"], redshift, r_v=r_v_mw, law=law, frame="observer")
     if ebv_host is not None:
         xi_host = kn.extinction_shape(fs["lam"], redshift, r_v=r_v_host, law=law, frame="rest")
-    index_of = {b: i for i, b in enumerate(band_names)}
 
     # redback's OWN prior, read from redback rather than transcribed, including its FIXED
     # parameters -- bilby turns a bare float in a prior file into a DeltaFunction, which is how
@@ -595,22 +681,48 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
     if times is not None:                      # build (and compile on first call) up front
         _core_for(np.asarray(_source_time(times, redshift, t_exp_days), dtype=float))
 
+    _band_indices = _make_band_indices(
+        band_names, f"supernova_model({model!r}, band_names=[...])", band_aliases)
+
     def predict(parameters, times, bands=None):
         """whisper contract: (parameters, times, bands) -> flux density in Jy."""
         if bands is None:
             raise ValueError(f"model {name!r} is photometric and needs a `bands` array")
-        try:
-            idx = np.array([index_of[str(b)] for b in np.asarray(bands)], dtype=int)
-        except KeyError as exc:
-            raise KeyError(
-                f"band {exc.args[0]!r} was not bound to this model. Bound: {band_names}. "
-                f"Rebuild with supernova_model({model!r}, band_names=[...]) covering every "
-                f"band in the data.") from None
+        idx = _band_indices(bands)
         t_src = np.asarray(_source_time(times, redshift, t_exp_days), dtype=float)
         mag = _core_for(t_src)(jnp.asarray(idx),
                                *[float(parameters[k]) for k in params])
         # whisper models return FLUX; convert once, at the end. Never combine magnitudes.
         return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * np.asarray(mag, dtype=float))
+
+    def predict_jax(theta, times, band_idx=None):
+        """``predict`` for a traced caller: flat theta, integer bands, flux density in Jy.
+
+        ``theta`` is ordered by ``Model.parameters``; ``band_idx`` indexes ``band_names``. Map the
+        data's band strings once, outside the trace, with ``predict_jax.band_index(bands)``.
+
+        **``times`` must be CONCRETE, not traced.** Unlike the kilonova and the TDE, this family's
+        dense grid is built *from* the observation times (CHANGE 1) and the compiled core is
+        memoised on ``t_src.tobytes()``, so the times are a closure constant of the compilation,
+        not a traced argument. ``jax.vmap`` this over ``theta`` alone (``in_axes=(0, None, None)``)
+        -- vmapping or jitting over ``times`` raises a JAX tracer-conversion error. Also requires
+        float64: these engines carry cgs luminosities of 1e43-1e46 erg/s and float32 stops at
+        3.4e38.
+        """
+        if band_idx is None:                    # same requirement, same message, as predict
+            raise ValueError(f"model {name!r} is photometric and needs a `band_idx` array")
+        try:
+            t_src = np.asarray(_source_time(np.asarray(times, dtype=float), redshift, t_exp_days),
+                               dtype=float)
+        except Exception as exc:                # a tracer cannot become a numpy array
+            raise TypeError(
+                f"model {name!r}: predict_jax needs CONCRETE times -- the dense grid is built from "
+                f"them and the compiled core is memoised on their bytes. vmap over theta only "
+                f"(in_axes=(0, None, None)) and keep `times` outside the trace.") from exc
+        mag = _core_for(t_src)(jnp.asarray(band_idx), *[theta[i] for i in range(len(params))])
+        return AB_ZEROPOINT_JY * 10.0 ** (-0.4 * mag)
+
+    predict_jax.band_index = _band_indices
 
     notes = []
     if pinned:
@@ -626,6 +738,7 @@ def supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=200
         notes.append(f"magnetar_convention={magnetar_convention}")
     tail = ("; " + "; ".join(notes)) if notes else ""
     return Model(name=name, predict=predict, parameters=params, default_prior=model_prior,
+                 predict_jax=predict_jax,
                  description=(f"Supernova: redback's {model} (JAX/GPU){tail}. Bolometric "
                               f"physics matches redback to ~1e-16; the band integral uses the "
                               f"real bandpass rather than redback's sncosmo spline. See "
@@ -643,5 +756,6 @@ def register_supernova(model, band_names, redshift, dl_cm, *, name=None, **kwarg
 
     m = supernova_model(model, band_names, redshift, dl_cm, name=name, **kwargs)
     register_model(m.name, m.predict, m.parameters, prior=m.default_prior,
-                   description=m.description, overwrite=True)
+                   description=m.description, overwrite=True,
+                   predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
     return m

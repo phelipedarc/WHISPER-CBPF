@@ -28,6 +28,7 @@ from numpyro.infer import MCMC, NUTS
 # split this file sat in whisper-GPU, cloned INTO a whisper-labia checkout as `whisper_gpu/`,
 # and reached whisper_labia absolutely off sys.path; the merge removes that indirection.
 
+from ...models import get_model  # noqa: E402
 from ...samplers.base import (  # noqa: E402
     BaseSampler,
     SamplerResult,
@@ -35,6 +36,7 @@ from ...samplers.base import (  # noqa: E402
     attach_predictive_metrics,
     summarize_posterior,
 )
+from ._adapters import resolve_density as _resolve_density  # noqa: E402
 
 
 def _numpyro_priors(prior, names):
@@ -86,34 +88,45 @@ class NUTSGPUSampler(BaseSampler):
 
     name = "nuts_gpu"
 
-    def fit(self, lc, model, prior=None, *, log_prob_fn, num_warmup=1000, num_samples=2000,
-            num_chains=4, space="flux", seed=0, progress=False,
+    def fit(self, lc, model, prior=None, *, log_prob_fn=None, num_warmup=1000, num_samples=2000,
+            num_chains=4, space="auto", seed=0, progress=False,
             target_accept_prob=0.8) -> SamplerResult:
         """Fit ``lc`` with ``model`` via NumPyro NUTS.
 
         Parameters
         ----------
         lc : LightCurve
-            Observed light curve (only used for ``n_data``/``attach_*`` metrics here — the actual
-            likelihood is baked into ``log_prob_fn``).
-        model : whisper_cbpf.models.Model-like
-            Needs ``.name`` and ``.parameters`` (order must match ``log_prob_fn``'s expected
-            flat theta vector).
+            Observed light curve. Used for ``n_data``/``attach_*`` metrics, and — when
+            ``log_prob_fn`` is not supplied — to build the density.
+        model : whisper_cbpf.models.Model or str
+            A registered model, by object or by name.
         prior : Prior, optional
-            Defaults to ``model.default_prior``. Must be a box of ``Uniform`` per parameter
-            (bounds read from ``prior.distributions[name].bounds``).
-        log_prob_fn : Callable[[jnp.ndarray], jnp.ndarray]
-            Required. A ``jax.jit``-compiled function mapping a flat ``theta`` vector (order =
-            ``model.parameters``) to a scalar log-likelihood, ``-inf`` outside the prior box
-            (see ``flare_jax.make_log_prob_jax``) — i.e. pure log-likelihood, not log-posterior;
-            the flat prior's constant density is added separately via NumPyro's own ``Uniform``
-            sample site, so no double-counting.
+            Defaults to ``model.default_prior``. Each parameter must be ``Uniform`` or
+            ``LogUniform``; anything else raises rather than being approximated by its bounds.
+        log_prob_fn : Callable[[jnp.ndarray], jnp.ndarray], optional
+            A ``jax.jit``-compiled function mapping a flat ``theta`` vector (order =
+            ``model.parameters``) to a scalar log-**likelihood**, ``-inf`` outside the prior box —
+            not a log-posterior. The prior density is added separately by NumPyro's own per-
+            parameter sample sites, so passing a posterior double-counts it.
+
+            **Optional since the adapter layer landed.** When omitted, ``model.log_prob_jax`` is
+            used if the factory filled it, and otherwise one is built from ``model.predict_jax``
+            plus the likelihood implied by ``space`` (see
+            :func:`whisper_cbpf.samplers.jax._adapters.make_log_prob_jax`). An explicitly passed
+            callable always wins.
         num_warmup, num_samples, num_chains : int
             NUTS budget. Chains run via ``chain_method="vectorized"`` (all chains batched on the
             one visible GPU via vmap — the standard single-device multi-chain NumPyro pattern).
-        space : str
-            Recorded in ``info``/passed to ``attach_predictive_metrics`` — not used to rebuild the
-            likelihood (that's already fixed inside ``log_prob_fn``).
+        space : {"auto", "flux", "magnitude"}
+            **Live on the auto-built path**, where it selects the likelihood: ``"auto"`` follows
+            ``lc.data_mode``, the same rule ``abc``/``abc_smc``/``mcmc`` use, so magnitude data is
+            fitted in magnitude space. It used to default to ``"flux"`` and be recorded but never
+            used, which meant a magnitude light curve was silently scored in flux by every
+            predictive metric.
+
+            When *you* pass ``log_prob_fn``, the space is fixed inside your density and this
+            argument cannot change it — it is then only a label for the metrics, and
+            ``info["space_source"]`` records which case applies.
 
         Returns
         -------
@@ -122,12 +135,17 @@ class NUTSGPUSampler(BaseSampler):
             per-parameter r-hat (via arviz). The raw NumPyro ``MCMC`` object is attached as
             ``result.numpyro_mcmc``.
         """
+        model = get_model(model)
         prior = prior if prior is not None else model.default_prior
         if prior is None:
             raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
         names = list(model.parameters)
         k, n = len(names), int(len(lc.time))
+        # Validate the prior BEFORE building anything: an unsupported distribution should report
+        # itself, not hide behind a filter-set build or an XLA compile.
         site_dists = _numpyro_priors(prior, names)
+        log_prob_fn, space, space_source, fn_source = _resolve_density(
+            lc, model, prior, log_prob_fn, space, names, include_prior=False)
 
         def numpyro_model():
             # One site per parameter so each keeps its OWN density and support transform; stacked
@@ -212,6 +230,8 @@ class NUTSGPUSampler(BaseSampler):
         info = {
             "num_warmup": int(num_warmup), "num_samples": int(num_samples),
             "num_chains": int(n_chains_run), "space": space, "seed": int(seed),
+            "space_source": space_source, "log_prob_fn": fn_source,
+            "x64": bool(jax.config.jax_enable_x64),
             "target_accept_prob": float(target_accept_prob),
             "warmup_time_s": float(warmup_time), "sampling_time_s": float(sampling_time),
             "n_divergences": n_divergences, "rhat": rhat_by_param,

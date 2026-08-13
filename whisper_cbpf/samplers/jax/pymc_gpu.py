@@ -50,6 +50,8 @@ from ...samplers.base import (
 )
 
 from ...backends._env import require_jax
+from ...models import get_model
+from ._adapters import resolve_density as _resolve_density
 
 
 def _build_ops(log_prob_fn, jax, jnp):
@@ -163,17 +165,24 @@ class _PyMCJAXBase(BaseSampler):
 
     chain_method = "vectorized"
 
-    def fit(self, lc, model, prior=None, *, log_prob_fn, num_warmup=1000, num_samples=2000,
-            num_chains=4, space="flux", seed=0, progress=False,
+    def fit(self, lc, model, prior=None, *, log_prob_fn=None, num_warmup=1000, num_samples=2000,
+            num_chains=4, space="auto", seed=0, progress=False,
             target_accept_prob=0.8) -> SamplerResult:
         """Fit ``lc`` with ``model`` via PyMC's model API, sampled by NumPyro NUTS on GPU.
 
         Parameters
         ----------
-        log_prob_fn : callable
+        model : whisper_cbpf.models.Model or str
+            A registered model, by object or by name.
+        log_prob_fn : callable, optional
             ``theta -> scalar`` pure log-LIKELIHOOD in ``model.parameters`` order. The prior's
             density is contributed by the PyMC variables, so passing a log-POSTERIOR here would
-            double-count it. Same contract as ``nuts_gpu``.
+            double-count it. Same contract as ``nuts_gpu`` — and, like it, **optional**: when
+            omitted one is built from ``model.predict_jax`` and the likelihood implied by
+            ``space``. An explicitly passed callable always wins.
+        space : {"auto", "flux", "magnitude"}
+            Live on the auto-built path; a label only when you pass your own ``log_prob_fn``.
+            ``info["space_source"]`` records which. See ``nuts_gpu.fit``.
         num_warmup, num_samples, num_chains, seed, target_accept_prob
             NUTS budget and adaptation, as for ``nuts_gpu``.
         """
@@ -189,11 +198,15 @@ class _PyMCJAXBase(BaseSampler):
                 f"dependency -- no other sampler requires it, which is why the import is here "
                 f"rather than at module scope.") from exc
 
+        model = get_model(model)
         prior = prior if prior is not None else model.default_prior
         if prior is None:
             raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
         names = list(model.parameters)
         k, n = len(names), int(len(lc.time))
+        log_prob_fn, space, space_source, fn_source = _resolve_density(
+            lc, model, prior, log_prob_fn, space, names,
+            include_prior=False, sampler=self.name)
 
         # local_device_count(), not device_count(): NumPyro checks the LOCAL count, and the two
         # differ on a multi-host setup.
@@ -293,6 +306,9 @@ class _PyMCJAXBase(BaseSampler):
                               and max(rhat_by_param.values()) < 1.01),
             "target_accept_prob": float(target_accept_prob),
             "space": space,
+            "space_source": space_source,
+            "log_prob_fn": fn_source,
+            "x64": bool(jax.config.jax_enable_x64),
             "pymc_version": pm.__version__,
         }
         attach_band_metrics(info, lc, model.name, best, space)

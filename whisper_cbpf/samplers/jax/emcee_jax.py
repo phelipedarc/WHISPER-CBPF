@@ -26,6 +26,7 @@ import pandas as pd
 # split this file sat in whisper-GPU, cloned INTO a whisper-labia checkout as `whisper_gpu/`,
 # and reached whisper_labia absolutely off sys.path; the merge removes that indirection.
 
+from ...models import get_model  # noqa: E402
 from ...samplers.base import (  # noqa: E402
     BaseSampler,
     SamplerResult,
@@ -33,6 +34,29 @@ from ...samplers.base import (  # noqa: E402
     attach_predictive_metrics,
     summarize_posterior,
 )
+
+#: Walkers per compiled vmap call in :func:`fit_emcee_jax`.
+#:
+#: Mirrors ``abc_gpu.DEFAULT_CHUNK`` and for the same reason: the extent of a vmap must never be a
+#: user-scaled count on a model with a wavelength axis, because XLA's compile time — not memory —
+#: is what gives out. ``None`` restores the single wide vmap this sampler used to do
+#: unconditionally, which is fine for an analytic density.
+DEFAULT_WALKER_CHUNK = 16
+
+
+def _map_in_walker_chunks(jax, jnp, batched, theta, width):
+    """``lax.map`` ``batched`` over padded blocks of ``width`` walkers, then trim.
+
+    Constant memory, one compile, regardless of ``nwalkers``. Padding keeps every block the same
+    shape so there is exactly one compiled kernel — the same construction ``abc_gpu`` uses.
+    """
+    b = int(theta.shape[0])
+    n_blocks = -(-b // width)
+    pad = n_blocks * width - b
+    if pad:
+        theta = jnp.concatenate([theta, jnp.repeat(theta[-1:], pad, axis=0)], axis=0)
+    out = jax.lax.map(batched, theta.reshape(n_blocks, width, theta.shape[-1]))
+    return out.reshape(-1)[:b]
 
 
 from ...models.jax._flare_spec import PARAMETERS as _PARAMS  # noqa: E402
@@ -90,32 +114,63 @@ def _init_walkers(nwalkers, lows, highs, seed):
     return rng.uniform(lows, highs, size=(nwalkers, len(lows)))
 
 
-def fit_emcee_jax(lc, model, log_prob_fn, *, prior=None, nwalkers=32, nsteps=5000, burnin=1000,
-                  thin=10, seed=0, progress=False, space="flux") -> SamplerResult:
-    """Arm A(1): emcee vectorized against the shared jitted JAX log-density.
-
-    ``log_prob_fn`` is the SAME object the NUTS arm receives — passed by reference, not rebuilt,
-    so the two arms provably evaluate an identical log-density and the comparison isolates the
-    sampling algorithm rather than NumPy-vs-XLA.
+def fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nsteps=5000, burnin=1000,
+                  thin=10, seed=0, progress=False, space="auto",
+                  walker_chunk=DEFAULT_WALKER_CHUNK) -> SamplerResult:
+    """Arm A(1): emcee vectorized against a jitted JAX log-density.
 
     emcee's ``vectorize=True`` hands the whole ``(nwalkers, ndim)`` ensemble to the callable at
     once, so one jitted+vmapped GPU call replaces ``nwalkers`` Python-level calls per step. The
     numpy<->JAX conversion happens only at that boundary; emcee itself never sees a JAX type, so
     there's no interaction with JAX tracing.
+
+    **emcee needs a log-POSTERIOR, unlike ``nuts_gpu``.** This sampler has no mechanism for a prior:
+    it samples whatever density it is given, so its stationary distribution is exactly
+    ``exp(log_prob_fn)``. ``nuts_gpu`` and ``pymc_gpu`` add the prior through their own sample
+    sites and therefore want a pure log-*likelihood*. Handing the same object to both — which this
+    module's docstring used to recommend, and which ``fit_emcee_jax`` used to assume with the
+    comment "flat prior => log-posterior == log-likelihood + const" — is correct **only if every
+    prior is Uniform**. It is not: ``kilonova_model`` gives ``temperature_floor`` a
+    ``LogUniform(100, 6000)``, whose median is 775 K against a uniform's 3050 K. So the auto-built
+    density here is built with ``include_prior=True``, and draws are ranked for AIC/BIC by the
+    likelihood twin rather than by ``sampler.get_log_prob``.
+
+    If you pass ``log_prob_fn`` yourself, pass a log-**posterior**; a pure likelihood silently
+    imposes a flat box.
     """
     import jax
     import jax.numpy as jnp
 
+    from ._adapters import float_dtype, resolve_density as _resolve_density
+
+    model = get_model(model)
     prior = prior if prior is not None else model.default_prior
+    if prior is None:
+        raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
     names = list(model.parameters)
     lows = np.array([prior.distributions[nm].bounds[0] for nm in names], dtype=float)
     highs = np.array([prior.distributions[nm].bounds[1] for nm in names], dtype=float)
     ndim = len(names)
 
+    log_prob_fn, space, space_source, fn_source = _resolve_density(
+        lc, model, prior, log_prob_fn, space, names,
+        include_prior=True, sampler="emcee_jax")
+    # Rank draws by LIKELIHOOD for AIC/BIC even though we SAMPLE the posterior.
+    loglik_fn = getattr(log_prob_fn, "log_likelihood", None)
+
     batched = jax.jit(jax.vmap(log_prob_fn))
+    dt = float_dtype()          # was a hard jnp.float32, which threw away x64 when it was enabled
 
     def log_prob_batch(theta_batch):
-        out = batched(jnp.asarray(theta_batch, dtype=jnp.float32))
+        theta = jnp.asarray(theta_batch, dtype=dt)
+        # BOUND THE VMAP EXTENT. `nwalkers` is user-scaled, and a vmap sized by a user-scaled count
+        # is the trap that has stalled this project's compiles five times (see GPU_SETUP.md). It
+        # was harmless while the only density here was the analytic flare; it is not once a
+        # photometric model can reach this path. `walker_chunk=None` restores the single wide vmap.
+        if walker_chunk and theta.shape[0] > walker_chunk:
+            out = _map_in_walker_chunks(jax, jnp, batched, theta, int(walker_chunk))
+        else:
+            out = batched(theta)
         return np.asarray(jax.block_until_ready(out), dtype=float)
 
     # Compile on a throwaway ensemble so JIT time is reported separately from sampling time.
@@ -132,9 +187,17 @@ def fit_emcee_jax(lc, model, log_prob_fn, *, prior=None, nwalkers=32, nsteps=500
     runtime = time.perf_counter() - t0
 
     flat = sampler.get_chain(discard=int(burnin), thin=int(thin), flat=True)
-    # Flat prior => log-posterior == log-likelihood + const, and log_prob_fn is already pure
-    # log-likelihood (-inf outside the box), so its values are directly the log-likelihoods.
-    ll_flat = sampler.get_log_prob(discard=int(burnin), thin=int(thin), flat=True)
+    # AIC/BIC are defined on the maximum log-LIKELIHOOD, and what emcee stores is whatever density
+    # it sampled -- a log-POSTERIOR on the auto-built path. Re-evaluate the likelihood twin over
+    # the thinned chain rather than reusing sampler.get_log_prob(), which would fold the prior into
+    # both. `lax.map`, not vmap: the extent is a draw count.
+    if loglik_fn is not None:
+        ll_flat = np.asarray(jax.block_until_ready(
+            jax.lax.map(loglik_fn, jnp.asarray(flat, dtype=dt))), dtype=float)
+    else:
+        # A hand-built density: we cannot separate prior from likelihood, so report what was
+        # sampled and say so in info["max_log_likelihood_is"].
+        ll_flat = sampler.get_log_prob(discard=int(burnin), thin=int(thin), flat=True)
 
     try:
         autocorr = float(np.nanmean(sampler.get_autocorr_time(tol=0)))
@@ -143,6 +206,10 @@ def fit_emcee_jax(lc, model, log_prob_fn, *, prior=None, nwalkers=32, nsteps=500
     info = {
         "nwalkers": int(nwalkers), "nsteps": int(nsteps), "burnin": int(burnin), "thin": int(thin),
         "space": space, "seed": int(seed),
+        "space_source": space_source, "log_prob_fn": fn_source,
+        "x64": bool(jax.config.jax_enable_x64),
+        "walker_chunk": (int(walker_chunk) if walker_chunk else None),
+        "max_log_likelihood_is": ("likelihood" if loglik_fn is not None else "sampled density"),
         "mean_acceptance_fraction": float(np.mean(sampler.acceptance_fraction)),
         "mean_autocorr_time": autocorr,
         "converged": bool(np.isfinite(autocorr) and autocorr > 0 and nsteps >= 50.0 * autocorr),
@@ -242,12 +309,12 @@ class EmceeJAXSampler(BaseSampler):
 
     name = "emcee_jax"
 
-    def fit(self, lc, model, prior=None, *, log_prob_fn, **kwargs) -> SamplerResult:
-        """Fit via emcee against a shared jitted JAX log-density. See :func:`fit_emcee_jax`.
+    def fit(self, lc, model, prior=None, *, log_prob_fn=None, **kwargs) -> SamplerResult:
+        """Fit via emcee against a jitted JAX log-density. See :func:`fit_emcee_jax`.
 
-        ``log_prob_fn`` is required and keyword-only, exactly as for ``nuts_gpu`` -- the two arms
-        are meant to receive the *same object* so a comparison between them isolates the sampling
-        algorithm rather than the log-density implementation.
+        ``log_prob_fn`` is optional: omit it and one is built from ``model.predict_jax`` and the
+        likelihood implied by ``space=``. If you do pass one, pass a log-**POSTERIOR** -- emcee has
+        no prior mechanism of its own, so a pure log-likelihood silently imposes a flat box. That
+        differs from ``nuts_gpu``, which wants a pure likelihood; see :func:`fit_emcee_jax`.
         """
-        from ...models import get_model
         return fit_emcee_jax(lc, get_model(model), log_prob_fn, prior=prior, **kwargs)
