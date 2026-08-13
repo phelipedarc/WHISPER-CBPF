@@ -330,10 +330,19 @@ finite, the cotangent is a clean `0`, and the assertion fails with its own messa
 **`tests/t2_autodiff/test_gradients.py:86` calls `jax.config.update("jax_enable_x64", True)` at
 module import, and that flag is process-global.** So this test passes when run alone and fails when
 `t2_autodiff` is collected before it in the same pytest process — which is what the GPU regression
-selection does. Confirmed: run in isolation on `phe_sbi_2` it is **1 passed**; in the combined
-selection it is the sole failure.
+selection does.
 
-Not caused by this audit — nothing here touches the flare model, that test, or x64 configuration.
+Three runs on `phe_sbi_2` settle it completely:
+
+| what was run | tree | result |
+|---|---|---|
+| `test_flare_gradients.py::test_naive_single_where_would_fail_here` alone | pre-audit `3f23e66` | **1 passed** |
+| `tests/t2_autodiff` + `tests/test_flare_gradients.py` | **pre-audit `3f23e66`** | **1 failed, 22 passed** |
+| the 8-file GPU regression selection | post-audit `2c07ddf` | **1 failed, 89 passed** |
+
+So it fails identically *before* any of this audit's changes, given the same collection order — and
+passes in isolation on the same tree. **Not caused by this audit**, and nothing here touches the
+flare model, that test, or x64 configuration.
 
 **The fix is now obvious, which it was not under the version story:** pin the control's own dtype
 (evaluate it in float32 explicitly), or choose parameters that overflow in float64 too — the
