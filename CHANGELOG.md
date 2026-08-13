@@ -1,8 +1,13 @@
 # Changelog
 
-All notable changes to WHISPER-CBPF (`whisper_cbpf`). The project is in early development; nothing is
-released to PyPI yet — install from GitHub
-(`pip install git+https://github.com/phelipedarc/WHISPER-CBPF.git`).
+All notable changes to WHISPER-CBPF (`whisper_cbpf`). The project is in early development.
+
+> **Neither published install route works yet.** Nothing is on PyPI, and
+> `pip install git+https://github.com/phelipedarc/WHISPER-CBPF.git` — which this file advertised
+> until 2026-08-13 — fails too: the GitHub repository exists and is reachable, but is **empty**.
+> Verified with `git ls-remote origin` → exit 0, **zero refs**. Nothing has been pushed.
+> The only install that works today is from a local checkout: `pip install -e ".[gpu,models]"`.
+> See [`INSTALL.md`](INSTALL.md).
 
 ## [Unreleased]
 

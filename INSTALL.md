@@ -13,9 +13,17 @@ source scripts/whisper-gpu-env.sh          # BEFORE starting Python — see §4
 
 then verify with §5. Everything below explains the pieces.
 
-> **Not yet on PyPI.** Until the first release, install from a checkout:
-> `pip install -e ".[gpu,models]"` from the repository root. The `pip install whisper-cbpf`
-> commands below are the shape the released package will take.
+> **Neither published install route works yet — install from a local checkout.**
+>
+> * **PyPI:** nothing published. `pip install whisper-cbpf` fails.
+> * **GitHub:** `origin` is `https://github.com/phelipedarc/WHISPER-CBPF.git`. The repository exists
+>   and is reachable, but it is **empty** — verified 2026-08-13 with `git ls-remote origin`, which
+>   exits 0 and returns **zero refs**. So `pip install git+https://…` and `git clone https://…`
+>   both give you nothing. Nothing has been pushed.
+>
+> The only route that works today is from the working tree:
+> `pip install -e ".[gpu,models]"` at the repository root. Every `pip install whisper-cbpf …`
+> command below is the shape the released package will take, not something you can run yet.
 
 ## 1. Requirements
 
@@ -155,7 +163,7 @@ the output is a complete statement about your install.
 python -m pytest -q -m "not slow"
 ```
 
-On a base + `[dev]` install this reports **239 passed, 36 skipped, 6 deselected**. The skips are the
+On a base + `[dev]` install this reports **253 passed, 36 skipped, 6 deselected** (measured 2026-08-13; it was 239 before the `nested` sampler added 14 tests). The skips are the
 JAX/redback/sbi-gated tests. Note that `--collect-only` reports 260 rather than 270 there: ten test
 modules `importorskip("jax")` at module scope, so they are never *collected* yet each still reports
 one skip.
@@ -172,7 +180,8 @@ your own scripts should record the version. Do not fit at `REDBACK_PRESETS["1.15
 ## 7. Development install
 
 ```bash
-git clone https://github.com/phelipedarc/WHISPER-CBPF.git
+# NOTE: cloning gives you an empty directory today - the remote has zero refs (see the box at the
+# top). Work from an existing checkout until the first push.
 cd WHISPER-CBPF
 pip install -e ".[dev]"
 python -m pytest -q -m "not slow"
