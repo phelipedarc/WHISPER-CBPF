@@ -65,6 +65,7 @@ def _budget(quick):
             "abc": dict(n_simulations=400, quantile=0.1, n_jobs=8),
             "abc_smc": dict(n_particles=48, n_rounds=2, n_jobs=8),
             "mcmc": dict(nsteps=300, burnin=100, nwalkers=24),
+            "nested": dict(nlive=150, dlogz=0.5),
             "snpe": dict(num_rounds=1, num_simulations=300, num_samples=500),
             "abc_gpu": dict(n_simulations=512, quantile=0.05),
             "abc_smc_gpu": dict(n_particles=48, n_rounds=2),
@@ -77,6 +78,7 @@ def _budget(quick):
         "abc": dict(n_simulations=20000, quantile=0.01, n_jobs=8),
         "abc_smc": dict(n_particles=400, n_rounds=5, n_jobs=8),
         "mcmc": dict(nsteps=4000, burnin=1000, nwalkers=32),
+        "nested": dict(nlive=400, dlogz=0.1),
         "snpe": dict(num_rounds=2, num_simulations=2000, num_samples=4000),
         "abc_gpu": dict(n_simulations=50000, quantile=0.01),
         "abc_smc_gpu": dict(n_particles=400, n_rounds=5),
@@ -87,7 +89,7 @@ def _budget(quick):
     }
 
 
-CPU_SAMPLERS = ["abc", "abc_smc", "mcmc", "snpe"]
+CPU_SAMPLERS = ["abc", "abc_smc", "mcmc", "nested", "snpe"]
 GPU_SAMPLERS = ["abc_gpu", "abc_smc_gpu", "nuts_gpu", "emcee_jax",
                 "pymc_jax_gpu_vectorized", "pymc_jax_gpu_parallelized"]
 

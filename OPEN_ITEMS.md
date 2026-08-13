@@ -440,11 +440,28 @@ CPU-JAX against 1.31 s on GPU (4.7×)**.
 **Next:** `python scripts/benchmark_samplers.py --preset production --two-stage` on an idle card.
 Until then nothing in this repository ranks samplers by speed.
 
-### `docs/CHOOSING.md`'s 50,000-simulation crossover is still unmeasured
+### ~~`docs/CHOOSING.md`'s 50,000-simulation crossover is still unmeasured~~ — MEASURED 2026-08-13
 
-The claim "the GPU crosses over at roughly 50,000 simulations" has **no measurement anywhere in this
-repository**. The benchmark harness can test it (`--crossover`: fits `wall(N) = a + b·N` per arm,
-solves for `N*`, bootstraps a 95% CI, and reports warm and cold separately against each CPU
-baseline) but that run has not been done.
+**There is no single crossover, and that is the finding.** `N*` moves by a factor of 60 depending on
+two things the sentence never stated. Measured on the one-component JAX kilonova, AT2017GFO, one
+idle A6000, 3 repeats:
 
-It is also unqualified as written: `n_jobs=1` and `n_jobs=8` cannot both be the crossover.
+| CPU baseline | `N*` warm | `N*` cold |
+|---|---|---|
+| `n_jobs=1` — **measured** | **1,067** | **4,047** |
+| `n_jobs=8` at this repo's measured 3.8× — *extrapolated* | 2,410 | 19,916 |
+| `n_jobs=8` at a perfect 8× — *extrapolated* | 4,485 | 63,992 |
+
+So "roughly 50,000" is **defensible only in the cold-start, well-parallelised corner** and wrong by
+~50× warm and serial. `docs/CHOOSING.md` now carries the table and both caveats: only the `n_jobs=1`
+rows are measured, and the comparison is whisper's CPU ABC against whisper's GPU ABC — the CPU arm
+calls `predict` one curve at a time while the GPU arm calls `vmap(predict_jax)` at `chunk=16`, so
+some of the gap is batching rather than the device.
+
+Raw timings (warm): 1k → 4.84 s CPU / 2.18 s GPU; 10k → 50.34 / 3.19; 30k → 154.75 / 3.33;
+50k → 271.47 / 3.57.
+
+**Next:** measure the parallel rows instead of extrapolating them, and add a `chunk`-matched arm so
+the batching contribution can be separated from the device contribution. Note also that the
+harness's bootstrap returned a degenerate CI (`[1067, 1067]`) — the point estimate reproduces under
+an independent least-squares fit, but that interval should not be quoted.

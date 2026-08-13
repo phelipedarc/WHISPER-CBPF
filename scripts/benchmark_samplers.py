@@ -217,6 +217,7 @@ BUDGET_KNOB = {
     "abc_gpu": "n_simulations",
     "abc_smc_gpu": "n_particles",
     "mcmc": "nsteps",
+    "nested": "nlive",          # more live points -> more evidence resolution AND more draws
     "emcee_jax": "nsteps",
     "snpe": "num_simulations",
     "nuts_gpu": "num_samples",
@@ -226,7 +227,7 @@ BUDGET_KNOB = {
 
 #: samplers whose draws have no chain axis -> ESS is computed as if iid, which for ABC/SMC/SNPE is
 #: an assumption, not a measurement. Every such row is flagged in the report.
-IID_ASSUMED = ("abc", "abc_smc", "snpe", "npe", "abc_smc_gpu", "abc_gpu")
+IID_ASSUMED = ("abc", "abc_smc", "snpe", "npe", "abc_smc_gpu", "abc_gpu", "nested")
 
 #: model_key -> (registration token for _register_models, registered name predicate, kind)
 MODEL_KEYS = {
@@ -395,7 +396,7 @@ def build_matrix(budgets, groups, device_set, repeats=3, allow_fork_with_jax=Fal
     # ---- A: gradient-free numpy models on the minimal install we advertise -------------------
     if "A" in groups and "cpu-min" in device_set:
         for mk in ("kn2_redback", "bazin"):
-            for s in ("abc", "abc_smc", "mcmc", "snpe"):
+            for s in ("abc", "abc_smc", "mcmc", "nested", "snpe"):
                 add(_mk("A", mk, s, "cpu-min", budgets))
 
     # ---- B: what the GPU buys for the same JAX model -----------------------------------------
@@ -2089,6 +2090,7 @@ SMOKE_BUDGET = {
     "abc": dict(n_simulations=120, quantile=0.2, n_jobs=8),
     "abc_smc": dict(n_particles=24, n_rounds=2, n_jobs=8),
     "mcmc": dict(nsteps=60, burnin=20, nwalkers=24, thin=1),
+    "nested": dict(nlive=60, dlogz=1.0),
     "snpe": dict(num_rounds=1, num_simulations=120, num_samples=200),
     "abc_gpu": dict(n_simulations=256, quantile=0.1),
     "abc_smc_gpu": dict(n_particles=24, n_rounds=2),

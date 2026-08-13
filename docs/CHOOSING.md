@@ -16,10 +16,43 @@ structural, not tuning problems.
 | You want a **Bayes factor**, not an information criterion | `nested` (alias `dynesty`) — the only sampler that returns `ln Z`, in `result.info["log_evidence"]`. Report `log_evidence_err` with it, and remember `ln Z` **depends on your prior widths in a way AIC/BIC do not**: measured on the same `flare` fit, widening one prior 100× moved `ln Z` by −4.1 ± 0.4 nats (analytic Occam expectation −ln 100 = −4.61) and moved AIC and BIC by −0.01. Only compare models whose priors you would defend *before* seeing the data. **Higher `ln Z` is better; lower AIC/BIC is better.** |
 | Amortised inference over many transients | `snpe` |
 
-## CPU or GPU: the crossover is real and it is high
+## CPU or GPU: the crossover depends on two things this used to leave unsaid
 
-**The GPU crosses over at roughly 50,000 simulations.** Below that, the CPU ABC wins — you pay JAX
-compile time and never amortise it. Do not reach for `abc_gpu` on a 5,000-simulation run.
+This section said, without qualification, "**the GPU crosses over at roughly 50,000 simulations**",
+and no measurement supporting it existed anywhere in the repository. It has now been measured, and
+the honest answer is that **there is no single crossover** — it moves by a factor of 60 depending on
+two choices the sentence never stated.
+
+Measured on the one-component JAX kilonova, AT2017GFO, one idle A6000, 3 repeats
+(`scripts/benchmark_samplers.py --crossover`):
+
+| simulations | CPU `abc`, `n_jobs=1` | GPU `abc_gpu` | ratio |
+|---|---|---|---|
+| 1,000 | 4.84 s | 2.18 s | 2.2× |
+| 10,000 | 50.34 s | 3.19 s | 15.8× |
+| 30,000 | 154.75 s | 3.33 s | 46.5× |
+| 50,000 | 271.47 s | 3.57 s | 76.0× |
+
+Fitting `wall(N) = a + b·N` per arm and solving for the crossover `N*`:
+
+| CPU baseline | `N*` warm (compile excluded) | `N*` cold (compile included) |
+|---|---|---|
+| `n_jobs=1` — **measured** | **1,067** | **4,047** |
+| `n_jobs=8` at the 3.8× this repo measured — *extrapolated* | 2,410 | 19,916 |
+| `n_jobs=8` at a perfect 8× — *extrapolated* | 4,485 | 63,992 |
+
+So the old "roughly 50,000" is **defensible only in the cold-start, well-parallelised corner**, and
+is wrong by ~50× for a warm serial baseline. Read it as: *if you are paying the XLA compile on every
+run and your CPU ABC is using all its cores, the GPU takes tens of thousands of simulations to pay
+off; if you are amortising the compile, it pays off in the low thousands.*
+
+Two caveats that matter more than the number:
+
+* **Only the `n_jobs=1` rows are measured.** The parallel rows are linear extrapolations from this
+  repo's own 3.8×-at-`n_jobs=8` ABC measurement, not new timings.
+* **This compares whisper's CPU ABC against whisper's GPU ABC, not CPU silicon against GPU
+  silicon.** The CPU arm calls `predict` (jitted JAX, one curve per call); the GPU arm calls
+  `vmap(predict_jax)` at `chunk=16`. Some of the gap is batching, not the device.
 
 For chain-level parallelism the news is worse: **vmap over chains buys about 1.05×** on a model that
 already saturates the GPU. One chain of the 2-component kilonova is 284 observations × 256
