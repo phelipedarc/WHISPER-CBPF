@@ -122,7 +122,7 @@ See `FINDINGS.md` for the full list. The ones that need a decision:
 | `redback_prior` defined in both `tde.py` and `supernova.py` — same function twice? | `DUPLICATES.md` §Priors |
 | `jax_gpu/` excluded as a legacy precursor, not verified file-by-file against whisper-GPU | `FINDINGS.md` §2.6 |
 | Migrated docs still link to `benchmarks/`, `analysis/`, `sanity_check/` — excluded from this package | `FINDINGS.md` §2.7 |
-| A control test in `test_flare_gradients.py` no longer tests anything on JAX 0.10.2 | `FINDINGS.md` §1.1 |
+| A control test in `test_flare_gradients.py` no longer tests anything | **diagnosed 2026-08-13 — the cause in `FINDINGS.md` §1.1 is wrong; see below** |
 | No `slow` marker in the GPU tests; the suite takes 47 minutes | `FINDINGS.md` §3.4 |
 | The pre-merge GPU baseline is stale — no like-for-like regression check has been run | `FINDINGS.md` §3.5 |
 | The merged API reference does not yet cover the ~110 GPU public symbols | — |
@@ -325,3 +325,30 @@ odd for the one model those samplers were originally benchmarked on.
 
 **Next:** adapt the flare's hook to the flat-theta contract. Small, but it changes a model's public
 shape.
+
+
+### `FINDINGS.md` §1.1 has the wrong cause for the failing flare control test
+
+`FINDINGS.md` says `test_naive_single_where_would_fail_here` fails because "on JAX 0.10.2 the naive
+form no longer fails". **Measured: it is float64, not the JAX version.** Same machine, same JAX,
+same inputs:
+
+* **float32** — gradient `{log_amp: nan, log_sigma: 0.0, log_tau: nan, t0: nan}` → the control
+  **passes**.
+* **float64** — gradient `{log_amp: 0.0, log_sigma: 0.0, log_tau: -0.0, t0: -0.0}` → the control
+  **fails**.
+
+The unselected branch is `amp·exp(-dt/tau)` with `dt = -510`, `tau = e`, i.e. exponent **187.62**.
+float32 overflows above ~88.7 (→ `inf` → `0·inf = nan`, which is exactly what the control wants to
+see); float64 overflows only above ~709.8, so the value is finite and the cotangent is a clean zero.
+
+`tests/t2_autodiff/test_gradients.py:86` sets `jax_enable_x64=True` at module import and the flag is
+**process-global**, so this test passes in isolation (verified: 1 passed) and fails whenever
+`t2_autodiff` is collected first in the same pytest process (verified: the sole failure in an
+89-passed GPU selection). It is order-dependent, not version-dependent.
+
+**Next:** the fix follows from the diagnosis — either evaluate the control in float32 explicitly, or
+pick parameters whose exponent exceeds ~709 so it overflows in float64 too. Either restores the
+control regardless of collection order. Left undone deliberately: it is a judgement about what the
+control should assert, which is why `FINDINGS.md` left it alone in the first place. `FINDINGS.md`
+§1.1 itself still needs its explanation corrected.

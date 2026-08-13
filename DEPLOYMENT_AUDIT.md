@@ -308,6 +308,39 @@ and **`list_models`** (`models/__init__.py:88`). Then `SamplerResult.to_dict` / 
 
 `CONTRIBUTING.md:47-48` states the convention is to "document every public symbol".
 
+### 3.6 `FINDINGS.md` §1.1 misdiagnoses the one failing GPU test — measured
+
+`tests/test_flare_gradients.py::test_naive_single_where_would_fail_here` is the control that proves
+the flare's double-`where` guard is necessary: it asserts a *naive* `jnp.where` still overflows.
+
+`FINDINGS.md` §1.1 says it fails because **"on JAX 0.10.2 the naive form no longer fails"** — a
+JAX-version story. That is wrong. **The control is dtype-dependent, and therefore
+test-order-dependent.** Measured directly, same machine, same JAX, same inputs:
+
+| | gradient | control assertion |
+|---|---|---|
+| float32 (`jax_enable_x64` off) | `{'log_amp': nan, 'log_sigma': 0.0, 'log_tau': nan, 't0': nan}` | **passes** |
+| float64 (`jax_enable_x64` on) | `{'log_amp': 0.0, 'log_sigma': 0.0, 'log_tau': -0.0, 't0': -0.0}` | **fails** |
+
+The arithmetic: the test's unselected branch is `amp·exp(-dt/tau)` with `dt = -510`, `tau = e`, so
+the exponent is **187.62**. float32 overflows above ~88.7 → `inf` → `0 · inf = nan` in the backward
+pass → the assertion holds. float64 overflows only above ~709.8, so `exp(187.62) ≈ 6.7e81` is
+finite, the cotangent is a clean `0`, and the assertion fails with its own message.
+
+**`tests/t2_autodiff/test_gradients.py:86` calls `jax.config.update("jax_enable_x64", True)` at
+module import, and that flag is process-global.** So this test passes when run alone and fails when
+`t2_autodiff` is collected before it in the same pytest process — which is what the GPU regression
+selection does. Confirmed: run in isolation on `phe_sbi_2` it is **1 passed**; in the combined
+selection it is the sole failure.
+
+Not caused by this audit — nothing here touches the flare model, that test, or x64 configuration.
+
+**The fix is now obvious, which it was not under the version story:** pin the control's own dtype
+(evaluate it in float32 explicitly), or choose parameters that overflow in float64 too — the
+exponent must exceed ~709, e.g. a larger `|dt|` or a smaller `tau`. Either makes the control assert
+something again regardless of collection order. **Not done here** — it is a decision about what the
+control should assert, which is the reason `FINDINGS.md` left it alone.
+
 ### 3.5 CI
 
 `.github/workflows/tests.yml:63` runs `pytest tests -q` with **no `-m "not slow"`**, contradicting
@@ -323,7 +356,8 @@ is latent. There is no GPU runner, so `t0_parity`, `t2_autodiff`, `t3_inference`
 |---|---|---|
 | CPU, `phe_sbi`, `-m "not slow"` | 235 passed, 35 skipped, 6 deselected | **239 passed, 36 skipped, 6 deselected** (+4 new tests, +1 JAX-only module skip) |
 | `tests/test_jax_backend.py`, `phe_sbi_2` | 19 passed | 19 passed |
-| `tests/t0_parity` + `tests/t2_autodiff`, `phe_sbi_2` | 37 passed, 25m48s | **re-run launched, incomplete at time of writing** — must be confirmed before this work is considered landed |
+| `tests/t0_parity` + `tests/t2_autodiff`, `phe_sbi_2` | 37 passed, 25m48s | **37 passed** (same selection, before the fixes) |
+| GPU regression: `test_jax_backend` + `t0_parity` + `t2_autodiff` + `abc_gpu_scan` + `abc_smc_gpu` + `kilonova_two` + `pymc_chain_method` + `flare_gradients` | — | **89 passed, 1 failed, 27m35s** — the one failure is pre-existing and order-dependent, see §3.6 |
 | `tests/t3_inference`, `phe_sbi_2` (~23 min) | not re-run at `3f23e66` either (`WHISPER_STATUS.md`) | **not run** |
 | `tests/test_jax_adapters.py` (new) | — | 21 passed |
 | Clean-checkout import (`git archive HEAD`) | ok | ok — 6 models, 11 samplers, 14 distances |
