@@ -1384,9 +1384,15 @@ REFERENCE_SPECS = {
     "kn1": ("nuts_gpu", dict(num_warmup=4000, num_samples=4000, num_chains=4,
                              target_accept_prob=0.9),
             "max_rhat<1.01, n_divergences==0, ESS_worst>2000"),
-    "kn2": ("nuts_gpu", dict(num_warmup=4000, num_samples=4000, num_chains=4,
-                             target_accept_prob=0.9),
-            "max_rhat<1.01, n_divergences==0, ESS_worst>2000"),
+    # kn2 uses NESTED, not NUTS, and that is not a preference -- it is structural. The
+    # 2-component AT2017GFO posterior is MULTIMODAL (OPEN_ITEMS: "four chains in three distinct
+    # modes"), and NUTS is a local sampler that cannot hop between separated modes AT ANY WARMUP
+    # BUDGET. Measured here: nuts_gpu at 4000+4000 x 4 chains gave ESS_worst = 7.1 with r-hat 1.53
+    # and ZERO divergences -- the signature of chains that are individually healthy and sitting in
+    # different places. It was correctly refused as a reference. OPEN_ITEMS' own remedy list says
+    # "use a multimodal sampler (abc_smc_gpu, or dynesty on CPU)"; dynesty exists here now.
+    "kn2": ("nested", dict(nlive=1000, dlogz=0.1),
+            "converged and n_effective>2000 (nested integrates across modes; NUTS cannot)"),
     "kn2_redback": ("mcmc", dict(nwalkers=64, nsteps=40000, burnin=10000, thin=20),
                     "nsteps>50*tau (the guard in samplers/mcmc.py:185)"),
     "bazin": ("mcmc", dict(nwalkers=32, nsteps=20000, burnin=5000, thin=10),
@@ -1442,6 +1448,15 @@ def _reference_qualifies(rec, sampler):
         rhat, div, ess = p.get("max_rhat"), p.get("n_divergences"), p.get("ess_worst")
         return bool(rhat is not None and rhat < 1.01 and div == 0
                     and ess is not None and ess > 2000)
+    if sampler in ("nested", "dynesty"):
+        # `converged` alone is too weak a bar for a REFERENCE: nested sets it to "did not hit the
+        # iteration cap", which is not the same as "sampled the posterior well". Use the sampler's
+        # OWN effective sample count, from the importance weights -- the harness's ess_worst treats
+        # nested as iid (it has no chain axis) and would simply report the draw count, overstating
+        # it. Threshold matched to the NUTS bar so the two references are comparable.
+        si = rec.get("sampler_info") or {}
+        neff = si.get("n_effective")
+        return bool(si.get("converged") and neff is not None and neff > 2000)
     return bool(p.get("converged"))
 
 
