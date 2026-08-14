@@ -13,7 +13,7 @@ Adapted from whisper-GPU @ 10796a0, ``__init__.py``. Two things changed, both fo
    so the registry holds a zero-argument :class:`_LazySampler` instead of the class object.
    ``get_sampler(name)`` still does ``_SAMPLERS[name]()`` and still gets a sampler instance --
    the contract is unchanged; only the stored value's type differs. Anything introspecting
-   ``_SAMPLERS["nuts_gpu"]`` as a class will see a callable instead. Recorded in ``FINDINGS.md``.
+   ``_SAMPLERS["nuts_gpu"]`` as a class will see a callable instead.
 
 *Registration, not duplication.* ``register_sampler`` / ``register_model`` are plain dict writes,
 so this module extends the registries at import with no change on the CPU side. There is

@@ -247,8 +247,8 @@ def test_the_scripts_shim_redirects_rather_than_duplicating():
     """``scripts/whisper-gpu-env.sh`` must SOURCE the packaged script, never copy it.
 
     The path is in the published README and in every run recipe written before the move, so it has
-    to keep working in a checkout. But ``DUPLICATES.md`` is explicit that two copies is the worse
-    outcome: two sets of exports drift, and the one that drifts is the one nobody is testing.
+    to keep working in a checkout. But two copies is the worse outcome: two sets of exports drift,
+    and the one that drifts is the one nobody is testing.
     """
     import os
 

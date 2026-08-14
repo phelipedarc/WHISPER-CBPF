@@ -1,180 +1,182 @@
 # WHISPER-CBPF
 
-**Bayesian model comparison for astronomical transient light curves — one package, CPU and GPU.**
+Bayesian model comparison for astronomical transient light curves — supernovae, kilonovae and tidal
+disruption events — on CPU or GPU.
 
-Load a light curve, fit candidate models with several samplers, get posteriors plus AIC/BIC and
-predictive metrics, and answer *"which model best fits this transient?"*
+You give it a light curve. You pick some models. It fits each one, and tells you which the data
+prefers.
+
+```bash
+pip install "git+https://github.com/phelipedarc/WHISPER-CBPF.git"
+```
+
+> **Status: alpha (0.1.0).** The package installs and runs, but not every sampler has been validated
+> to the same level. Read [Known limitations](#known-limitations) before publishing a number.
+
+## Your first fit
 
 ```python
-import numpy as np
 import whisper_cbpf as wp
 
-# a light curve we know the answer to, so you can see the fit work
-truth = {"amplitude": 5.0, "t0": 10.0, "sigma_rise": 3.0, "tau_decay": 12.0}
-t     = np.linspace(0.5, 40, 60)
-flux  = wp.get_model("gaussian_rise").predict(truth, t, None)
-flux += np.random.default_rng(0).normal(0, 0.05, flux.shape)
+# 1. Load a light curve. AT2017GFO ships with the package.
+lc = wp.load_lightcurve("tests/data/at2017gfo.csv", redshift=0.0098)
+lc = lc.select_bands(["g"]).set_explosion_date(57982.529).select_time_window(0.0, 10.0)
+print(lc.n_points)          # 53
 
-lc  = wp.LightCurve(time=t, band=np.array(["ztfg"] * len(t)), flux=flux,
-                    flux_err=np.full(len(t), 0.05), name="demo", redshift=0.01)
+# 2. Fit a model.
+result = wp.fit(lc, "bazin", sampler="mcmc", space="magnitude", nsteps=2000, burnin=500, seed=0)
 
-res = wp.fit(lc, "gaussian_rise", sampler="mcmc")      # CPU, no extras needed
-print(res.aic, res.bic, res.max_log_likelihood)
-print({k: round(v["median"], 2) for k, v in res.summary.items()})
+# 3. Read the answer.
+print(result.summary["t0"]["median"])     # each parameter: median, mean, std, ci16, ci84
+print(result.aic, result.bic)             # 279.3  287.2
 ```
 
-`res.summary` is `{parameter: {median, ci16, ci84, mean, std}}`:
+> **One ordering rule that bites everyone.** Call `set_explosion_date` *before*
+> `select_time_window`. The window filters whatever `time` currently holds, so windowing first
+> compares days-since-explosion against raw MJD (~57983) and quietly leaves you with an empty light
+> curve.
 
-```
--200.7 -192.3 104.3
-{'amplitude': 4.96, 't0': 10.06, 'sigma_rise': 3.05, 'tau_decay': 12.13}
-```
+## Comparing models
 
-Against a truth of `5.0 / 10.0 / 3.0 / 12.0`, every parameter is recovered to within 1.3%. Plots:
+Fit each candidate to the same data, then compare information criteria. **Lower is better.**
 
 ```python
-wp.plot_light_curve(lc)          # the data
-wp.plot_corner([res])            # the posterior — note the list, see below
-wp.plot_ppc(res, lc)             # posterior predictive check
+for name in ["bazin", "gaussian_rise"]:
+    r = wp.fit(lc, name, sampler="mcmc", space="magnitude", nsteps=2000, burnin=500, seed=0)
+    print(f"{name:16s} AIC={r.aic:8.1f}  BIC={r.bic:8.1f}")
+
+# bazin            AIC=   279.3  BIC=   287.2
+# gaussian_rise    AIC=   275.5  BIC=   283.4   <- preferred
 ```
 
-**Your own data** goes through `load_lightcurve` instead:
+Full worked examples, with a personalised prior on the two-component kilonova:
+
+* [`docs/MODEL_COMPARISON_CPU.md`](docs/MODEL_COMPARISON_CPU.md) — on CPU
+* [`docs/MODEL_COMPARISON_GPU.md`](docs/MODEL_COMPARISON_GPU.md) — on GPU
+
+**AIC, BIC and WAIC compare models, not spaces.** Numbers from a flux-space fit are not comparable
+with numbers from a magnitude-space fit. Keep `space=` the same across everything you compare.
+
+## Plots
 
 ```python
-lc = wp.load_lightcurve("transient.csv")        # auto-maps columns, groups bands, mag<->flux
-lc = lc.select_bands(["r"]).set_explosion_date(58598.0)
+wp.plot_light_curve(lc, save="lc.png")               # the data
+wp.plot_ppc(result, lc, model="bazin", save="ppc.png")   # posterior predictive check
+wp.plot_corner([result], save="corner.png")          # note the list -- overlay several results
 ```
 
-Two things to know before fitting real transients, because the defaults will not do it for you:
+## Custom priors
 
-- **Scale the prior to your flux units.** The analytic models ship
-  `amplitude ~ Uniform(0, 10)`, and if your fluxes are ~1e-5 Jy the prior cannot reach the
-  right amplitude at all — you will get a converged fit to a wrong answer. Pass your own
-  `Prior({...})`.
-- **Analytic models are toys.** `gaussian_rise`, `flare` and `bazin` are shape fitters, not
-  physics. On a real kilonova they leave a χ²/N in the tens no matter how you tune them. For real
-  transients use the physical models: `mck19`, `two_component_kilonova`, or the JAX kilonova / TDE /
-  supernova families.
-
-The plotters take what you'd expect, with one exception worth knowing up front:
-**`plot_corner` takes a *sequence* of posteriors, even for a single fit** — it exists to overlay
-several on shared axes, so `plot_corner([res])` works and `plot_corner(res)` raises
-`TypeError: ... has no len()`. Comparing samplers is the point:
+Every sampler accepts `prior=`. Build one from `Uniform` and `LogUniform`:
 
 ```python
-wp.plot_corner([r_abc, r_mcmc], labels=["abc", "mcmc"])
+prior = wp.Prior({
+    "amplitude": wp.Uniform(0.0, 5.0, name="amplitude"),
+    "t0":        wp.Uniform(0.0, 10.0, name="t0"),
+    "tau_rise":  wp.LogUniform(0.1, 20.0, name="tau_rise"),
+    "tau_fall":  wp.LogUniform(0.1, 50.0, name="tau_fall"),
+})
+result = wp.fit(lc, "bazin", sampler="nested", prior=prior, space="magnitude", seed=0)
 ```
 
-## Install
-
-**Full instructions, with a verification step for each layer, are in
-[`INSTALL.md`](INSTALL.md).** The short version:
-
-```bash
-pip install whisper-cbpf
-```
-
-That is a complete, working CPU package. It imports with **no JAX, no CUDA, no torch and no
-redback**, and every GPU model and sampler still appears in `list_models()` / `list_samplers()` /
-`list_distances()` — you can discover what exists before deciding to install it.
-
-| Extra | Command | What it adds |
-|---|---|---|
-| *(none)* | `pip install whisper-cbpf` | ingestion, plotting, priors, likelihoods, ABC, ABC-SMC, MCMC |
-| `[gpu]` | `pip install "whisper-cbpf[gpu]"` | JAX/CUDA-12 models and samplers, NumPyro NUTS, ArviZ ESS |
-| `[pymc]` | `pip install "whisper-cbpf[gpu,pymc]"` | the two PyMC-fronted NUTS samplers — they run on JAX, so `[gpu]` is required too |
-| `[sbi]` | `pip install "whisper-cbpf[sbi]"` | SNPE / NPE (torch) |
-| `[models]` | `pip install "whisper-cbpf[models]"` | redback physical models; the priors *read from* redback live in the JAX half, so they need `[gpu]` too |
-| `[svo]` | `pip install "whisper-cbpf[svo]"` | SVO filter lookup for unknown bands |
-| `[loo]` | `pip install "whisper-cbpf[loo]"` | PSIS-LOO / ELPD in `predictive_metrics` |
-| `[dev]` | `pip install -e ".[dev]"` | pytest and the build tooling |
-
-**GPU users: `pip install "whisper-cbpf[gpu]"` is not sufficient on its own.** You must source the
-environment bootstrap *before starting Python*, because JAX reads device visibility and memory
-fraction at import time:
-
-```bash
-source "$(whisper-cbpf-env)"
-```
-
-Skip it and JAX falls back to CPU **silently, at roughly 50×, with no error**. Check with
-`whisper_cbpf.check_gpu()`. See [`docs/GPU_SETUP.md`](docs/GPU_SETUP.md).
+Omit `prior=` and the model's own default is used.
 
 ## Models
 
-Analytic models are registered on import. The photometric models are **not** — turning parameters
-into a band flux needs a filter set, a redshift and a luminosity distance, none of which have an
-honest default (a guessed distance silently rescales every fitted mass), so you bind the dataset
-context yourself with a factory.
+```python
+wp.list_models()
+```
 
-| Model | Backend | Requires | How to get it |
-|---|---|---|---|
-| `gaussian_rise` | cpu | — | registered |
-| `flare` | cpu | — | registered |
-| `bazin` | cpu | — | registered |
-| `mck19` | cpu | — | registered — BBH-in-AGN-disk kicked-hotspot flare |
-| `two_component_kilonova` | cpu | `[models]` | registered — redback-backed |
-| `flare_jax` | gpu | `[gpu]` | registered |
-| one/two/three-component kilonova | gpu | `[gpu]` | `wp.register_kilonova(bands, redshift, dl_cm)` |
-| TDE (cooling envelope, Gaussian rise) | gpu | `[gpu]` | `wp.register_tde(bands, redshift, dl_cm)` |
-| twelve redback supernovae | gpu | `[gpu]` | `wp.register_supernova(name, bands, redshift, dl_cm)` — see `wp.supernova_models()` |
+| Model | Kind | Needs |
+|---|---|---|
+| `bazin`, `gaussian_rise`, `flare` | empirical rise/fall shapes | — |
+| `mck19` | analytic kilonova | — |
+| `two_component_kilonova` | blue + red kilonova (redback) | `[models]` |
+| `flare_jax` | JAX flare | `[gpu]` |
 
-> **`flare` and `flare_jax` are different models, not a CPU/GPU pair.** `flare` is
-> `A(1−e^{−t/t_rise})·e^{−t/t_decay}`; `flare_jax` is a Gaussian rise with exponential decay in log
-> parameters, which makes it the GPU counterpart of **`gaussian_rise`**. Their parameter names are
-> disjoint, so a mistake raises rather than silently fitting the wrong thing — but do not read the
-> shared name stem as a claim of equivalence. See [`DUPLICATES.md`](DUPLICATES.md).
+Physical JAX models are built on demand, because they need your bands and distance:
 
-> **The two kilonovae disagree on purpose.** `two_component_kilonova` (redback) and the JAX kilonova
-> are validated against different references and use **disjoint priors**. They are two models, not
-> one model twice.
+```python
+import jax; jax.config.update("jax_enable_x64", True)   # FIRST -- before any array exists
+import whisper_cbpf as wp
+
+kn  = wp.register_kilonova(["sdssg"], redshift=0.0098, dl_cm=1.23e26)
+kn2 = wp.register_kilonova_two(["sdssg"], redshift=0.0098, dl_cm=1.23e26)
+tde = wp.register_tde(["sdssg"], redshift=0.0098, dl_cm=1.23e26)
+sn  = wp.register_supernova(["sdssg"], redshift=0.0098, dl_cm=1.23e26)
+```
+
+`float64` is **mandatory** for the TDE and every supernova — they raise at the first `predict`
+without it, rather than returning a wrong answer.
 
 ## Samplers
 
-Every sampler returns the same `SamplerResult`, so results are comparable across backends.
+```python
+wp.list_samplers()
+```
 
-| Sampler | Backend | Requires | Notes |
+| Sampler | Device | Needs | Use it for |
 |---|---|---|---|
-| `abc` | cpu | — | rejection ABC, parallel over cores |
-| `abc_smc` | cpu | — | importance-weighted sequential ABC |
-| `mcmc` | cpu | — | emcee over Whisper's likelihood |
-| `snpe` / `npe` | cpu/gpu | `[sbi]` | torch; has its own `device='cuda'` path |
-| `abc_gpu` | gpu | `[gpu]` | JAX port of `abc`; crossover vs CPU at ~50k simulations |
-| `abc_smc_gpu` | gpu | `[gpu]` | JAX port of `abc_smc` |
-| `emcee_jax` | gpu | `[gpu]` | emcee over a jitted JAX log-density |
-| `nuts_gpu` | gpu | `[gpu]` | NumPyro NUTS |
-| `pymc_jax_gpu_vectorized` | gpu | `[gpu]`+`[pymc]` | vmap over chains — the 2-GPU default |
-| `pymc_jax_gpu_parallelized` | gpu | `[gpu]`+`[pymc]` | true pmap; fastest per chain |
-| `snpe_gpu` | gpu | `[gpu]` | **not registered** — flare-only; import directly |
+| `mcmc` | CPU | — | the sensible default; emcee ensemble |
+| `nested` (`dynesty`) | CPU | — | when you want **log-evidence** for Bayes factors |
+| `abc`, `abc_smc` | CPU | — | likelihood-free; tolerant of awkward models |
+| `emcee_jax` | GPU | `[gpu]` | emcee, vectorised on the GPU |
+| `nuts_gpu` | GPU | `[gpu]` | gradient-based NUTS — **see Known limitations** |
+| `pymc_jax_gpu_vectorized` / `_parallelized` | GPU | `[gpu]` | NUTS via a PyMC front end |
+| `abc_gpu`, `abc_smc_gpu` | GPU | `[gpu]` | ABC with GPU-batched simulation |
+| `snpe` / `npe` | CPU/GPU | `[sbi]` | neural simulation-based inference |
 
-Which to use, and which combinations are structurally impossible (a numpy simulator has no
-gradients for NUTS and cannot be `vmap`ped by `abc_gpu`), is in
+Which one to pick, and which combinations cannot work, is in
 [`docs/CHOOSING.md`](docs/CHOOSING.md).
 
-## Where things came from
+## Install options
 
-WHISPER-CBPF merges two repositories that remain live and citable:
+Three extras, combinable:
 
-- [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI) — the CPU core, imported as `whisper_labia`
-- [whisper-GPU](https://github.com/phelipedarc/whisper-GPU) — the JAX/GPU extension
+```bash
+pip install "whisper-cbpf[gpu,models,sbi] @ git+https://github.com/phelipedarc/WHISPER-CBPF.git"
+```
 
-Old import → new import for every public symbol is in [`docs/MIGRATION.md`](docs/MIGRATION.md).
-Every file's origin repo, path and commit is in [`PROVENANCE.md`](PROVENANCE.md).
+| Extra | Gives you |
+|---|---|
+| `[gpu]` | all JAX models and GPU samplers (includes pymc, arviz, astroquery) |
+| `[models]` | redback physical models and the TDE / supernova priors |
+| `[sbi]` | the SNPE / NPE sampler |
 
-## Docs
+**GPU users:** `[gpu]` alone is not enough. Run `source "$(whisper-cbpf-env)"` *before* starting
+Python, or JAX silently falls back to CPU at ~50× slower with no error. Full detail in
+[`INSTALL.md`](INSTALL.md) and [`docs/GPU_SETUP.md`](docs/GPU_SETUP.md).
+
+## Known limitations
+
+Honest list, so you do not discover these in review:
+
+* **`nuts_gpu` can return a confidently wrong posterior.** On simulated kilonovae with a known
+  truth, it placed the truth outside its entire posterior while reporting `r-hat ≈ 1.03` and zero
+  divergences. Under investigation. Prefer `pymc_jax_gpu_vectorized`, `nested` or `mcmc` for
+  anything you intend to publish, and check `result.info["converged"]`.
+* **No sampler has a published calibration result yet.** Simulation-based calibration is in
+  progress; until it lands, treat credible intervals as unvalidated.
+* **Two-component kilonova components are exchangeable.** Nothing enforces "component 1 is blue", so
+  fits can label-switch. Impose disjoint `kappa` ranges in your prior if that matters.
+* **A WAIC whose `p_waic` is flagged unreliable is not a number** — check the flag before quoting it.
+
+## Documentation
 
 | | |
 |---|---|
-| [`INSTALL.md`](INSTALL.md) | every extra, the GPU bootstrap, float64, and how to verify each layer |
-| [`docs/TUTORIAL.md`](docs/TUTORIAL.md) | start here |
-| [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) | the full public surface |
-| [`docs/CHOOSING.md`](docs/CHOOSING.md) | which model and sampler for which problem |
-| [`docs/GPU_SETUP.md`](docs/GPU_SETUP.md) | the silent-CPU-fallback trap, float64, multi-GPU |
-| [`docs/EXTENDING.md`](docs/EXTENDING.md) | add a model, sampler, likelihood or distance |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | why the architecture is shaped this way |
-| [`docs/PHYSICS_NOTES.md`](docs/PHYSICS_NOTES.md) | the physics behind the JAX models |
-| [`notebooks/`](notebooks/) | five worked notebooks |
+| [`INSTALL.md`](INSTALL.md) | installing, GPU setup, verifying |
+| [`docs/TUTORIAL.md`](docs/TUTORIAL.md) | guided walkthrough |
+| [`docs/MODEL_COMPARISON_CPU.md`](docs/MODEL_COMPARISON_CPU.md) | CPU comparison, personalised prior |
+| [`docs/MODEL_COMPARISON_GPU.md`](docs/MODEL_COMPARISON_GPU.md) | GPU comparison, personalised prior |
+| [`docs/CHOOSING.md`](docs/CHOOSING.md) | picking a sampler; impossible combinations |
+| [`docs/GPU_SETUP.md`](docs/GPU_SETUP.md) | CUDA, float64, multi-GPU |
+| [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) | every public symbol |
+
+## Citing
+
+See [`CITATION.cff`](CITATION.cff).
 
 ## License
 
-GPL-3.0 — inherited from the redback dependency.
+GPL-3.0 — see [`LICENSE`](LICENSE).

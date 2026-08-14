@@ -224,7 +224,8 @@ def kilonova_two_model(band_names, redshift, dl_cm, *, name="kilonova_two_jax", 
     then the same four for component 2. Component 1 is conventionally the blue / lanthanide-poor
     ejecta and component 2 the red, but **nothing enforces that** -- redback's default prior gives
     both components the same ``kappa`` range, so the components are exchangeable and a fit can
-    label-switch. See ``OPEN_ITEMS.md`` on disjoint corridors versus an ordering constraint.
+    label-switch. Constraining it needs either disjoint ``kappa`` corridors or an explicit ordering
+    constraint; neither is imposed here.
 
     ``prior`` defaults to :func:`kilonova_two.default_prior`, which is redback's own, verbatim.
     Note this is **not** the prior used by ``whisper_cbpf.models.two_component_kilonova``, whose

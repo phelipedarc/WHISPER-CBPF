@@ -4,11 +4,11 @@ A hands-on tour of what Whisper can do today — **data ingestion, plotting, and
 and SNPE). Import once:
 
 > **Figures and demo scripts linked below are not in this package.** This repository ships code, not
-> analyses, so `dev/` and `sanity_check/` were deliberately left behind at the merge (see
-> [`../INVENTORY.md`](../INVENTORY.md) §1.2). Every such link points into the frozen legacy
-> repositories [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI) @ `8ba3843` and
-> [whisper-GPU](https://github.com/phelipedarc/whisper-GPU) @ `10796a0`, pinned at the commits
-> [`../PROVENANCE.md`](../PROVENANCE.md) records, so they cannot rot if those repos move on.
+> analyses, so `dev/` and `sanity_check/` were deliberately left behind at the merge. Every such link
+> points into the frozen legacy repositories
+> [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI) @ `8ba3843` and
+> [whisper-GPU](https://github.com/phelipedarc/whisper-GPU) @ `10796a0`, pinned at those commits so
+> they cannot rot if the repositories move on.
 
 ```python
 import whisper_cbpf as wp
@@ -172,7 +172,8 @@ astroquery), the load degrades gracefully and you can supply the band by hand:
 ```python
 wp.register_manual_band("my_filter", lambda_eff=9000.0, zero_point=3631.0)
 ```
-> SVO needs the optional `[svo]` extra (`pip install 'whisper-cbpf[svo]'`, which adds `astroquery`).
+> SVO needs `astroquery`, which ships with the `[gpu]` extra; on a CPU-only install add it with
+> `pip install astroquery`.
 > A runnable, **offline** tour of all four features is in
 > [`dev/demo_ingestion.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_ingestion.py)
 > (WHISPER_AI, not in this package).
@@ -290,9 +291,9 @@ built-in models — **`bazin`** (SN rise+fall) and **`gaussian_rise`** (Gaussian
 wp.fit_ABC_SMC(r, "bazin", prior=prior, n_particles=1000, n_rounds=8, quantile=0.4, n_jobs=32)
 ```
 
-A full **model-comparison report** (3 models × both samplers on AT2017GFO) is in
-[`REPORT_at2017gfo.md`](REPORT_at2017gfo.md) — there ABC-SMC matches flat ABC's fit with **~4× fewer
-simulations**.
+Worked model comparisons, end to end with a personalised prior, are in
+[`MODEL_COMPARISON_CPU.md`](MODEL_COMPARISON_CPU.md) and
+[`MODEL_COMPARISON_GPU.md`](MODEL_COMPARISON_GPU.md).
 
 ![model comparison](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/at2017gfo_model_comparison.png)
 

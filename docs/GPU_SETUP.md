@@ -7,7 +7,7 @@ message at all**.
 
 ```bash
 pip install "whisper-cbpf[gpu]"          # jax[cuda12], numpyro, arviz
-pip install "whisper-cbpf[pymc]"         # only for the two pymc_jax_gpu_* samplers
+# pymc ships inside [gpu] -- the two pymc_jax_gpu_* samplers need no extra install
 ```
 
 CUDA 12 is pinned deliberately. Installing plain `jax` instead gives you the CPU build, and see

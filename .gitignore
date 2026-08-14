@@ -26,3 +26,8 @@ filters_*.npz
 _scratch/
 scratch/
 trash/
+
+# Internal working documents: audit reports, inventories, provenance and benchmark dumps.
+# Kept on the local machine, deliberately NOT published -- the public repo carries only what a
+# user needs to install and use the package.
+_local/

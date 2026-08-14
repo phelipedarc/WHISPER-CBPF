@@ -28,7 +28,7 @@ until it was measured: in float32 all 12/12 supernovae register successfully and
 
 The two kilonova implementations here and at :mod:`whisper_cbpf.models.two_component_kilonova` are
 two models, not one model twice: they are validated against different references and use disjoint
-priors. See ``DUPLICATES.md``.
+priors.
 """
 from __future__ import annotations
 

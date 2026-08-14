@@ -44,30 +44,51 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-models = ["redback>=1.12"]    # physical transient models + priors (also pulls bilby, sncosmo, afterglowpy)
-svo = ["astroquery>=0.4.6"]   # SVO Filter Profile Service fallback for unknown bands
-dev = ["pytest", "pytest-cov", "build", "astroquery>=0.4.6"]
-sbi = ["sbi", "torch"]        # SNPE / NPE sampler (whisper_cbpf.samplers.snpe)
-loo = ["arviz>=0.15"]         # PSIS-LOO / ELPD in predictive_metrics (degrades to None without it)
+# THREE user-facing extras: [gpu], [models], [sbi]. Everything optional now lands in one of them,
+# so there is no menu to study before installing.
 
-# The JAX/GPU half: nuts_gpu, abc_gpu, abc_smc_gpu, emcee_jax, the JAX models (kilonova, TDE, the
-# twelve supernovae) and the *_jax distances. CUDA 12 is pinned because that is the platform this
-# package is validated on; installing plain `jax` instead silently lands you on the CPU build,
-# which is the single most expensive mistake here (~50x, no error). arviz comes along because the
-# GPU-side metrics (ESS, ESS/sec) need it.
+# The JAX/GPU half: every JAX model (kilonova one- and two-component, TDE, the twelve supernovae),
+# the samplers nuts_gpu / abc_gpu / abc_smc_gpu / emcee_jax / pymc_jax_gpu_*, and the *_jax
+# distances. CUDA 12 is pinned because that is the platform this package is validated on;
+# installing plain `jax` instead silently lands you on the CPU build, which is the single most
+# expensive mistake here (~50x slower, no error).
+#
+# Also folded in here, so the extra list stays short:
+#   pymc       -- the two pymc_jax_gpu_* frontends (imported lazily inside fit())
+#   arviz      -- ESS and ESS/sec, and PSIS-LOO / ELPD in predictive_metrics
+#   astroquery -- SVO Filter Profile Service fallback for bands not in FILTER_LOOKUP
+# Consequence worth knowing: arviz and astroquery are NOT GPU-specific, so a CPU-only user who
+# wants PSIS-LOO or SVO band lookup installs them directly (`pip install arviz astroquery`);
+# predictive_metrics degrades to None for LOO without arviz rather than failing.
+#
 # Multi-GPU needs no further library: device selection is whisper_cbpf.backends.gpu_list() and the
 # parallel path is NumPyro's own chain_method.
-# NOTE: installing this extra is NOT sufficient on its own -- source scripts/whisper-gpu-env.sh
+# NOTE: installing this extra is NOT sufficient on its own -- run `source "$(whisper-cbpf-env)"`
 # before starting Python, or JAX will not see the GPU. See docs/GPU_SETUP.md.
-gpu = ["jax[cuda12]>=0.4.30", "numpyro>=0.15", "arviz>=0.15"]
-pymc = ["pymc>=5.16"]         # only the two pymc_jax_gpu_* frontends; imported lazily inside fit()
+gpu = [
+    "jax[cuda12]>=0.4.30",
+    "numpyro>=0.15",
+    "pymc>=5.16",
+    "arviz>=0.15",
+    "astroquery>=0.4.6",
+]
+
+# Physical transient models + their priors, via redback (also pulls bilby, sncosmo, afterglowpy).
+# Needed for `two_component_kilonova` on CPU and for the TDE / supernova priors, which are read
+# from redback's own .prior files at runtime.
+models = ["redback>=1.12"]
+
+# The SNPE / NPE simulation-based sampler (whisper_cbpf.samplers.snpe).
+sbi = ["sbi", "torch"]
+
+# Contributors only -- not a science extra, and not part of the three above.
+dev = ["pytest", "pytest-cov", "build", "astroquery>=0.4.6"]
 
 [project.urls]
 Homepage = "https://github.com/phelipedarc/WHISPER-CBPF"
 Repository = "https://github.com/phelipedarc/WHISPER-CBPF"
 Documentation = "https://github.com/phelipedarc/WHISPER-CBPF/tree/main/docs"
 Issues = "https://github.com/phelipedarc/WHISPER-CBPF/issues"
-Changelog = "https://github.com/phelipedarc/WHISPER-CBPF/blob/main/CHANGELOG.md"
 
 [project.scripts]
 # Resolves the bootstrap's path from an installed wheel as well as a checkout, so the one

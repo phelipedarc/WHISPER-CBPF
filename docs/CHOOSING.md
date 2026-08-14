@@ -71,7 +71,7 @@ These are not tuning problems. They cannot be made to work by adjusting paramete
 |---|---|
 | numpy model + `nuts_gpu` or `pymc_jax_gpu_*` | NUTS needs gradients. A numpy simulator has none, and `jax.grad` cannot differentiate through it. |
 | numpy model + `abc_gpu`, `abc_smc_gpu` or `emcee_jax` | They need a batched JAX forward map (`Model.predict_jax`). A numpy model has none, and a numpy function cannot be `vmap`ped. This includes `two_component_kilonova`, which is redback + sncosmo behind a numpy `predict`. |
-| `flare_jax` + any JAX sampler | It *has* a JAX implementation, but `models/jax/flare.py`'s `predict_jax` takes a parameter **dict** rather than the flat theta `Model.predict_jax` specifies, so `flare_jax` registers without the slot. Known gap, tracked in `../OPEN_ITEMS.md`. |
+| `flare_jax` + any JAX sampler | It *has* a JAX implementation, but `models/jax/flare.py`'s `predict_jax` takes a parameter **dict** rather than the flat theta `Model.predict_jax` specifies, so `flare_jax` registers without the slot. Known gap. |
 | TDE or any of the twelve supernovae in float32 | The envelope ODE's increments are below float32 epsilon; the supernova engines carry cgs luminosities of 1e43–1e46 erg/s against float32's 3.4e38 ceiling. Both raise. **Both raise at the first `predict`, not at registration** — a registry containing `tde_gaussianrise_jax` or `arnett_jax` is not evidence the session can run it. |
 | a non-`Uniform`/`LogUniform` prior + any JAX sampler | Refused rather than approximated by its bounds. Substituting a uniform for a log-uniform is a *different posterior*, not a different parameterisation: log-uniform puts half its mass below 775 K where uniform puts half below 3050 K. |
 | comparing AIC/BIC/WAIC **across spaces** | Not a sampler limit — an arithmetic one. A flux-space and a magnitude-space fit have different likelihoods over different representations of the data, so their information criteria are not on one scale. Compare models *within* a space. |
@@ -148,7 +148,7 @@ There are **two kilonova implementations and they disagree on purpose**:
 
 They are validated against different references and use **disjoint priors**. They are two models,
 not one model twice. Comparing a fit from one against a fit from the other is not a like-for-like
-comparison. See [`../DUPLICATES.md`](../DUPLICATES.md).
+comparison.
 
 The same warning applies to `flare` and `flare_jax`: **`flare_jax` is a Gaussian rise with
 exponential decay**, which makes it the counterpart of `gaussian_rise`, not of `flare`. Their

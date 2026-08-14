@@ -132,7 +132,7 @@ unknown the light curve records `redshift_known=False` and `io.schema.DEFAULT_RE
   info)` arrays (NaN where unresolved); resolves each distinct band once.
 - **`LSST_BAND_INFO`** — effective wavelength + zero point per effective band.
 
-**SVO** (`io.svo`, needs the `[svo]` extra → `astroquery`): `resolve_band_svo(band, *,
+**SVO** (`io.svo`, needs `astroquery`, shipped with `[gpu]`): `resolve_band_svo(band, *,
 lambda_eff_hint=None)`, `get_filter_metadata(filter_id, *, use_cache=True)` (cached by ID; offline-safe
 disk cache under `$WHISPER_SVO_CACHE` — `use_cache=False` forces a fresh fetch, e.g. after SVO revises a
 filter), `get_transmission_data(filter_id)` (Phase-2 spectral integration),
@@ -679,8 +679,7 @@ Fixtures: `tests/data/at2017gfo.csv`, `tests/data/ztf18aarlhfw.csv`. The figures
 `test_benchmark_kilonova.py`'s render produced live in
 [`sanity_check/figures/`](https://github.com/phelipedarc/WHISPER_AI/tree/8ba3843/sanity_check/figures)
 (WHISPER_AI, not in this package — see the row above).
-All SVO/network calls are **mocked** — no live network in CI. See
-[`REPORT_ingestion_upgrade.md`](REPORT_ingestion_upgrade.md) for the full per-test results.
+All SVO/network calls are **mocked** — no live network in CI.
 
 ## 9. End-to-end example
 
@@ -723,7 +722,7 @@ bind them with a factory. See [`CHOOSING.md`](CHOOSING.md) for which to use when
 - **`env_script()`**  
   Absolute path to `scripts/whisper-gpu-env.sh` in this checkout, derived from `__file__`. It is
   **not guaranteed to exist**: wheels ship only `whisper_cbpf*`, so a pip-installed user has no
-  `scripts/` directory (see `OPEN_ITEMS.md`). Use `env_script_hint()`, which says so plainly instead
+  `scripts/` directory. Use `env_script_hint()`, which says so plainly instead
   of printing an unusable `source` line.
 - **`env_report()`**  
   A dict describing the current GPU environment. Never raises, never imports jax.
