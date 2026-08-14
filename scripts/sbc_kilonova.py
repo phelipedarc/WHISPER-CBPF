@@ -26,14 +26,22 @@ ABC is deliberately excluded. A rejection tolerance makes the posterior broader 
 construction, so its ranks are expected to be non-uniform; including it would report a known and
 intended property as a calibration failure. Only likelihood-based samplers and SNPE are run.
 
-Noise is realistic by construction: the simulated light curves reuse AT2017GFO's own epochs, bands
-and per-point magnitude errors, and only the magnitudes are replaced. So the cadence, the band
-coverage and the error bars are a real transient's, not a convenient invention.
+Noise is realistic by construction: the per-point sigmas come from the real AT2017GFO photometry
+(each epoch inherits the median magnitude_err of the real points in that band within +/-0.5 d), so
+the error bars grow as the source genuinely fades rather than being a convenient invention.
+
+The default observing setup is a SINGLE band on a NIGHTLY cadence for 10 days -- what a survey
+actually delivers for most events, and a far easier inference problem than AT2017GFO's 212 points
+across three bands. That matters twice over: looser constraints keep the posterior interior instead
+of pinned to a prior face, and cheap fits are what make 1000 simulations affordable. Where the
+requested epochs run past the real coverage in that band, the last measured sigma is carried
+forward and the run says so on stdout.
 
 Usage::
 
-    python scripts/sbc_kilonova.py --n-sims 32 --device gpu
+    python scripts/sbc_kilonova.py --n-sims 1000 --device gpu
     python scripts/sbc_kilonova.py --n-sims 4 --device gpu --samplers mcmc,nested   # smoke
+    python scripts/sbc_kilonova.py --merge shardA,shardB --out merged                # combine
 
 Outputs in ``--out``: ranks + coverage as PNG, an overlay corner for one simulation, and
 ``sbc.json``.
@@ -62,13 +70,18 @@ DEFAULT_SAMPLERS = ["mcmc", "nested", "nuts_gpu", "pymc_jax_gpu_vectorized", "sn
 #: Budgets sized so a full SBC study finishes overnight rather than never. SBC needs MANY fits, so
 #: each one is deliberately modest; the rank statistic is valid at any budget provided the sampler
 #: has actually converged, which is why `converged` is recorded per fit and reported.
+#: Raised from the smoke budget after MEASURING that it did not converge: at nsteps=3000 emcee
+#: reported converged=False on 2/2 simulations, and at (600, 600, 2 chains) so did NUTS/PyMC, which
+#: also warned that 4 chains are needed for a robust r-hat. A rank from an unconverged fit measures
+#: the failure to converge rather than the posterior, so the cheaper budget would have bought a
+#: study that could not be read. Roughly 2x the cost.
 SBC_BUDGET = {
-    "mcmc": dict(nsteps=3000, burnin=1000, nwalkers=24, thin=5),
-    "nested": dict(nlive=300, dlogz=0.5),
-    "nuts_gpu": dict(num_warmup=600, num_samples=600, num_chains=2),
-    "emcee_jax": dict(nwalkers=24, nsteps=3000, burnin=1000, thin=5),
-    "pymc_jax_gpu_vectorized": dict(num_warmup=600, num_samples=600, num_chains=2),
-    "pymc_jax_gpu_parallelized": dict(num_warmup=600, num_samples=600, num_chains=2),
+    "mcmc": dict(nsteps=6000, burnin=2000, nwalkers=32, thin=5),
+    "nested": dict(nlive=300, dlogz=0.5),           # already converged=True at this budget
+    "nuts_gpu": dict(num_warmup=1000, num_samples=1000, num_chains=4),
+    "emcee_jax": dict(nwalkers=32, nsteps=6000, burnin=2000, thin=5),
+    "pymc_jax_gpu_vectorized": dict(num_warmup=1000, num_samples=1000, num_chains=4),
+    "pymc_jax_gpu_parallelized": dict(num_warmup=1000, num_samples=1000, num_chains=4),
     #: three rounds, on the GPU, as asked. num_rounds>1 is the "sequential" in SNPE: each round
     #: proposes from the latest posterior, so simulations concentrate where the data points.
     "snpe": dict(num_rounds=3, num_simulations=1500, num_samples=4000, device="cuda"),
@@ -88,7 +101,7 @@ MIN_SIMS_FOR_VERDICT = 100
 
 
 def simulate(model, template, theta, rng):
-    """One synthetic light curve: the model at ``theta``, on AT2017GFO's own epochs and errors.
+    """One synthetic light curve: the model at ``theta``, on the template's epochs and errors.
 
     Returns a magnitude-mode LightCurve. The noise is Gaussian in MAGNITUDE with the real per-point
     ``magnitude_err``, which is what the Gaussian likelihood in magnitude space assumes -- so the
@@ -106,10 +119,68 @@ def simulate(model, template, theta, rng):
                          name="sbc", redshift=REDSHIFT)
 
 
+def _build_template(args):
+    """The observing setup every simulation is generated on: epochs, bands, per-point sigma.
+
+    A single band on a nightly cadence, which is what a survey actually delivers for most events
+    and a far easier inference problem than AT2017GFO's 212 points across three bands. Fewer, wider
+    constraints keep the posterior INTERIOR rather than pinned to a prior face, which is the regime
+    SBC needs -- and the cheap fits are what make 1000 simulations affordable.
+
+    Sigmas are taken from the real AT2017GFO data rather than invented: each epoch inherits the
+    median magnitude_err of the real points in that band within +/-0.5 d, so the noise tracks the
+    source genuinely fading. IMPORTANT AND STATED IN THE OUTPUT: AT2017GFO's g band stops at
+    7.47 d, so epochs beyond it have NO real coverage and carry the last measured error forward.
+    Those sigmas are extrapolated, not measured, and the printed template says which.
+    """
+    real = _load_lc()
+    full = real.add_mag(3631.0)
+    rt = np.asarray(real.time, float)
+    rb = np.asarray([BAND_ALIASES.get(str(b), str(b)) for b in np.asarray(real.band)])
+    re_ = np.asarray(full.magnitude_err, float)
+
+    bands = [b.strip() for b in args.bands.split(",") if b.strip()]
+    epochs = np.arange(1, args.n_days + 1, dtype=float) * args.cadence
+
+    times, bnames, errs, extrapolated = [], [], [], 0
+    for b in bands:
+        canon = BAND_ALIASES.get(b, b)
+        sel = rb == canon
+        if not sel.any():
+            raise SystemExit(f"band {b!r} (canonical {canon!r}) is not in the reference data; "
+                             f"available: {sorted(set(rb))}")
+        bt, be = rt[sel], re_[sel]
+        for t in epochs:
+            near = np.abs(bt - t) <= 0.5
+            if near.any():
+                sig = float(np.median(be[near]))
+            else:                                   # past the real coverage -- carry last forward
+                sig = float(be[np.argmax(bt)])
+                extrapolated += 1
+            times.append(t), bnames.append(canon), errs.append(sig)
+
+    times = np.asarray(times, float)
+    errs = np.asarray(errs, float)
+    last = float(rt[np.isin(rb, [BAND_ALIASES.get(b, b) for b in bands])].max())
+    print(f"template: {len(times)} epochs, bands {bands}, days 1-{args.n_days} "
+          f"at {args.cadence:g} d cadence, sigma {errs.min():.3f}-{errs.max():.3f} mag "
+          f"(median {np.median(errs):.3f})")
+    if extrapolated:
+        print(f"  !! {extrapolated} epoch(s) lie beyond the real {bands} coverage (ends {last:.2f} d); "
+              f"their sigma is the last measured value carried forward, i.e. EXTRAPOLATED.")
+    return times, np.asarray(bnames), errs
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--n-sims", type=int, default=32)
+    ap.add_argument("--bands", default="g",
+                    help="comma-separated bands to simulate (default: g only)")
+    ap.add_argument("--n-days", type=int, default=10,
+                    help="number of epochs, one per cadence step (default: 10)")
+    ap.add_argument("--cadence", type=float, default=1.0,
+                    help="days between epochs (default: 1.0, i.e. nightly)")
     ap.add_argument("--device", choices=["cpu", "gpu"], default="gpu")
     ap.add_argument("--samplers", default=",".join(DEFAULT_SAMPLERS))
     ap.add_argument("--n-wave", type=int, default=300,
@@ -142,12 +213,7 @@ def main(argv=None):
         if not ok:
             print(f"\n!! JAX IS NOT ON A GPU -- correct but ~50x slow.\n{msg}\n")
 
-    # AT2017GFO's own cadence, bands and error bars: only the magnitudes get replaced.
-    real = _load_lc()
-    full = real.add_mag(3631.0)
-    template = (np.asarray(real.time, float),
-                np.asarray([BAND_ALIASES.get(str(b), str(b)) for b in np.asarray(real.band)]),
-                np.asarray(full.magnitude_err, float))
+    template = _build_template(args)
     print(f"template: {len(template[0])} epochs, bands {sorted(set(template[1]))}, "
           f"median sigma {np.median(template[2]):.3f} mag")
 
