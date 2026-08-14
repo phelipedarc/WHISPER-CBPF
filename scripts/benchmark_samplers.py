@@ -746,12 +746,24 @@ class ResourceMonitor:
                 excess = float(max(mem) - own_mib - base)
                 v["smi_own_footprint_mib"] = own_mib
                 v["smi_mem_excess_mib"] = excess
-            v["contended_rule"] = (f"throttled OR nvidia-smi peak exceeds our own pool + the "
-                                   f"pre-run baseline by more than {GPU_FOREIGN_SLACK_MIB} MiB "
-                                   f"OR the card already held more than {GPU_IDLE_MEM_MIB} MiB "
-                                   f"before we started")
-            v["contended"] = bool(v["throttled"]
-                                  or (excess is not None and excess > GPU_FOREIGN_SLACK_MIB)
+            # CONTENDED and POWER-CAPPED are different failures and must not be one flag.
+            #
+            # A card SHARED with another job gives an irreproducible timing: it measures the
+            # neighbour. That invalidates the number.
+            #
+            # A card at its own POWER LIMIT gives a reproducible timing that is exactly what a user
+            # gets. An A6000 under sustained compute sits at SwPowerCap essentially always -- in the
+            # production matrix, 12 of 15 GPU cells reported it while foreign memory never exceeded
+            # 727 MiB against a 2048 MiB threshold. Folding the two together marked every sustained
+            # GPU measurement untrusted, i.e. the harness could never publish a GPU number at all.
+            #
+            # So: throttling ANNOTATES a row, foreign occupancy INVALIDATES it.
+            v["contended_rule"] = (f"nvidia-smi peak exceeds our own pool + the pre-run baseline by "
+                                   f"more than {GPU_FOREIGN_SLACK_MIB} MiB OR the card already held "
+                                   f"more than {GPU_IDLE_MEM_MIB} MiB before we started. Power "
+                                   f"throttling is reported separately in 'throttled' and does NOT "
+                                   f"clear trust_timing.")
+            v["contended"] = bool((excess is not None and excess > GPU_FOREIGN_SLACK_MIB)
                                   or (baseline_mib is not None and baseline_mib > GPU_IDLE_MEM_MIB))
         else:
             v["contended"] = False
