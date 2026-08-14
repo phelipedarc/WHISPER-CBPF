@@ -107,9 +107,11 @@ def impossible_reason(model_kind, sampler, space, has_jax):
         return "NUTS needs gradients; a numpy simulator has none and jax.grad cannot differentiate it"
     if numpy_only and sampler in ("abc_gpu", "abc_smc_gpu", "emcee_jax"):
         return "the JAX samplers need a batched predict_jax; a numpy model has none"
-    if model_kind in ("tde", "supernova") and sampler in ("abc_gpu", "abc_smc_gpu"):
-        return ("float64 is mandatory for this family, and batched simulation in float64 costs "
-                "~57x (docs/GPU_SETUP.md) -- runnable but not a defensible use of a GPU budget")
+    # NOTE: TDE / supernova + abc_gpu is EXPENSIVE, not impossible -- float64 is mandatory for those
+    # families and batched simulation in float64 costs ~57x (docs/GPU_SETUP.md). It used to be
+    # listed here, which put this function at odds with DEPLOYMENT_AUDIT.md's matrix (which marks
+    # those cells W with a cost note) and, worse, meant the matrix could never be filled by running
+    # them. This table is for structural bars only; a bad idea is a caveat, not an impossibility.
     return None
 
 

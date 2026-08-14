@@ -470,3 +470,49 @@ skip. 260 + 10 = 270 = 235 + 35.
 16. **Whether existing AT2017GFO results are affected by §2.8.** The emcee arm of any comparison that
     shared one `log_prob_fn` with NUTS while `temperature_floor` was free was sampling a different
     prior. Re-running that comparison would settle it; not done here.
+
+---
+
+## 6. How far from "reliable for the astronomy community"
+
+Written 2026-08-14, after the production benchmark. The question this answers is *when does fixing
+stop and feature work start* — so each item says what would close it, not just what is wrong.
+
+**Where we are:** a collaborator who can clone the repo and ask questions is well served today. A
+stranger who `pip install`s it and trusts the first number is not, and the gap is narrower than it
+was but is not zero. Installation is no longer the blocker — the repository is public and the GPU
+bootstrap now ships in the wheel.
+
+### Tier 0 — blocks trust. Fix before promoting the package anywhere.
+
+| # | Gap | What closes it |
+|---|---|---|
+| 0.1 | **Nobody has ever checked that the samplers agree on the *answer*.** All 26 trusted benchmark cells report `accuracy: not measured` — no reference posteriors were ever built. We know `abc_gpu` is 33.6× faster than CPU; we do not know it returns the same posterior. Speed without an agreement check is the most dangerous number in this repo. | `benchmark_samplers.py --build-references`, then a c2st / Wasserstein comparison per (model, space). The harness already has the columns; they have never been filled. |
+| 0.2 | **No automated testing on GPU hardware.** The entire JAX half — 13 samplers, 4 model families, the adapter layer — is verified only when a human remembers to run it. Every GPU defect this audit found would have shipped. | The self-hosted-runner workflow drafted in this session. One box, one label, nightly + on-demand. |
+| 0.3 | **`tests/t3_inference` has never run at current HEAD.** It is the tier that checks continuity, likelihood parity and prior-predictive behaviour — i.e. the science, not the plumbing. ~23 min. | Run it. If it passes, say so with a date; if not, that is a Tier 0 finding in its own right. |
+
+### Tier 1 — blocks confidence. Fix before a paper depends on it.
+
+| # | Gap | What closes it |
+|---|---|---|
+| 1.1 | **WAIC is unusable on most real fits.** 12 of 26 benchmark cells fell below the ESS ≥ 400 target and four had ESS 2.5–7.2. One of the three headline scores frequently cannot be quoted. | Report the offending draw fraction beside `p_waic` so "unreliable" becomes "walker 7 is stuck", which a user can act on. |
+| 1.2 | **A known-red test.** `test_flare_gradients::test_naive_single_where_would_fail_here` fails whenever `t2_autodiff` is collected first — measured as a float64 ordering effect, not a real defect. A suite that is red for a benign reason trains people to ignore red. | Pin the control's dtype, or choose parameters that overflow in float64 too (exponent > 709). |
+| 1.3 | **`flare_jax` cannot be reached by any JAX sampler.** Its `predict_jax` takes a parameter dict rather than the flat theta `Model.predict_jax` specifies — so the one model those samplers were originally benchmarked on is the one they cannot fit through `wp.fit`. | Adapt the hook to the flat-theta contract. Small, but it changes a model's public shape. |
+| 1.4 | **13 unfloored copies of the flux→magnitude map** live in `notebooks/` and `tests/`. None meets a zero flux today; nothing stops the next one. | One shared helper, or a test that enumerates the converters and asserts they agree at zero flux in both dtypes. |
+| 1.5 | **Notebooks have not been re-executed** since the adapter layer, the nested sampler and the `space=` change landed. Their stored outputs describe an older API. | Re-run all five and the quickstart; diff the stored outputs. |
+| 1.6 | **`redback_prior` is defined twice** (`tde.py`, `supernova.py`) with a differently-named first argument, never diffed. `DUPLICATES.md`'s one pending decision. | Diff them. Either collapse, or record why two are needed. |
+
+### Tier 2 — then features
+
+Once Tier 0 and 1.1–1.3 are closed, the package is defensible for a stranger and the work becomes
+additive: a model selector that records which kilonova it chose, the `GaussianLikelihoodQuadrature`
+non-detection likelihood, extinction (`OPEN_ITEMS` #37 — off in every fit so far), an ordering
+constraint to replace the disjoint opacity corridors, and a CLI.
+
+### The honest caveat on all of the above
+
+An adversarial pass over this audit found **8 defects in code written during the same two days**, and
+**5 of my own measurements were wrong**. That rate, on fresh and carefully-reviewed code, is the best
+available evidence about the parts nobody has examined yet. Treat any single number here as
+provisional until a second person or a second method has reproduced it. Tier 0.1 exists because that
+argument applies most sharply to the posteriors themselves.
