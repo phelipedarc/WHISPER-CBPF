@@ -49,6 +49,11 @@ for name in ["bazin", "gaussian_rise"]:
 # gaussian_rise    AIC=   275.5  BIC=   283.4   <- preferred
 ```
 
+> **Only compare fits that converged.** These demo budgets are small and neither fit passes its
+> convergence check. `bazin` moves from AIC 279.3 to 491.2 just by changing `nsteps` from 2000 to
+> 1500, because AIC is taken from the best draw. Raise the budget until `r.info["converged"]` is
+> `True` before you compare anything you intend to publish.
+
 Full worked examples, with a personalised prior on the two-component kilonova:
 
 * [`docs/MODEL_COMPARISON_CPU.md`](docs/MODEL_COMPARISON_CPU.md) — on CPU
