@@ -176,11 +176,31 @@ def main(argv=None):
                       "against it would manufacture a verdict, not measure one.")
                 continue
 
-            # The floor: the reference against ITSELF, split in half. Never exactly 0.5, and it is
-            # the only fair thing to read a sampler's c2st against at this sample size.
-            half = len(ref_draws) // 2
-            floor = _c2st(ref_draws[:half], ref_draws[half:2 * half])
-            print(f"  c2st floor (reference vs itself): {floor:.3f}")
+            # The floor: the reference against ITSELF. c2st's power grows with sample size, so the
+            # floor MUST be computed at the same sizes the real comparison uses, or it is not a
+            # floor. The first version split the reference in half (8000 vs 8000) and compared
+            # samplers at 4000 vs 16000 -- a more powerful test against a weaker baseline, which
+            # made every sampler look like it disagreed. `_floor_at` is called per sampler with
+            # that sampler's own draw count.
+            def _floor_at(n_a, n_b, seed=0):
+                rng = np.random.default_rng(seed)
+                idx = rng.permutation(len(ref_draws))
+                a_i, b_i = idx[:n_a], idx[n_a:n_a + n_b]
+                if len(b_i) < n_b:                      # not enough draws to split disjointly
+                    return float("nan")
+                return _c2st(ref_draws[a_i], ref_draws[b_i])
+
+            # A posterior pinned at a prior corner cannot discriminate anything: the normalised W1
+            # denominator is the reference's own spread, and a railed parameter has none.
+            ref_std = ref_draws.std(axis=0)
+            railed = [ref_names[j] for j in range(len(ref_names))
+                      if ref_std[j] < 1e-4 * (abs(ref_draws[:, j].mean()) or 1.0)]
+            if railed:
+                print(f"  !! REFERENCE IS RAILED on {railed} (std/|mean| < 1e-4).")
+                print("     Its posterior is effectively a delta at a prior corner, so normalised")
+                print("     W1 divides by ~0 and c2st asks only 'did you collapse to the same")
+                print("     corner'. This measures misspecification, not sampler agreement.")
+                print("     Use --synthetic, or a model that actually fits the data.")
 
             posteriors, plot_labels = [ref_draws], ["reference"]
             for s in samplers:
@@ -193,15 +213,17 @@ def main(argv=None):
                         r = wp.fit(lc, name, sampler=s, space=space, seed=0, **budget.get(s, {}))
                     d = _draws(r, ref_names)
                     c, w = _c2st(d, ref_draws), _w1_max(d, ref_draws)
-                    verdict = ("agrees" if c <= max(C2ST_PASS, floor + 0.05)
-                               else "DIFFERS")
+                    floor = _floor_at(len(d), min(len(d), len(ref_draws) - len(d)))
+                    # Read against the SIZE-MATCHED floor, not against 0.5.
+                    thresh = max(C2ST_PASS, (floor + 0.05) if np.isfinite(floor) else C2ST_PASS)
+                    verdict = "agrees" if c <= thresh else "DIFFERS"
                     rows.append(dict(model=label, space=space, sampler=s, n=len(d),
                                      c2st=c, c2st_floor=floor, w1_max=w, verdict=verdict,
                                      ess=(r.info.get("predictive_metrics") or {}) and None,
                                      aic=r.aic))
                     posteriors.append(d)
                     plot_labels.append(s)
-                    print(f"  {s:26s} c2st={c:.3f}  w1_max={w:6.3f}  {verdict}")
+                    print(f"  {s:26s} c2st={c:.3f} (floor {floor:.3f})  w1_max={w:9.3f}  {verdict}")
                 except Exception as exc:
                     print(f"  {s:26s} FAILED {type(exc).__name__}: {str(exc).splitlines()[0][:80]}")
 
