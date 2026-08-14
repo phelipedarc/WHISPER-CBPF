@@ -116,7 +116,14 @@ def main(argv=None):
                     help="filter-set resolution; 300 keeps a full study affordable")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=str(REPO / "_scratch" / "sbc"))
+    ap.add_argument("--merge", default=None,
+                    help="comma-separated shard dirs: re-render ranks/coverage from "
+                         "their raw arrays and exit (no fitting)")
     args = ap.parse_args(argv)
+
+    if args.merge:
+        return _merge([Path(d.strip()) for d in args.merge.split(",") if d.strip()],
+                      Path(args.out), args)
 
     if args.device == "gpu":
         import jax
@@ -155,12 +162,17 @@ def main(argv=None):
     ranks = {s: {p: [] for p in names} for s in samplers}
     covered = {s: {p: [] for p in names} for s in samplers}   # per level, per sim
     recov, failures, keep_corner = {s: [] for s in samplers}, [], None
+    truths, fingerprints = [], []
 
     for i in range(args.n_sims):
         theta = {p: float(v) for p, v in prior.rescale(rng.random(len(names))).items()}
         lc = simulate(model, template, theta, rng)
         print(f"[sim {i + 1}/{args.n_sims}] truth " +
               " ".join(f"{p}={theta[p]:.4g}" for p in names), flush=True)
+        truths.append(theta)
+        # Fingerprint the actual data, not just the seed: sharding is only valid if every shard
+        # simulated the SAME light curves, and _merge refuses to combine shards that disagree.
+        fingerprints.append(float(np.sum(np.asarray(lc.magnitude, float) ** 2)))
         per_sim = {}
         for s in samplers:
             t0 = time.perf_counter()
@@ -186,6 +198,8 @@ def main(argv=None):
             keep_corner = (theta, per_sim)
 
     report = _summarise(ranks, covered, recov, failures, names, samplers, args)
+    report["truths"] = truths
+    report["data_fingerprints"] = fingerprints
     (out / "sbc.json").write_text(json.dumps(report, indent=2, default=str))
     _plot_ranks(ranks, names, samplers, out)
     _plot_coverage(covered, names, samplers, out)
@@ -217,17 +231,35 @@ def _summarise(ranks, covered, recov, failures, names, samplers, args):
         rep["per_sampler"][s] = {
             "sbc": {k: v for k, v in sbc.items() if k == "_summary"},
             "uniformity_p": {p: sbc[p]["uniformity_p"] for p in by_p},
+            # RAW ranks and per-simulation coverage, so shards run on different cards can be
+            # merged. Safe by construction: theta* and the noise are drawn per simulation BEFORE
+            # the sampler loop, so one --seed gives identical datasets in every shard.
+            "ranks_raw": {p: by_p[p].tolist() for p in by_p},
+            "covered_raw": {p: np.vstack(covered[s][p]).tolist() for p in by_p},
             "coverage": cov, "levels": LEVELS.tolist(),
             "coverage68_mean": c68, "coverage95_mean": c95,
-            "n_converged": sum(1 for r in recov[s] if r.get("converged")),
+            # A sampler with NO convergence diagnostic (SNPE has no r-hat -- there is no chain to
+            # converge) reports None. That is "not applicable", not "failed", so it is counted
+            # separately: lumping None in with False made SNPE read as 0/2 converged.
+            "n_converged": sum(1 for r in recov[s] if r.get("converged") is True),
+            "n_diagnosed": sum(1 for r in recov[s] if r.get("converged") is not None),
             "n_fits": len(recov[s]),
+            # Persist the real per-fit flags. Without these a merge has to invent them, and an
+            # invented True would let a merged report claim full convergence it never measured.
+            "converged_raw": [r.get("converged") for r in recov[s]],
         }
         mp = sbc["_summary"]["min_uniformity_p"]
         enough = args.n_sims >= MIN_SIMS_FOR_VERDICT
         verdict = str(sbc["_summary"]["calibrated"]) if enough else "n/a"
         rep["per_sampler"][s]["verdict_withheld"] = not enough
-        nconv, nfit = rep["per_sampler"][s]["n_converged"], rep["per_sampler"][s]["n_fits"]
-        flag = "" if nconv == nfit else f"  <- only {nconv}/{nfit} fits converged"
+        nconv = rep["per_sampler"][s]["n_converged"]
+        ndiag = rep["per_sampler"][s]["n_diagnosed"]
+        if ndiag == 0:
+            flag = "  <- no convergence diagnostic for this sampler"
+        elif nconv == ndiag:
+            flag = ""
+        else:
+            flag = f"  <- only {nconv}/{ndiag} fits converged"
         print(f"{s:26s} {mp:17.4f} {verdict:>11s} {c68:7.3f} {c95:7.3f}{flag}")
     print("-" * 78)
     if args.n_sims < MIN_SIMS_FOR_VERDICT:
@@ -332,5 +364,60 @@ def _plot_corner(keep, names, out):
         print(f"  corner failed: {type(exc).__name__}: {exc}")
 
 
+def _merge(dirs, out, args):
+    """Re-render ranks and coverage from several shards' raw arrays. No fitting."""
+    import whisper_cbpf as wp
+
+    out.mkdir(parents=True, exist_ok=True)
+    ranks, covered, recov, names, samplers, n_sims = {}, {}, {}, [], [], 0
+    failures, ref_fp, ref_dir = [], None, None
+    for d in dirs:
+        j = json.loads((d / "sbc.json").read_text())
+        names = names or j["params"]
+        n_sims = max(n_sims, j["n_sims"])
+        failures.extend(j.get("failures", []))
+        # The whole point of sharding is that one --seed gives every shard the same simulated data.
+        # That is an ASSUMPTION about rng consumption order, so check it rather than trust it:
+        # merging shards built on different light curves would silently pool unrelated ranks.
+        fp = j.get("data_fingerprints")
+        if fp is None:
+            print(f"  [warn] {d.name}: no data fingerprint (built before this check existed); "
+                  f"cannot confirm it saw the same simulations")
+        elif ref_fp is None:
+            ref_fp, ref_dir = fp, d.name
+        else:
+            n = min(len(fp), len(ref_fp))
+            if not np.allclose(fp[:n], ref_fp[:n], rtol=1e-12, atol=0.0):
+                bad = int(np.argmax(~np.isclose(fp[:n], ref_fp[:n], rtol=1e-12, atol=0.0)))
+                raise SystemExit(
+                    f"REFUSING TO MERGE: {d.name} and {ref_dir} simulated DIFFERENT data "
+                    f"(first mismatch at simulation {bad}: {fp[bad]!r} vs {ref_fp[bad]!r}). "
+                    f"Shards must share --seed, --n-sims and --n-wave; pooling ranks from "
+                    f"different light curves would be meaningless.")
+        for s_name, blk in j.get("per_sampler", {}).items():
+            if "ranks_raw" not in blk or "converged_raw" not in blk:
+                print(f"  [skip] {d.name}/{s_name}: no raw arrays (built before --merge existed)")
+                continue
+            samplers.append(s_name)
+            ranks.setdefault(s_name, {p: [] for p in names})
+            covered.setdefault(s_name, {p: [] for p in names})
+            recov.setdefault(s_name, [])
+            for p, v in blk["ranks_raw"].items():
+                ranks[s_name][p].extend(v)
+            for p, v in blk["covered_raw"].items():
+                covered[s_name][p].extend([np.asarray(r) for r in v])
+            # carry the MEASURED flags across, never a fabricated True
+            recov[s_name].extend({"converged": c} for c in blk["converged_raw"])  # None stays None
+    samplers = sorted(set(samplers))
+    print(f"merged {len(dirs)} shard(s): {n_sims} simulations x {samplers}")
+    args.n_sims = n_sims
+    rep = _summarise(ranks, covered, recov, failures, names, samplers, args)
+    (out / "sbc.json").write_text(json.dumps(rep, indent=2, default=str))
+    _plot_ranks(ranks, names, samplers, out)
+    _plot_coverage(covered, names, samplers, out)
+    print(f"\nwrote {out}/sbc.json and the figures")
+    return 0
+
 if __name__ == "__main__":
     sys.exit(main())
+
