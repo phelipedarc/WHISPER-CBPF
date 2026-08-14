@@ -214,24 +214,55 @@ def test_env_helpers_never_import_jax_at_module_scope():
 
 
 def test_env_script_names_the_file_that_actually_exists():
-    """The path in every "you are on CPU, here is the fix" message has to be real.
+    """The path in every "you are on CPU, here is the fix" message has to be real AND installed.
 
-    ``env_script`` returned ``<package>/backends/env.sh`` long after the merge renamed the script to
-    ``scripts/whisper-gpu-env.sh`` (CHANGELOG 0.1.0), so the single instruction that escapes the
-    silent CPU fallback named a file that was not there -- in ``require_jax``'s ImportError, in
-    ``check_gpu``'s message and in ``env_report``.
+    Two rounds of this bug. First ``env_script`` returned ``<package>/backends/env.sh`` long after
+    the merge renamed the script to ``scripts/whisper-gpu-env.sh``, so the one instruction that
+    escapes the silent CPU fallback named a file that was not there. That was fixed by pointing at
+    ``scripts/`` -- which was still wrong for the case that matters most, because ``packages.find``
+    ships only ``whisper_cbpf*`` and a pip-installed user therefore had no ``scripts/`` directory at
+    all. The script now lives INSIDE the package and is listed in ``package-data``.
+
+    So this asserts the stronger property: the path exists, and it is under the package directory,
+    which is what makes it survive ``pip install``. A future refactor that moves it back out of
+    ``whisper_cbpf/`` reintroduces a failure with no symptom -- JAX quietly on the CPU at ~50x.
     """
     import os
 
     from whisper_cbpf.backends import _env
 
     path = _env.env_script()
+    pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(_env.__file__)))
+
     assert os.path.isabs(path)
-    assert os.path.basename(path) == "whisper-gpu-env.sh"
-    # A wheel ships only `whisper_cbpf*`, so `scripts/` is absent there and the hint must say so
-    # rather than print a `source` line that cannot work.
-    if os.path.exists(path):
-        assert _env.env_script_hint() == f"source {path}"
-    else:
-        assert "not shipped in the wheel" in _env.env_script_hint()
-    assert _env.env_report()["env_script_exists"] == os.path.exists(path)
+    assert os.path.basename(path) == "env.sh"
+    assert os.path.exists(path), f"the GPU bootstrap is missing at {path}"
+    assert os.path.commonpath([path, pkg_root]) == pkg_root, (
+        f"{path} is outside the package, so `pip install` will not ship it")
+    assert _env.env_script_hint() == f"source {path}"
+    assert _env.env_report()["env_script_exists"] is True
+
+
+def test_the_scripts_shim_redirects_rather_than_duplicating():
+    """``scripts/whisper-gpu-env.sh`` must SOURCE the packaged script, never copy it.
+
+    The path is in the published README and in every run recipe written before the move, so it has
+    to keep working in a checkout. But ``DUPLICATES.md`` is explicit that two copies is the worse
+    outcome: two sets of exports drift, and the one that drifts is the one nobody is testing.
+    """
+    import os
+
+    from whisper_cbpf.backends import _env
+
+    # <repo>/whisper_cbpf/backends/_env.py -> up three, not two: backends -> whisper_cbpf -> repo.
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_env.__file__))))
+    shim = os.path.join(repo_root, "scripts", "whisper-gpu-env.sh")
+    if not os.path.exists(shim):
+        import pytest
+        pytest.skip("no scripts/ directory -- this is a wheel install, where the shim is absent")
+
+    text = open(shim).read()
+    assert "whisper_cbpf/backends/env.sh" in text, "the shim does not point at the packaged script"
+    # A copy would carry the actual exports; a redirect must not.
+    assert "XLA_PYTHON_CLIENT_MEM_FRACTION=" not in text, (
+        "scripts/whisper-gpu-env.sh looks like a COPY of the bootstrap, not a redirect to it")

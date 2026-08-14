@@ -8,7 +8,7 @@ If you only want the answer: for a full-capability install with redback physics 
 
 ```bash
 pip install "whisper-cbpf[gpu,models,pymc,sbi,svo,loo]"
-source scripts/whisper-gpu-env.sh          # BEFORE starting Python — see §4
+source "$(whisper-cbpf-env)"          # BEFORE starting Python — see §4
 ```
 
 then verify with §5. Everything below explains the pieces.
@@ -93,7 +93,7 @@ This is why the bootstrap is a shell script and not a Python call — by the tim
 is too late:
 
 ```bash
-source scripts/whisper-gpu-env.sh     # BEFORE starting Python
+source "$(whisper-cbpf-env)"     # BEFORE starting Python
 python your_fit.py
 ```
 
@@ -103,14 +103,15 @@ idle in **both** memory and utilisation:
 
 ```bash
 nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv
-CUDA_VISIBLE_DEVICES=3 source scripts/whisper-gpu-env.sh
+CUDA_VISIBLE_DEVICES=3 source "$(whisper-cbpf-env)"
 ```
 
-> **Known gap:** `scripts/` is not shipped inside the wheel (`pyproject.toml`'s `packages.find`
-> takes only `whisper_cbpf*`), so a `pip install whisper-cbpf[gpu]` user has no `scripts/`
-> directory. Until that is resolved, get the script from a checkout of this repository.
-> `whisper_cbpf.env_script()` prints where it would live and `env_script_hint()` says plainly when
-> it is absent. Tracked in `OPEN_ITEMS.md`.
+> **Shipped in the wheel since 2026-08-14.** The bootstrap lives at
+> `whisper_cbpf/backends/env.sh` and is listed in `package-data`, so a pip install has it —
+> verified by building a wheel and unzipping it. `whisper-cbpf-env` prints its path, which is
+> why the command above works from a wheel and from a checkout alike.
+> `source scripts/whisper-gpu-env.sh` still works in a checkout: it is a one-line redirect,
+> kept because that path is in the published README and in older run recipes.
 
 ### float64: mandatory for the TDE and every supernova
 
@@ -143,7 +144,7 @@ python -c "import whisper_cbpf as wp; print(wp.__version__, len(wp.list_models()
 #    -> 0.1.0 6 13     (6 models, 13 samplers; verified 2026-08-13)
 
 # 2. [gpu] — is JAX actually on a GPU?
-source scripts/whisper-gpu-env.sh
+source "$(whisper-cbpf-env)"
 python -c "import whisper_cbpf as wp; ok, msg = wp.check_gpu(); print(ok or msg)"
 #    -> True   (anything else prints an actionable diagnostic; do NOT ignore it)
 

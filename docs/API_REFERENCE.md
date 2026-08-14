@@ -6,7 +6,7 @@ and the JAX/GPU half (NUTS, GPU ABC/ABC-SMC, emcee-over-JAX, PyMC frontends, and
 TDE and supernova families) in [§10](#10-the-jaxgpu-half).
 
 - **Environments:** `phe_sbi` (CPU, Python 3.11) and `phe_sbi_2` (GPU/JAX, needs
-  `source scripts/whisper-gpu-env.sh` before Python starts — see [`GPU_SETUP.md`](GPU_SETUP.md)).
+  `source "$(whisper-cbpf-env)"` before Python starts — see [`GPU_SETUP.md`](GPU_SETUP.md)).
 - **Run the CPU tests:** `python -m pytest -q -m "not slow"` → **239 passed, 36 skipped,
   6 deselected** (measured 2026-08-13 in `phe_sbi`, ~77 s). §8 has the caveat about `--collect-only`.
 - **Run the GPU tests:** in `phe_sbi_2`, with the env sourced, using the interpreter its banner names.

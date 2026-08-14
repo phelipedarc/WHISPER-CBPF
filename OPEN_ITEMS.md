@@ -141,7 +141,7 @@ defects found there are fixed; these three are not.
 `py.typed`, so a `pip install whisper-cbpf[gpu]` user gets **no `scripts/` directory at all** — and
 the shell bootstrap is the one thing standing between them and the silent CPU fallback that runs
 ~50× slower with no error. `docs/GPU_SETUP.md` opens with `pip install` and then says
-`source scripts/whisper-gpu-env.sh`, which that user cannot do.
+`source "$(whisper-cbpf-env)"`, which that user cannot do.
 
 `env_script()` now derives the real checkout path and `env_script_hint()` says plainly when the file
 is absent instead of printing an unusable `source` line, so the failure is at least legible. That is

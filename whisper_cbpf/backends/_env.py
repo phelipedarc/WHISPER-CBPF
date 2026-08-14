@@ -27,18 +27,31 @@ _ROOT = os.path.dirname(os.path.dirname(_HERE))
 
 
 def env_script():
-    """Absolute path to the shell bootstrap, ``scripts/whisper-gpu-env.sh``.
+    """Absolute path to the shell bootstrap, ``whisper_cbpf/backends/env.sh``.
 
-    This used to return ``<package>/backends/env.sh``, which has not existed since the merge
-    renamed it (CHANGELOG 0.1.0) -- so every message telling a user how to escape the silent
-    CPU fallback named a file that was not there.
+    It lives inside the package and is listed in ``package-data``, so **it exists in a wheel install
+    as well as a checkout**. That was not true before 2026-08-14: the script sat in ``scripts/``
+    while ``packages.find`` ships only ``whisper_cbpf*``, so a ``pip install whisper-cbpf[gpu]``
+    user had no ``scripts/`` directory -- and this file is the one thing standing between them and
+    JAX falling back to the CPU at ~50x with no error at all.
 
-    The path is NOT guaranteed to exist: ``pyproject.toml``'s ``packages.find`` ships only
-    ``whisper_cbpf*``, so an install from a wheel has no ``scripts/`` directory at all. Anything
-    putting this in front of a user should go through :func:`env_script_hint`, which says so
-    instead of printing a `source` line that cannot work.
+    ``scripts/whisper-gpu-env.sh`` still works in a checkout: it is a redirect that sources this
+    file, kept because that path is in the published README and in every older run recipe.
     """
-    return os.path.join(_ROOT, "scripts", "whisper-gpu-env.sh")
+    return os.path.join(_HERE, "env.sh")
+
+
+def _print_env_script():
+    """Console entry point ``whisper-cbpf-env``: print the bootstrap's path so it can be sourced.
+
+    The one command that works from a wheel and from a checkout alike::
+
+        source "$(whisper-cbpf-env)"
+
+    ``source scripts/whisper-gpu-env.sh`` never could, because ``scripts/`` is not installed.
+    """
+    print(env_script())
+    return 0
 
 
 def env_script_hint():

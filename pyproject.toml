@@ -69,6 +69,11 @@ Documentation = "https://github.com/phelipedarc/WHISPER-CBPF/tree/main/docs"
 Issues = "https://github.com/phelipedarc/WHISPER-CBPF/issues"
 Changelog = "https://github.com/phelipedarc/WHISPER-CBPF/blob/main/CHANGELOG.md"
 
+[project.scripts]
+# Resolves the bootstrap's path from an installed wheel as well as a checkout, so the one
+# documented command works everywhere:  source "$(whisper-cbpf-env)"
+whisper-cbpf-env = "whisper_cbpf.backends._env:_print_env_script"
+
 [tool.setuptools.dynamic]
 version = { attr = "whisper_cbpf.__version__" }
 
@@ -77,7 +82,10 @@ where = ["."]
 include = ["whisper_cbpf*"]
 
 [tool.setuptools.package-data]
-whisper_cbpf = ["py.typed"]                # ship the typing marker so type hints reach consumers
+whisper_cbpf = [
+    "py.typed",                            # ship the typing marker so type hints reach consumers
+    "backends/env.sh",                     # the GPU bootstrap -- without it JAX falls back to
+]                                          # the CPU at ~50x, silently. See docs/GPU_SETUP.md.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

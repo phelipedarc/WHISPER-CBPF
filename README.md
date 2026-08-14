@@ -94,7 +94,7 @@ environment bootstrap *before starting Python*, because JAX reads device visibil
 fraction at import time:
 
 ```bash
-source scripts/whisper-gpu-env.sh
+source "$(whisper-cbpf-env)"
 ```
 
 Skip it and JAX falls back to CPU **silently, at roughly 50×, with no error**. Check with

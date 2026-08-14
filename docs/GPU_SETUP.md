@@ -24,7 +24,7 @@ This is why the environment bootstrap is a shell script and not a Python call. I
 by import-time logic — by the time Python is running, it is too late.
 
 ```bash
-source scripts/whisper-gpu-env.sh     # BEFORE starting Python
+source "$(whisper-cbpf-env)"     # BEFORE starting Python
 python your_fit.py
 ```
 
@@ -48,7 +48,7 @@ ModuleNotFoundError: No module named 'jax'
 Use the interpreter the banner names, explicitly:
 
 ```bash
-source scripts/whisper-gpu-env.sh
+source "$(whisper-cbpf-env)"
 /opt/jax_gpu_venv/bin/python3 -m pytest tests/t0_parity -q
 ```
 
