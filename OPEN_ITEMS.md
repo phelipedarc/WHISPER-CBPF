@@ -465,3 +465,35 @@ Raw timings (warm): 1k → 4.84 s CPU / 2.18 s GPU; 10k → 50.34 / 3.19; 30k �
 the batching contribution can be separated from the device contribution. Note also that the
 harness's bootstrap returned a degenerate CI (`[1067, 1067]`) — the point estimate reproduces under
 an independent least-squares fit, but that interval should not be quoted.
+
+### The 2-component kilonova has NO obtainable reference posterior — measured
+
+Tier 0.1 (sampler agreement) cannot be closed for `kn2` on AT2017GFO, because no method tried
+produces a posterior trustworthy enough to compare against. Two independent attempts, both on an
+idle A6000:
+
+| attempt | budget | result |
+|---|---|---|
+| `nuts_gpu` | 4000 warmup + 4000 draws × 4 chains | **ESS_worst 7.1**, r-hat 1.5288, **0 divergences** — refused |
+| `nested` (dynesty) | `nlive=1000, dlogz=0.1` | **timed out at 5406 s** having spent ~2.8M likelihood calls |
+
+Neither is a budget problem.
+
+**NUTS cannot, structurally.** r-hat 1.53 with *zero* divergences is chains that are individually
+healthy and sitting in different modes — this posterior is multimodal, as this document already
+records ("four chains in three distinct modes"), and NUTS is a local sampler.
+
+**Nested was the documented remedy and it did not work either.** kn2 sustains **524 likelihood
+calls/s** (1.91 ms each, 8 parameters, `n_wave=1000`), so 5406 s is ~2,833,000 calls against a
+rule-of-thumb of 80,000–200,000 for `nlive=1000`. Overrunning by 14–35× without converging is not
+cost; it is dynesty's bounding distribution thrashing on the same geometry.
+
+**Consequence, stated plainly:** we can measure how *fast* the samplers fit kn2 and we cannot check
+whether they *agree*. Any kn2 credible interval in this repository is currently unverifiable.
+
+**Next, in order of expected value:** (1) `abc_smc_gpu`, which `OPEN_ITEMS` lists first among
+multimodal samplers and which was never tried here; (2) dynesty with `dynamic=True` and a
+posterior-weighted `pfrac`, or an explicit `sample="rslice"`, before concluding nested cannot do it;
+(3) fix extinction first and re-check — if the railing is an unmodelled-reddening artefact, the
+posterior may become unimodal and the whole problem dissolve; (4) report per-mode rather than
+marginally, which this document already proposes.
