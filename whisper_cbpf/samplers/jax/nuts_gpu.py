@@ -37,10 +37,15 @@ from ...samplers.base import (  # noqa: E402
     summarize_posterior,
 )
 from ._adapters import resolve_density as _resolve_density  # noqa: E402
+from ._adapters import resolve_sampling_names as _resolve_sampling_names  # noqa: E402
 
 
 def _numpyro_priors(prior, names):
-    """Map whisper's prior onto NumPyro distributions, ONE PER PARAMETER.
+    """Map whisper's prior onto NumPyro sample sites, ONE PER PARAMETER.
+
+    Returns one ``(site_name, numpyro_distribution, to_linear)`` triple per entry of ``names``,
+    in that order. ``to_linear`` is ``None`` when the site *is* the model parameter, and a callable
+    when the site is a reparameterisation that has to be pushed back to the parameter's own units.
 
     This used to read ``.bounds`` for every parameter and build a single vectorised
     ``dist.Uniform(lows, highs)``. That silently substituted a uniform density for any parameter
@@ -49,9 +54,40 @@ def _numpyro_priors(prior, names):
     log-uniform puts half its mass below 775 K and uniform puts half below 3050 K. Nothing warned,
     because ``.bounds`` is identical for both.
 
-    Per-parameter sites also let NumPyro pick the right bijector for each support. For LogUniform
-    that is a log transform, which is what a scale parameter spanning ~2 decades wants anyway --
-    NUTS explores it far better in log space than a uniform reparameterisation would.
+    WHY LOG-UNIFORM IS SAMPLED AS A UNIFORM ON log10, NOT AS ``dist.LogUniform``
+    ---------------------------------------------------------------------------
+    ``dist.LogUniform`` carries the correct *density*, but not the geometry NUTS needs, and the two
+    are independent. NumPyro walks a site in the unconstrained space that ``biject_to(d.support)``
+    defines, and ``dist.LogUniform(lo, hi).support`` is ``constraints.interval(lo, hi)`` -- exactly
+    what a plain ``Uniform`` declares. So ``biject_to`` returns (measured, NumPyro 0.21)::
+
+        biject_to(dist.LogUniform(100., 6000.).support)
+        -> ComposeTransform([SigmoidTransform(), AffineTransform()])
+
+    a sigmoid on the LINEAR value. There is no log anywhere in it. This module's docstring used to
+    claim "NumPyro picks the right bijector ... For LogUniform that is a log transform"; it is not,
+    and the consequences are not cosmetic:
+
+    * The unconstrained origin lands on the ARITHMETIC midpoint. For (100, 6000), ``u = 0`` maps to
+      x = 3050 K -- the 83rd percentile of the log-uniform prior -- instead of the prior median
+      ``sqrt(100 * 6000) = 774.6`` K.
+    * NumPyro's default ``init_to_uniform(radius=2)`` draws u ~ U(-2, 2), which under that transform
+      is x in [803.3, 5296.7] K -- the whole init distribution sits ABOVE the prior median (measured
+      over 400 seeds: lowest init 818.0 K). A temperature floor whose true value is 107 K cannot be
+      initialised anywhere near.
+    * The step size cannot serve both ends. Measured, ``dx/du`` at the init edge u = -2 is 619.5
+      against 6.99 at the truth -- a factor 88.6. In log10 coordinates the same two points differ by
+      9.84, so one adapted step size covers the traverse instead of being wrong at one end or the
+      other.
+
+    ``Uniform(log10 lo, log10 hi)`` pushed through ``10**u`` is the identical measure -- it is the
+    definition of log-uniform -- and puts ``u = 0`` on the prior median by construction. It is also
+    exactly what ``whisper_cbpf.samplers.jax.pymc_gpu._pymc_prior`` does, so the two GPU NUTS arms
+    now walk the SAME geometry and are comparable as parameterisations rather than differing in one.
+
+    Simulation-based calibration on data generated FROM the model is what exposed this;
+    ``tests/test_nuts_gpu_loguniform_geometry.py`` pins the geometry directly, without sampling, so
+    the regression cannot come back silently.
 
     Only the distributions whisper's ABC/NUTS paths actually support are mapped; anything else
     raises rather than being quietly approximated.
@@ -62,15 +98,56 @@ def _numpyro_priors(prior, names):
         kind = type(d).__name__
         lo, hi = (float(x) for x in d.bounds)
         if kind == "Uniform":
-            out.append(dist.Uniform(lo, hi))
+            out.append((nm, dist.Uniform(lo, hi), None))
         elif kind == "LogUniform":
-            out.append(dist.LogUniform(lo, hi))
+            out.append((f"log10_{nm}", dist.Uniform(np.log10(lo), np.log10(hi)),
+                        lambda u: 10.0 ** u))
         else:
             raise TypeError(
                 f"nuts_gpu cannot express prior {kind!r} on parameter {nm!r} as a NumPyro "
                 f"distribution. Supported: Uniform, LogUniform. Extend _numpyro_priors rather "
                 f"than falling back to a uniform box -- that changes the posterior silently.")
     return out
+
+
+#: ``init_strategy=`` accepts these names as well as any NumPyro init callable. Spelled out rather
+#: than resolved with ``getattr(numpyro.infer, ...)`` so a typo names the valid options instead of
+#: reaching an arbitrary attribute.
+_INIT_STRATEGIES = {
+    "uniform": numpyro.infer.init_to_uniform,
+    "median": numpyro.infer.init_to_median,
+    "sample": numpyro.infer.init_to_sample,
+    "feasible": numpyro.infer.init_to_feasible,
+    "mean": numpyro.infer.init_to_mean,
+}
+
+#: What NumPyro's ``MCMC`` accepts. Checked here so a typo raises before XLA spends a minute
+#: compiling the kernel, and with a message naming the alternatives.
+_CHAIN_METHODS = ("vectorized", "parallel", "sequential")
+
+
+def _resolve_init_strategy(init_strategy):
+    """``None`` -> NumPyro's own default; a short name -> the matching callable; a callable -> itself.
+
+    Returns ``(callable_or_None, label)``; the label is what goes into ``result.info`` so a saved
+    run records which strategy actually ran rather than a repr of a function object.
+    """
+    if init_strategy is None:
+        return None, "numpyro_default(init_to_uniform)"
+    if isinstance(init_strategy, str):
+        key = init_strategy.strip().lower()
+        key = key[len("init_to_"):] if key.startswith("init_to_") else key
+        if key not in _INIT_STRATEGIES:
+            raise ValueError(
+                f"nuts_gpu: unknown init_strategy {init_strategy!r}. Use one of "
+                f"{sorted(_INIT_STRATEGIES)} (with or without the 'init_to_' prefix), or pass a "
+                f"NumPyro init callable such as numpyro.infer.init_to_value(values=...).")
+        return _INIT_STRATEGIES[key], f"init_to_{key}"
+    if not callable(init_strategy):
+        raise TypeError(
+            f"nuts_gpu: init_strategy must be None, one of {sorted(_INIT_STRATEGIES)}, or a "
+            f"NumPyro init callable; got {type(init_strategy).__name__}.")
+    return init_strategy, getattr(init_strategy, "__name__", repr(init_strategy))
 
 
 def _float_dtype():
@@ -89,8 +166,9 @@ class NUTSGPUSampler(BaseSampler):
     name = "nuts_gpu"
 
     def fit(self, lc, model, prior=None, *, log_prob_fn=None, num_warmup=1000, num_samples=2000,
-            num_chains=4, space="auto", seed=0, progress=False,
-            target_accept_prob=0.8) -> SamplerResult:
+            num_chains=4, space="auto", likelihood="auto", seed=0, progress=False,
+            target_accept_prob=0.8, init_strategy=None, dense_mass=False, max_tree_depth=10,
+            step_size=1.0, chain_method="vectorized") -> SamplerResult:
         """Fit ``lc`` with ``model`` via NumPyro NUTS.
 
         Parameters
@@ -115,8 +193,33 @@ class NUTSGPUSampler(BaseSampler):
             :func:`whisper_cbpf.samplers.jax._adapters.make_log_prob_jax`). An explicitly passed
             callable always wins.
         num_warmup, num_samples, num_chains : int
-            NUTS budget. Chains run via ``chain_method="vectorized"`` (all chains batched on the
-            one visible GPU via vmap — the standard single-device multi-chain NumPyro pattern).
+            NUTS budget.
+        init_strategy : str or callable, optional
+            Where the chains start, in unconstrained space. ``None`` (default) leaves NumPyro's own
+            ``init_to_uniform(radius=2)``. Accepts ``"uniform"``, ``"median"``, ``"sample"``,
+            ``"feasible"``, ``"mean"`` (the ``init_to_`` prefix is optional) or any NumPyro init
+            callable, e.g. ``numpyro.infer.init_to_value(values={"mej": 0.03})``. Worth reaching
+            for: the default draws u ~ U(-2, 2) in unconstrained space, which for a bounded
+            parameter is a *fraction of the prior*, not the prior — on ``LogUniform(100, 6000)``
+            it covers only x in [163, 3683] K.
+        dense_mass : bool, default False
+            ``False`` adapts a diagonal mass matrix (NumPyro's default), ``True`` a full one.
+            Dense costs O(k^2) memory and a slower warmup, and pays for itself only when the
+            posterior has strong linear correlations — which the kilonova's mej/vej/kappa do.
+        max_tree_depth : int, default 10
+            Doubling cap per NUTS trajectory: at most ``2**max_tree_depth`` leapfrog steps. Raise
+            it when the sampler saturates (a badly conditioned posterior needs longer
+            trajectories); every increment doubles the worst-case cost per draw.
+        step_size : float, default 1.0
+            *Initial* leapfrog step size. Adaptation is on, so this is a starting guess, not the
+            step actually used.
+        chain_method : {"vectorized", "parallel", "sequential"}, default "vectorized"
+            How chains are placed. ``"vectorized"`` batches all chains onto one device via vmap —
+            the standard single-GPU multi-chain NumPyro pattern, and the only one that uses a
+            single card fully. ``"parallel"`` needs one device per chain and NumPyro **silently
+            downgrades it to "sequential"** otherwise (see
+            ``whisper_cbpf.samplers.jax.pymc_gpu._effective_chain_method``), so what you asked for
+            and what runs can differ; ``info["chain_method"]`` records the request.
         space : {"auto", "flux", "magnitude"}
             **Live on the auto-built path**, where it selects the likelihood: ``"auto"`` follows
             ``lc.data_mode``, the same rule ``abc``/``abc_smc``/``mcmc`` use, so magnitude data is
@@ -143,24 +246,40 @@ class NUTSGPUSampler(BaseSampler):
         prior = prior if prior is not None else model.default_prior
         if prior is None:
             raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
-        names = list(model.parameters)
+        names, likelihood = _resolve_sampling_names(lc, model, prior, log_prob_fn, space,
+                                                   likelihood)
         k, n = len(names), int(len(lc.time))
-        # Validate the prior BEFORE building anything: an unsupported distribution should report
-        # itself, not hide behind a filter-set build or an XLA compile.
-        site_dists = _numpyro_priors(prior, names)
+        # Validate the prior and the kernel options BEFORE building anything: an unsupported
+        # distribution or a mistyped option should report itself, not hide behind a filter-set
+        # build or a minute of XLA compilation.
+        site_specs = _numpyro_priors(prior, names)
+        init_fn, init_label = _resolve_init_strategy(init_strategy)
+        if chain_method not in _CHAIN_METHODS:
+            raise ValueError(f"nuts_gpu: chain_method must be one of {_CHAIN_METHODS}, got "
+                             f"{chain_method!r}.")
         log_prob_fn, space, space_source, fn_source = _resolve_density(
             lc, model, prior, log_prob_fn, space, names, include_prior=False,
-            sampler=self.name)
+            sampler=self.name, likelihood=likelihood)
 
         def numpyro_model():
-            # One site per parameter so each keeps its OWN density and support transform; stacked
-            # back into the flat theta vector that log_prob_fn expects, in model.parameters order.
-            theta = jnp.stack([numpyro.sample(nm, d) for nm, d in zip(names, site_dists)])
-            numpyro.factor("log_likelihood", log_prob_fn(theta))
+            # One site per parameter so each keeps its OWN density and support transform. A
+            # reparameterised site (log-uniform -> uniform on log10) is pushed back to the
+            # parameter's own units by a `deterministic`, which NumPyro collects into
+            # `get_samples()` alongside the sampled sites -- so `samples["temperature_floor"]` is
+            # kelvin, exactly as before, while the chain walks log10 kelvin.
+            values = []
+            for nm, (site, d, to_linear) in zip(names, site_specs):
+                v = numpyro.sample(site, d)
+                values.append(v if to_linear is None else numpyro.deterministic(nm, to_linear(v)))
+            # Stacked back into the flat theta vector log_prob_fn expects, in model.parameters order
+            numpyro.factor("log_likelihood", log_prob_fn(jnp.stack(values)))
 
-        kernel = NUTS(numpyro_model, target_accept_prob=float(target_accept_prob))
+        kernel_kw = {} if init_fn is None else {"init_strategy": init_fn}
+        kernel = NUTS(numpyro_model, target_accept_prob=float(target_accept_prob),
+                      dense_mass=bool(dense_mass), max_tree_depth=int(max_tree_depth),
+                      step_size=float(step_size), **kernel_kw)
         mcmc = MCMC(kernel, num_warmup=int(num_warmup), num_samples=int(num_samples),
-                    num_chains=int(num_chains), progress_bar=progress, chain_method="vectorized")
+                    num_chains=int(num_chains), progress_bar=progress, chain_method=chain_method)
 
         rng_key = jax.random.PRNGKey(int(seed))
 
@@ -235,9 +354,24 @@ class NUTSGPUSampler(BaseSampler):
         info = {
             "num_warmup": int(num_warmup), "num_samples": int(num_samples),
             "num_chains": int(n_chains_run), "space": space, "seed": int(seed),
-            "space_source": space_source, "log_prob_fn": fn_source,
+            "space_source": space_source,
+            # `_LIKELIHOOD_KINDS` in samplers/base.py maps this back to a registry name, so WAIC
+            # and predictive_metrics re-score under the density that was actually fitted. None
+            # when the caller supplied their own log_prob_fn: we cannot know then.
+            "likelihood": getattr(log_prob_fn, "likelihood", None),
+            "scatter_param": getattr(log_prob_fn, "scatter_param", None),
+            "log_prob_fn": fn_source,
             "x64": bool(jax.config.jax_enable_x64),
             "target_accept_prob": float(target_accept_prob),
+            # The kernel hyper-parameters that actually ran. Without these a saved run cannot be
+            # reproduced or compared -- two fits differing only in dense_mass or max_tree_depth
+            # were previously indistinguishable in the record.
+            "init_strategy": init_label, "dense_mass": bool(dense_mass),
+            "max_tree_depth": int(max_tree_depth), "step_size": float(step_size),
+            "chain_method": chain_method,
+            # The site each parameter is actually sampled on. Differs from the parameter name
+            # exactly where a reparameterisation is in play, which is the thing worth recording.
+            "sample_sites": {nm: site for nm, (site, _d, _f) in zip(names, site_specs)},
             "warmup_time_s": float(warmup_time), "sampling_time_s": float(sampling_time),
             "n_divergences": n_divergences, "rhat": rhat_by_param,
             "max_rhat": (float(max_rhat) if np.isfinite(max_rhat) else None),
@@ -250,7 +384,10 @@ class NUTSGPUSampler(BaseSampler):
             n_data=n, n_params=k, runtime_s=runtime, info=info,
             max_log_likelihood=max_log_likelihood,
             aic=float(-2.0 * max_log_likelihood + 2 * k),
-            bic=float(-2.0 * max_log_likelihood + k * np.log(n)),
+            # max(n, 1) matches pymc_gpu. Unguarded, an empty light curve gives np.log(0) = -inf
+            # (with a RuntimeWarning that nothing reads), so BIC came back -inf -- which compares
+            # as the BEST possible model in any argmin over BIC, rather than as the error it is.
+            bic=float(-2.0 * max_log_likelihood + k * np.log(max(n, 1))),
         )
         result.numpyro_mcmc = mcmc
         result.samples_by_chain = np.asarray(samples_by_chain)   # (chains, draws, k) -- for ESS/sec
