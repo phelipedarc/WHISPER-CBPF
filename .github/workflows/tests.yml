@@ -6,7 +6,7 @@ name: tests
 # `pip install whisper-cbpf` gives a working install with NO jax, NO CUDA, NO torch and NO redback,
 # and that every GPU sampler and model still appears in list_samplers() / list_models() as
 # available-requiring-an-extra. The GPU tiers (tests/t0_parity, t2_autodiff, t3_inference and the
-# *_vs_redback comparisons) need a CUDA device and `source scripts/whisper-gpu-env.sh`; they stay a
+# *_vs_redback comparisons) need a CUDA device and `source "$(whisper-cbpf-env)"`; they stay a
 # manual run in phe_sbi_2 and are NOT gated here. See docs/GPU_SETUP.md.
 #
 # The environment is deliberately minimal -- core + [dev] only, no redback, no arviz, no jax. That is

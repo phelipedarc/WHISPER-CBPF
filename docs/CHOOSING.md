@@ -23,8 +23,7 @@ and no measurement supporting it existed anywhere in the repository. It has now 
 the honest answer is that **there is no single crossover** — it moves by a factor of 60 depending on
 two choices the sentence never stated.
 
-Measured on the one-component JAX kilonova, AT2017GFO, one idle A6000, 3 repeats
-(`scripts/benchmark_samplers.py --crossover`):
+Measured on the one-component JAX kilonova, AT2017GFO, one idle A6000, 3 repeats:
 
 | simulations | CPU `abc`, `n_jobs=1` | GPU `abc_gpu` | ratio |
 |---|---|---|---|

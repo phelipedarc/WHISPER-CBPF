@@ -1,6 +1,6 @@
 """GPU / JAX environment resolution.
 
-The shell bootstrap (``scripts/whisper-gpu-env.sh``) sets three things that must be in place
+The shell bootstrap (``whisper_cbpf/backends/env.sh``) sets three things that must be in place
 **before python starts**, because JAX reads them at import: which device is visible, how much of it
 to preallocate, and where the CUDA shared libraries live. This module is the Python-side counterpart
 -- it reports what actually happened and explains, in words a user can act on, what to fix when it
@@ -35,8 +35,6 @@ def env_script():
     user had no ``scripts/`` directory -- and this file is the one thing standing between them and
     JAX falling back to the CPU at ~50x with no error at all.
 
-    ``scripts/whisper-gpu-env.sh`` still works in a checkout: it is a redirect that sources this
-    file, kept because that path is in the published README and in every older run recipe.
     """
     return os.path.join(_HERE, "env.sh")
 
@@ -48,7 +46,7 @@ def _print_env_script():
 
         source "$(whisper-cbpf-env)"
 
-    ``source scripts/whisper-gpu-env.sh`` never could, because ``scripts/`` is not installed.
+    A path outside the package could not work, because only ``whisper_cbpf*`` is installed.
     """
     print(env_script())
     return 0
@@ -59,8 +57,8 @@ def env_script_hint():
     path = env_script()
     if os.path.exists(path):
         return f"source {path}"
-    return ("source the GPU environment bootstrap -- scripts/whisper-gpu-env.sh in a source "
-            "checkout of whisper-cbpf; it is not shipped in the wheel. See docs/GPU_SETUP.md.")
+    return ("source the GPU environment bootstrap -- run `whisper-cbpf-env` to print its path, "
+            "then `source \"$(whisper-cbpf-env)\"`. See docs/GPU_SETUP.md.")
 
 
 def env_report():

@@ -461,6 +461,14 @@ every field above (`band_metrics` and `predictive_metrics` included) is serialis
 to `path` when given and always returned as a string; `indent=None` emits compact one-line JSON for
 machine-read outputs.
 
+Read-only **metric properties** sit beside `aic`/`bic` so the predictive numbers take one hop instead of
+four: **`waic`** (deviance scale, lower is better), **`waic_reliable`** (`p_waic ≤ n_data/2` — check it
+before comparing WAICs), **`elpd_loo`** (PSIS-LOO, higher is better) and **`rmse`** (overall, in the
+fit's comparison space). Each returns `None` — never raises — when the metric block is missing or failed
+(the reason is then in `info["predictive_metrics_error"]`), and `elpd_loo` is `None` without `arviz`.
+They are views on `info["predictive_metrics"]`, deliberately **not** added to `to_dict()`/`to_json()`,
+which already carry the whole block and whose shape is unchanged.
+
 **Writing a sampler that produces the standard output** (`whisper_cbpf.samplers.base`): the two hooks
 below are what every built-in sampler calls, and a custom sampler should call them too so its JSON
 carries the same metric blocks as the rest. Both are **best-effort** — they swallow any exception, so a
@@ -487,15 +495,33 @@ res.to_json("fit.json")
 ### 6.5 Likelihoods  (`whisper_cbpf.likelihood`)
 
 Models predict **flux**; a likelihood compares it to the data in a chosen **space** —
-`space='flux'` (residuals/errors in Jy; upper limits usable), `space='magnitude'` (model flux → AB
-mag vs observed mag/err), or `space='auto'` (magnitude data → magnitude space, flux data → flux space;
-the correct default). Each exposes `log_likelihood(model_flux) -> float` and is picklable.
+`space='flux'` (residuals/errors in Jy; the **only** space in which upper limits are usable),
+`space='magnitude'` (model flux → AB mag vs observed mag/err), or `space='auto'` (magnitude data →
+magnitude space, flux data → flux space; the correct default). Each exposes
+`log_likelihood(model_flux) -> float` and is picklable.
+
+**Upper limits are a flux-space statement.** `GaussianLikelihoodWithUpperLimits` used to carry a
+magnitude branch as well (a survival term `1 − Φ((limit − model)/(POGSON/upper_limit_sigma))`,
+i.e. "fainter than the limit"); it was **removed**, and `space='magnitude'` — including `'auto'` on
+magnitude data — now raises. A non-detection says the *flux* was below a limiting flux, and the
+magnitude of zero flux is undefined (`−2.5 log₁₀ 0 = +∞`), so there is no magnitude-space censoring
+integral over the same quantity; the removed branch also took its width from the Pogson constant
+rather than from the data. Call `lc.add_flux()` and pass `space='flux'`, or fit the detections alone
+with `lc.where(upper_limit=False)`.
+
+**A likelihood that does not model censoring refuses censored data.** Building `GaussianLikelihood`,
+`MixtureGaussianLikelihood` or `GaussianLikelihoodWithScatter` on a light curve with any
+`upper_limit=True` row raises. Previously the limits' NaN error bars flowed into the normalising
+constant and every log-likelihood came back `NaN` — silently, so the fit completed and reported NaN
+`max_log_likelihood`/AIC/BIC. There is no combined free-scatter **and** upper-limit likelihood, so
+those two are mutually exclusive rather than silently resolved in favour of scatter. Non-finite or
+non-positive error bars on *detections* are refused for the same reason.
 
 | Class / function | Purpose |
 |---|---|
 | `GaussianLikelihood(lc, space="auto")` | Independent Gaussian in the chosen space. |
 | `GaussianLikelihoodWithScatter(lc, space="auto", scatter_param="sigma")` | Gaussian with a **free extra-scatter term added in quadrature** (Villar+2017): `lnL = −½Σ[(O−M)²/(σᵢ²+σ²) + ln(2π(σᵢ²+σ²))]`; `log_likelihood(model_flux, sigma_extra=…)`. `kind="gaussian_scatter"` / `"villar"`. |
-| `GaussianLikelihoodWithUpperLimits(lc, space="auto", upper_limit_sigma=3.0)` | Gaussian for detections + a CDF (flux: P(true<limit)) / survival (mag: P(true>limit)) term for upper limits. |
+| `GaussianLikelihoodWithUpperLimits(lc, space="auto", upper_limit_sigma=3.0)` | Gaussian for detections + a censoring term `P(true flux < limit) = Φ((limit − model)/(limit/upper_limit_sigma))` for the non-detections. **Flux space only** — `space="magnitude"` raises. |
 | `MixtureGaussianLikelihood(lc, space="auto", alpha=0.9, sigma_out_scale=10.0)` | Outlier-robust two-component mixture (α, σ_out fixed). |
 | `make_likelihood(lc, kind="auto", space="auto", **kw)` | Build the data-appropriate likelihood (auto-selects upper-limits when present). |
 
@@ -525,25 +551,45 @@ point log-likelihood, summing to `log_likelihood`) — the ingredient WAIC needs
 
 ### 6.6 Metrics  (`whisper_cbpf.metrics`)
 
-**`waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=None, max_samples=2000, seed=0)`**
+**`waic(posterior, lc, model=None, *, space="auto", likelihood="auto", scatter_param="auto", fixed=None, max_samples="auto", seed=0)`**
 — the **Widely Applicable Information Criterion** (Watanabe 2010; Gelman et al. 2014): a fully-Bayesian
 fit score that, unlike AIC/BIC (which use one best-fit point), uses the **whole posterior**. It evaluates
 the model's *pointwise* log-likelihood across the posterior draws and returns a dict with `waic`
-(`= -2(lppd - p_waic)`, **lower is better**), `lppd`, `p_waic` (effective # parameters), `se` (standard
-error), `n_samples`, `n_data`. `posterior` may be a `SamplerResult` (uses `.samples`/`.model`), a
-`DataFrame`, or an array; `fixed=` supplies values for parameters pinned during the fit (so absent from
+(`= -2(lppd - p_waic)`, **lower is better**), `elpd_waic`, `lppd`, `p_waic` (effective # parameters),
+`p_waic_reliable`, `se` (standard error), `n_samples`, `n_data`, `scatter_param`.
+
+**Given a `SamplerResult`, this returns the fit's own number:** `wp.waic(res, lc)["waic"] == res.waic`.
+Each `"auto"` means *whatever the fit recorded* — the space it was fitted in, the likelihood kind it was
+fitted under, the extra-scatter column it fitted, and the same draw count and seed the auto-attached
+block scored. Pass any argument explicitly to override. For a bare `DataFrame`/array there is no fit to
+follow, so `"auto"` keeps the plain meanings (data-appropriate space and likelihood, lone non-model
+column as σ, 2000 draws). `fixed=` supplies values for parameters pinned during the fit (so absent from
 the posterior columns); `max_samples` caps the per-draw model evaluations (matters for slow simulators).
-Note `p_waic` (and hence WAIC) inflates for posteriors much broader than the likelihood — e.g. ABC's
-tolerance posterior or an under-converged SNPE run — which is itself a useful diagnostic; magnitude space
-is numerically gentler than flux space (whose tiny errors make the likelihood very sharp).
+
+`p_waic` uses the **sample** variance (`1/(S−1)`), as Watanabe 2010 and Vehtari, Gelman & Gabry 2017
+Eq. 11 define it; `arviz.waic` uses the population variance `1/S`, so its `p_waic` is this one times
+`(S−1)/S` (0.5 % at S = 200, O(1/S) in general). Note `p_waic` (and hence WAIC) inflates for posteriors
+much broader than the likelihood — e.g. ABC's tolerance posterior or an under-converged SNPE run — which
+is itself a useful diagnostic; magnitude space is numerically gentler than flux space (whose tiny errors
+make the likelihood very sharp).
 
 **`per_band_metrics(lc, model, params, *, space="auto", fixed=None)`** — deterministic **per-band
 goodness of fit** at a single parameter set (typically `result.best_params`). Evaluates the model once
 and reports, **per band** and overall, the `mse` / `rmse` / `mae` of the residuals `observed − model`
 in the fit's comparison space (`"flux"` → Jy, `"magnitude"` → mag). Returns
-`{"space", "unit", "bands": {band: {"mse","rmse","mae","n"}}, "overall": {...}}`. Every sampler calls
-this at its best fit and stores the result in `result.info["band_metrics"]`, so it is reported in
-`to_json()` automatically — no extra call needed for the standard fit output.
+`{"space", "unit", "n_upper_limits_excluded", "bands": {band: {"mse","rmse","mae","n"}}, "overall": {...}}`.
+Every sampler calls this at its best fit and stores the result in `result.info["band_metrics"]`, so it
+is reported in `to_json()` automatically — no extra call needed for the standard fit output.
+
+**Detections only.** Rows flagged `upper_limit=True` are excluded and counted in
+`n_upper_limits_excluded`; every `n` counts detections. A non-detection's `y` is a *limit*, not a
+measurement, so `observed − model` on that row is not a residual — a model correctly *below* an upper
+limit still contributes `(limit − model)²`, and the deeper the limit the worse it makes a correct fit
+look. Bands with no detection are kept with `n = 0` rather than dropped from the report. No error bars
+are read (the space conversion goes through `likelihood.resolve_space` / `likelihood.flux_to_space`,
+not a likelihood object), so the NaN `flux_err` the loader writes for a non-detection is fine — before
+this, building a `GaussianLikelihood` purely as a space converter made every censored fit report
+`info["band_metrics_error"]` instead of `info["band_metrics"]`.
 
 **`predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto", scatter_param="auto", fixed=None, levels=(0.5, 0.68, 0.8, 0.9, 0.95, 0.99), n_draws=400, seed=0)`**
 — the **posterior-predictive metric block** reported for every fit. Evaluates the model across `n_draws`
@@ -560,6 +606,11 @@ posterior samples once and returns:
   observations inside the central posterior-predictive interval, overall and per band (empirical ≈
   nominal ⇒ calibrated).
 - **`scatter_param`** — the posterior column used as the extra-scatter σ (or `null`).
+- **`space` / `likelihood` / `scatter_param` / `n_draws_requested` / `seed`** — how this block was
+  scored. `waic(result, lc)` reads them back so the manual call reproduces exactly this number.
+- **`elpd_loo_error`** — present only when `arviz` **is** installed and `az.loo` raised; `elpd_loo` is
+  `null` both when arviz is absent (documented degradation) and when it failed, and this key is what
+  tells the two apart.
 
 `levels` defaults to **`DEFAULT_COVERAGE_LEVELS = (0.5, 0.68, 0.8, 0.9, 0.95, 0.99)`** — import it from
 `whisper_cbpf.metrics` to extend rather than retype the set (e.g.
@@ -653,7 +704,7 @@ Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`
 | `test_schema.py` | 11 | Validation, subsetting, `add_*`, `snr`/`select_snr`, `set_explosion_date`, upper limits. |
 | `test_loader.py` | 12 | AT2017GFO load, window/subset, grouping, `min_snr`, `explosion_date`, upper limits. |
 | `test_plotting.py` | 11 | report/grid layouts, flux/absolute-mag, redshift guard, upper-limit markers; `plot_corner` overlay/legend, common-params + log axes + array/empty errors; `plot_ppc` single/multi × flux/magnitude × panel-by band/method; `plot_calibration` multi + per-band. |
-| `test_metrics.py` | 10 | WAIC keys + finite + better-fit-lower ordering, `fixed=`/subsampling, pointwise log-lik summing to the total; `per_band_metrics` zero-at-truth / offset / JSON; `predictive_metrics` RMSE/LPD/ELPD-LOO/WAIC/AIC-BIC/coverage block + auto-attach, coverage-calibration for a good fit, and scatter-aware WAIC/coverage vs mis-specified. |
+| `test_metrics.py` | 21 | WAIC keys + finite + better-fit-lower ordering, `fixed=`/subsampling, pointwise log-lik summing to the total; **WAIC pinned to a closed-form value** (two-point Gaussian posterior, derivation in the docstring) both through `_loo_waic` and end-to-end through `wp.waic`, and cross-checked against `arviz.waic` on the same matrix (exact up to arviz's ddof=0); **`wp.waic(res, lc)` == `res.waic` on a scatter fit**; the `waic`/`waic_reliable`/`elpd_loo`/`rmse` properties returning `None` instead of raising on a failed block; arviz-failing distinguished from arviz-absent; `per_band_metrics` zero-at-truth / offset / JSON, **and on a censored light curve** — it builds no likelihood (so NaN `flux_err` on a non-detection is fine), scores detections only with `n_upper_limits_excluded` reporting the rest, keeps an all-censored band at `n = 0`, and `flux_to_space` matching the bound `model_in_space`; `predictive_metrics` RMSE/LPD/ELPD-LOO/WAIC/AIC-BIC/coverage block + auto-attach, coverage-calibration for a good fit, and scatter-aware WAIC/coverage vs mis-specified. |
 | `test_validation.py` | 4 | recovery z-score + coverage signs, PPC (reduced χ²≈1, predictive coverage, p≈0.5), SBC rank uniformity (calibrated vs edge-biased), `sbc_rank` bounds. |
 | `test_embeddings.py` | 6 | MLP/TCN embedding shapes + finite output, TCN receptive field covers the input, `build_embedding` dispatch + unknown-name error, `x_format` validation, ABC `simulate_noise` (n_jobs-reproducible, optional, noisy-vs-noiseless distance floor). |
 | `test_scatter.py` | 4 | Villar+17 scatter likelihood (formula vs hand calc, σ=0 reduces to Gaussian, pointwise sums, registry), MCMC recovers injected extra scatter (σ counted in AIC), ABC scatter validation + posterior column, ABC magnitude-space acceptance. |
@@ -663,7 +714,7 @@ Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`
 | `test_distance.py` | 2 | chi² zero/known value. |
 | `test_abc.py` | 6 | parameter recovery, serial+parallel, acceptance count, JSON, dispatch, custom model. |
 | `test_abc_smc.py` | 9 | SMC registration, recovery, epsilon tightening, explicit schedule, dispatch, model-agnostic, and the `min_epsilon` floor (broadens the posterior; `"auto"` runs). |
-| `test_likelihood.py` | 9 | Gaussian flux/mag, space-auto, upper-limit CDF, mixture, make_likelihood, picklable. |
+| `test_likelihood.py` | 15 | Gaussian flux/mag, space-auto, upper-limit CDF (incl. the tail that used to flatten at the `_MIN_PROB` clip), mixture, make_likelihood, picklable; and the refusals — magnitude-space upper limits, censored rows under a likelihood that ignores them, free scatter + upper limits, non-finite error bars. |
 | `test_units.py` | 12 | F_ν/F_λ→Jy, per-point λ, NaN-λ error, mag rejects flux unit, no-unit default, flux dimensionality. |
 | `test_svo.py` | 15 | FILTER_LOOKUP→SVO, mocked metadata/index, cache hit + disk cache, corrupt-cache (×4 params), graceful degrade, manual override (no spurious warn), transmission, ambiguity. |
 | `test_ingestion.py` | 25 | data_mode/output_format, `__call__`, redshift (arg/column/unknown/0/neg/NaN/all-NaN), units, band-info, subset preservation, backward-compat ZP, flux-mode. |
@@ -720,10 +771,10 @@ bind them with a factory. See [`CHOOSING.md`](CHOOSING.md) for which to use when
 - **`n_jobs(fraction=0.6)`**  
   Worker count at the production CPU budget (60% of cores by default).
 - **`env_script()`**  
-  Absolute path to `scripts/whisper-gpu-env.sh` in this checkout, derived from `__file__`. It is
-  **not guaranteed to exist**: wheels ship only `whisper_cbpf*`, so a pip-installed user has no
-  `scripts/` directory. Use `env_script_hint()`, which says so plainly instead
-  of printing an unusable `source` line.
+  Absolute path to `whisper_cbpf/backends/env.sh`, the shell bootstrap. It lives inside the package
+  and is listed in `package-data`, so it exists in a wheel install as well as a checkout. The
+  console script `whisper-cbpf-env` prints it, which is why
+  `source "$(whisper-cbpf-env)"` works everywhere.
 - **`env_report()`**  
   A dict describing the current GPU environment. Never raises, never imports jax.
 
@@ -750,6 +801,17 @@ bind them with a factory. See [`CHOOSING.md`](CHOOSING.md) for which to use when
   Build a supernova ``Model`` for this dataset and register it under ``name``.
 
 ### JAX/GPU samplers  (`whisper_cbpf.samplers.jax`)
+
+**`likelihood=` on the scalar-density samplers.** `nuts_gpu`, `pymc_jax_gpu_*` and `emcee_jax` build
+their density from `model.predict_jax` when no `log_prob_fn` is passed, and `likelihood="auto"`
+(default) selects which one — the same registered `kind` names `make_likelihood` takes, restricted
+to what the JAX backend implements (`auto`, `gaussian`, `upper_limits`, `gaussian_scatter`;
+`mixture` is refused). It is ignored when you pass your own `log_prob_fn`. The resolved class is
+recorded in `result.info["likelihood"]` — the same key the numpy samplers write, and the one
+`attach_predictive_metrics` reads back so WAIC/LOO re-score a fit under the density it was fitted
+with. `likelihood="gaussian_scatter"` needs the scatter parameter (default `"sigma"`) in the
+`prior`: the sampled vector then grows by that column, which is routed to the likelihood's
+`sigma_extra` instead of to `model.predict`, and `info["scatter_param"]` names it.
 
 - **`NUTSGPUSampler()`** — *class*  
   NUTS (NumPyro) on GPU. See module docstring for the shared-``log_prob_fn`` design.
@@ -798,10 +860,32 @@ never imports JAX.
   `log_prob_fn`, which already gets the prior from NumPyro's sample sites. `-inf` outside the
   support with a *finite* gradient there. Refuses anything but `Uniform` / `LogUniform`.
 - **`likelihood.log_likelihood_jax(like)`**
-  Build `f(model_flux) -> scalar` from an already-constructed `GaussianLikelihood`, reading `y`,
-  `sigma`, `space` and the normalising constant off it so the two arms cannot disagree about the
-  fit. The subclasses are refused by name — each is a different density, and `isinstance` would
-  silently accept all three. Not jitted: jit the assembled log-posterior instead.
+  Build the JAX twin of `like.log_likelihood` from an already-constructed likelihood **object**,
+  reading `y`, `sigma`, `space`, the detection mask and the normalising constants off it so the two
+  arms cannot disagree about the fit. Not jitted: jit the assembled log-posterior instead. Dispatch
+  is on the **exact** type — a user subclass is refused by name rather than silently scored under
+  its base class's density.
+
+  | numpy class | JAX | signature |
+  |---|---|---|
+  | `GaussianLikelihood` | flux, magnitude | `f(model_flux)` |
+  | `GaussianLikelihoodWithUpperLimits` | flux | `f(model_flux)` |
+  | `GaussianLikelihoodWithScatter` | flux, magnitude | `f(model_flux, sigma_extra=0.0)` |
+  | `MixtureGaussianLikelihood` | — | refused: a deliberate non-goal, not an omission |
+
+  The returned function carries `.scatter_param` — the prior parameter that supplies `sigma_extra`,
+  or `None`. Agreement with the numpy half, measured over 13 cases spanning both spaces, all three
+  classes, both empty-half edge cases of the censoring term and several `sigma_extra`: worst
+  relative difference **8.96e-14** with `jax_enable_x64`, **3.69e-5** without — and in float32 the
+  worst cases are all magnitude space, where the limiting step is the float32 `flux → mag` `log10`
+  map, not the density (flux space stays at 2.2e-7).
+
+  The censoring term uses `ndtr`, not `0.5(1 + erf(z/√2))`, on **both** backends. The `erf` form
+  cancels catastrophically in the left tail — which is precisely where this term lives — and in
+  float64 `erf` saturates at exactly −1 for `z ≲ −8.3`, flooring every such non-detection at the
+  `_MIN_PROB` clip. That gave a flat −69.0776 plateau with zero gradient across the whole range a
+  gradient sampler must cross to pull an over-bright model back under a limit; measured on one
+  light curve, `log P` at `z = −8.94` was −69.0776 against a true −43.0721.
 
 ```python
 ll = wp.likelihood.log_likelihood_jax(wp.GaussianLikelihood(lc, space="flux"))
