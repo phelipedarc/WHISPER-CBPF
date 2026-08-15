@@ -78,12 +78,12 @@ def test_waic_flags_itself_unreliable_when_p_waic_exceeds_half_the_data():
 
     rng = np.random.default_rng(0)
     good = rng.normal(-1.0, 0.05, size=(200, 40))                 # tight: reliable
-    _, w = _loo_waic(good)
+    _, w, _ = _loo_waic(good)
     assert w["p_waic_reliable"] is True
 
     bad = good.copy()
     bad[:, 0] = rng.normal(0.0, 5e3, size=200)                    # one wildly varying point
     with pytest.warns(UserWarning, match="WAIC is unreliable"):
-        _, w = _loo_waic(bad)
+        _, w, _ = _loo_waic(bad)
     assert w["p_waic_reliable"] is False
     assert w["n_data"] == 40

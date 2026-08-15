@@ -33,9 +33,117 @@ def _resolve_samples(posterior, model):
     return np.asarray(posterior, dtype=float), None, model_name   # ndarray -> names from the model
 
 
-def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=None,
-         max_samples=2000, seed=0):
+def _resolve_scatter(names, model, fixed, scatter_param):
+    """Resolve the free extra-scatter column -> ``(name, column index)``, either ``None`` if absent.
+
+    ``"auto"`` takes the **single** posterior column that is not a model parameter (the fitted
+    nuisance sigma); an explicit name forces it; ``None`` disables scatter. Shared by :func:`waic`
+    and :func:`predictive_metrics` so both score under the same density — see :func:`waic`.
+    """
+    if scatter_param == "auto":
+        extra = [c for c in names if c not in set(model.parameters) and c not in (fixed or {})]
+        sp = extra[0] if len(extra) == 1 else None
+    elif scatter_param and scatter_param in names:
+        sp = scatter_param
+    else:
+        sp = None
+    return sp, (names.index(sp) if sp is not None else None)
+
+
+def _scoring_likelihood(lc, space, likelihood, sp, who):
+    """Build the likelihood the draws are scored under (scatter-augmented when ``sp`` is set)."""
+    from ..likelihood import GaussianLikelihoodWithScatter
+
+    lik = (GaussianLikelihoodWithScatter(lc, space=space, scatter_param=sp) if sp is not None
+           else make_likelihood(lc, kind=likelihood, space=space))
+    if not hasattr(lik, "log_likelihood_pointwise"):
+        raise TypeError(f"{type(lik).__name__} has no log_likelihood_pointwise(); {who} needs the "
+                        "pointwise log-likelihood. Use a Gaussian (with/without upper limits) likelihood.")
+    return lik
+
+
+def _score_draws(model, lik, names, samples, sp_idx, fixed, times, bands):
+    """Evaluate every draw once -> ``(predictions in comparison space, pointwise log-lik, sigma_s)``.
+
+    One loop, one set of numbers: :func:`waic` and :func:`predictive_metrics` both go through here,
+    so a WAIC computed either way is the same WAIC by construction rather than by coincidence.
+    """
+    extra = dict(fixed or {})
+    preds, lls, sig = [], [], []
+    for row in samples:
+        s = float(row[sp_idx]) if sp_idx is not None else 0.0
+        mf = model.predict({**extra, **{nm: float(v) for nm, v in zip(names, row)}}, times, bands)
+        preds.append(np.asarray(lik.model_in_space(mf), float))
+        lls.append(np.asarray(lik.log_likelihood_pointwise(mf, sigma_extra=s)
+                              if sp_idx is not None else lik.log_likelihood_pointwise(mf), float))
+        sig.append(s)
+    return np.vstack(preds), np.vstack(lls), np.asarray(sig, float)
+
+
+def _waic_from_ll(ll, *, stacklevel=3):
+    """WAIC from a ``(draws, data)`` pointwise log-likelihood matrix — the one implementation.
+
+    ``lppd_i = log mean_s p(y_i|θ_s)``, ``p_waic_i = Var_s log p(y_i|θ_s)``,
+    ``elpd_waic = Σ_i (lppd_i - p_waic_i)`` and ``waic = -2 elpd_waic`` (Watanabe 2010; Vehtari,
+    Gelman & Gabry 2017, Eq. 11). The variance is the **sample** variance, ``1/(S-1)``, as both
+    papers define it — note ``arviz.waic`` uses the population variance ``1/S`` instead, so its
+    ``p_waic`` is this one times ``(S-1)/S``.
+
+    ``p_waic`` is returned with a reliability flag; see :func:`_loo_waic` for what it catches.
+    """
+    n_samp, n_data = ll.shape
+    lppd_i = logsumexp(ll, axis=0) - np.log(n_samp)            # log mean-likelihood per point
+    p_waic_i = np.var(ll, axis=0, ddof=1)                      # posterior var of log-lik per point
+    elpd_i = lppd_i - p_waic_i
+    p_waic = float(np.sum(p_waic_i))
+    reliable = bool(np.isfinite(p_waic) and p_waic <= 0.5 * n_data)
+    if not reliable:
+        warnings.warn(
+            f"WAIC is unreliable here: p_waic = {p_waic:.4g} against n_data = {n_data} "
+            f"(Gelman/Hwang/Vehtari's guidance is p_waic <= n_data/2). The posterior contains draws "
+            f"whose pointwise log-likelihood varies by orders of magnitude. The usual cause is ONE "
+            f"OR MORE STRANDED CHAINS -- a single walker parked in a bad region contributes a huge "
+            f"per-point variance -- so check the chains before blaming the model. Do NOT compare "
+            f"this WAIC against another model's, and do not read it on the same scale as AIC/BIC.",
+            stacklevel=stacklevel)
+    return {"waic": float(-2.0 * np.sum(elpd_i)), "elpd_waic": float(np.sum(elpd_i)),
+            "lppd": float(np.sum(lppd_i)), "p_waic": p_waic, "p_waic_reliable": reliable,
+            "n_data": int(n_data),
+            "se": float(np.sqrt(n_data * np.var(-2.0 * elpd_i, ddof=1))) if n_data > 1 else float("nan")}
+
+
+def _fit_scoring_config(posterior):
+    """How this fit's own metric block scored itself, so :func:`waic` can reproduce it exactly.
+
+    ``{}`` for anything that is not a :class:`SamplerResult` carrying a successful
+    ``info['predictive_metrics']`` block.
+    """
+    info = getattr(posterior, "info", None)
+    block = info.get("predictive_metrics") if isinstance(info, dict) else None
+    if not isinstance(block, dict):
+        return {}
+    cfg = {k: block[k] for k in ("space", "likelihood", "scatter_param") if k in block}
+    if "n_draws_requested" in block:
+        cfg["max_samples"] = int(block["n_draws_requested"])
+    return cfg
+
+
+def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", scatter_param="auto",
+         fixed=None, max_samples="auto", seed=0):
     """Widely Applicable Information Criterion (WAIC) from a posterior sample.
+
+    **Handed a fitted** :class:`SamplerResult`, this reproduces the fit's own auto-attached number:
+    ``wp.waic(result, lc)["waic"] == result.waic``. The defaults ``space``/``likelihood``/
+    ``scatter_param``/``max_samples`` are all ``"auto"``, and ``"auto"`` means *whatever the fit
+    recorded* — the space it was fitted in, the likelihood kind it was fitted under, the extra-scatter
+    column it fitted, and the same draw count (and seed) the attached block scored. Before this, the
+    manual call always used a plain Gaussian on 2000 draws while the attached block used the fit's own
+    density on 200, so a scatter fit produced two WAICs that disagreed by a factor of 9182 (310496.50
+    against 33.82 on an 80-point ``gaussian_rise`` fit) with nothing to say which was meant. Pass any
+    argument explicitly to override.
+
+    For a bare ``DataFrame``/array there is no fit to follow, so ``"auto"`` keeps the old meanings:
+    the data-appropriate space and likelihood, and 2000 draws.
 
     Parameters
     ----------
@@ -49,10 +157,14 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=No
         Model name/object; defaults to ``posterior.model``.
     space, likelihood : str
         Forwarded to :func:`~whisper_cbpf.likelihood.make_likelihood` (data space + likelihood kind).
+    scatter_param : str | None
+        Posterior column holding a free extra-scatter sigma, added in quadrature to the reported
+        errors. ``"auto"`` = the fit's own column (or, without a fit, the lone non-model column);
+        ``None`` disables it and scores against the reported errors alone.
     fixed : dict, optional
         Parameter values to merge into every draw — for parameters held fixed during the fit and so not
         present in the posterior columns (e.g. a pinned ``redshift``).
-    max_samples : int
+    max_samples : int | "auto"
         Cap on posterior draws evaluated (one model call per draw — matters for slow simulators).
     seed : int
         Seed for subsampling when the posterior has more than ``max_samples`` draws.
@@ -60,8 +172,8 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=No
     Returns
     -------
     dict
-        ``waic`` (lower is better), ``lppd``, ``p_waic`` (effective #parameters), ``se`` (standard
-        error of WAIC), ``n_samples``, ``n_data``.
+        ``waic`` (lower is better), ``elpd_waic``, ``lppd``, ``p_waic`` (effective #parameters),
+        ``p_waic_reliable``, ``se`` (standard error of WAIC), ``n_samples``, ``n_data``.
     """
     samples, names, model_name = _resolve_samples(posterior, model)
     model = get_model(model if model is not None else model_name)
@@ -69,25 +181,29 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=No
         raise ValueError("No model given and the posterior has no .model; pass model=...")
     names = list(model.parameters) if names is None else names
 
+    cfg = _fit_scoring_config(posterior)
+    space = cfg.get("space", "auto") if space == "auto" else space
+    likelihood = cfg.get("likelihood", "auto") if likelihood == "auto" else likelihood
+    if scatter_param == "auto" and "scatter_param" in cfg:
+        scatter_param = cfg["scatter_param"]
+    from_fit = max_samples == "auto" and "max_samples" in cfg
+    max_samples = cfg.get("max_samples", 2000) if max_samples == "auto" else int(max_samples)
+
     n_total = samples.shape[0]
     subsampled = n_total > max_samples
     if subsampled:
+        # Same rng call as `predictive_metrics`, so the same seed picks the same draws.
         sel = np.random.default_rng(seed).choice(n_total, size=max_samples, replace=False)
         samples = samples[sel]
-        warnings.warn(f"WAIC: posterior has {n_total} draws; evaluated a random {max_samples}-draw "
-                      "subsample (raise max_samples for the full set).", stacklevel=2)
+        if not from_fit:      # following the fit's own draw count is the documented default, not news
+            warnings.warn(f"WAIC: posterior has {n_total} draws; evaluated a random {max_samples}-draw "
+                          "subsample (raise max_samples for the full set).", stacklevel=2)
 
-    lik = make_likelihood(lc, kind=likelihood, space=space)
-    if not hasattr(lik, "log_likelihood_pointwise"):
-        raise TypeError(f"{type(lik).__name__} has no log_likelihood_pointwise(); WAIC needs the "
-                        "pointwise log-likelihood. Use a Gaussian (with/without upper limits) likelihood.")
+    sp, sp_idx = _resolve_scatter(names, model, fixed, scatter_param)
+    lik = _scoring_likelihood(lc, space, likelihood, sp, "WAIC")
     times, bands = np.asarray(lc.time, float), np.asarray(lc.band)
-    extra = dict(fixed or {})
+    _, ll, _ = _score_draws(model, lik, names, samples, sp_idx, fixed, times, bands)
 
-    ll = np.vstack([
-        np.asarray(lik.log_likelihood_pointwise(
-            model.predict({**extra, **{nm: float(v) for nm, v in zip(names, row)}}, times, bands)), float)
-        for row in samples])                                   # (n_samples, n_data)
     # Drop non-finite *draws* (rows), NOT data points (columns): WAIC is a sum over data points, so
     # every model in a comparison must be scored on the SAME points. Dropping a column when a single
     # bad draw makes it non-finite would shrink the dataset model-dependently and invalidate ΔWAIC.
@@ -101,28 +217,10 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", fixed=No
         raise ValueError("WAIC needs >= 2 posterior draws with finite pointwise log-likelihoods; "
                          f"only {ll.shape[0]} of {good.size} qualified.")
 
-    n_samp = ll.shape[0]
-    lppd_i = logsumexp(ll, axis=0) - np.log(n_samp)            # log mean-likelihood per point
-    p_waic_i = np.var(ll, axis=0, ddof=1)                      # posterior var of log-lik per point
-    elpd_i = lppd_i - p_waic_i
-    n_data = ll.shape[1]
-    se = float(np.sqrt(n_data * np.var(-2.0 * elpd_i, ddof=1))) if n_data > 1 else float("nan")
-    p_waic = float(np.sum(p_waic_i))
-    reliable = bool(np.isfinite(p_waic) and p_waic <= 0.5 * n_data)
-    if not reliable:
-        # Same rule and same reason as _loo_waic. The two public WAIC entry points must not
-        # disagree about whether a number is trustworthy: before this, wp.waic() returned an
-        # unflagged, unwarned p_waic (measured 765538.86 on 40 points) while predictive_metrics
-        # flagged the identical situation.
-        warnings.warn(
-            f"WAIC is unreliable for this posterior: p_waic = {p_waic:.4g} against n_data = "
-            f"{n_data} (Gelman/Hwang/Vehtari's guidance is p_waic <= n_data/2). Do NOT compare it "
-            f"against another model's, and do not read it on the same scale as AIC/BIC.",
-            stacklevel=2)
-    return {"waic": float(-2.0 * np.sum(elpd_i)), "lppd": float(np.sum(lppd_i)),
-            "p_waic": p_waic, "p_waic_reliable": reliable,
-            "se": se, "n_samples": int(n_samp), "n_data": int(n_data),
-            "n_draws_dropped": n_dropped, "subsampled": bool(subsampled)}
+    out = _waic_from_ll(ll, stacklevel=3)
+    out.update({"n_samples": int(ll.shape[0]), "scatter_param": sp,
+                "n_draws_dropped": n_dropped, "subsampled": bool(subsampled)})
+    return out
 
 
 def per_band_metrics(lc, model, params, *, space="auto", fixed=None):
@@ -130,15 +228,24 @@ def per_band_metrics(lc, model, params, *, space="auto", fixed=None):
 
     Evaluates ``model`` at ``params`` on the observed ``(time, band)`` grid and, **per band**, reports
     the mean-squared error (MSE), root-mean-squared error (RMSE) and mean-absolute error (MAE) of the
-    residuals ``observed - model``, computed in the Gaussian likelihood's **comparison space** — flux
-    density [Jy] for a flux fit, apparent magnitude [mag] for a magnitude fit — so the metric matches
-    the space the fit actually optimised. This is the deterministic point-estimate complement to the
-    distributional :func:`waic` / posterior-predictive checks.
+    residuals ``observed - model``, computed in the fit's **comparison space** — flux density [Jy] for
+    a flux fit, apparent magnitude [mag] for a magnitude fit — so the metric matches the space the fit
+    actually optimised. This is the deterministic point-estimate complement to the distributional
+    :func:`waic` / posterior-predictive checks.
+
+    **Detections only.** Rows flagged ``upper_limit=True`` are excluded, and ``n_upper_limits_excluded``
+    reports how many. A non-detection's ``y`` is a *limit*, not a measurement, so ``observed - model``
+    on that row is not a residual: a model sitting correctly *below* an upper limit still contributes
+    ``(limit - model)**2`` to the MSE, and the deeper (more constraining) the limit, the worse it makes
+    a correct fit look. Every band the light curve observes keeps an entry, so a band that is entirely
+    non-detections reports ``n = 0`` rather than vanishing from the report.
 
     Parameters
     ----------
     lc : LightCurve
-        The observed data.
+        The observed data. Censored rows are dropped from the metrics (see above); no error bars are
+        read, so rows whose ``flux_err`` is NaN — which is how whisper's loader marks a non-detection —
+        are fine.
     model : str | Model
         Model name or object (its ``predict`` is called once at ``params``).
     params : dict
@@ -152,21 +259,38 @@ def per_band_metrics(lc, model, params, *, space="auto", fixed=None):
     Returns
     -------
     dict
-        ``{"space", "unit", "bands": {band: {"mse","rmse","mae","n"}}, "overall": {...}}``.
-        ``unit`` is ``"Jy"`` (flux) or ``"mag"`` (magnitude).
+        ``{"space", "unit", "n_upper_limits_excluded", "bands": {band: {"mse","rmse","mae","n"}},
+        "overall": {...}}``. ``unit`` is ``"Jy"`` (flux) or ``"mag"`` (magnitude), and every ``n``
+        counts detections only.
     """
-    from ..likelihood import GaussianLikelihood
+    from ..likelihood import flux_to_space, resolve_space
 
     m = get_model(model)
     if m is None:
         raise ValueError(f"Unknown model {model!r}.")
-    lik = GaussianLikelihood(lc, space=space)
+    # Resolve the space and convert directly instead of building a likelihood as a space converter.
+    # A likelihood validates the data it is about to DIVIDE by -- GaussianLikelihood refuses a
+    # censored row outright, and any NaN error bar with it -- and none of that applies to a
+    # residual, which needs no sigma at all. Building one here made per-band metrics fail on
+    # exactly the light curves that most need them: measured on a 24-point flux curve with 8
+    # non-detections fitted through pymc_jax_gpu_vectorized with likelihood='upper_limits', the
+    # ValueError left every result carrying info['band_metrics_error'] and no band_metrics.
+    sp = resolve_space(lc, space)
+    if sp == "magnitude":
+        y = lc.magnitude if lc.magnitude is not None else lc.add_mag().magnitude
+    else:
+        y = lc.flux if lc.flux is not None else lc.add_flux().flux
+    y = np.asarray(y, dtype=float)
+
     times = np.asarray(lc.time, dtype=float)
     bands = np.asarray(lc.band).astype(str)
     p = dict(fixed or {})
     p.update({k: float(params[k]) for k in m.parameters if k in params})     # model params only
     model_flux = np.asarray(m.predict(p, times, bands), dtype=float)
-    resid = np.asarray(lik.y, float) - np.asarray(lik.model_in_space(model_flux), float)
+    resid = y - np.asarray(flux_to_space(model_flux, sp), dtype=float)
+
+    ul = lc.upper_limit
+    det = np.ones(resid.size, dtype=bool) if ul is None else ~np.asarray(ul, dtype=bool)
 
     def _stats(r):
         r = r[np.isfinite(r)]
@@ -175,9 +299,10 @@ def per_band_metrics(lc, model, params, *, space="auto", fixed=None):
         mse = float(np.mean(r ** 2))
         return {"mse": mse, "rmse": float(np.sqrt(mse)), "mae": float(np.mean(np.abs(r))), "n": int(r.size)}
 
-    per_band = {str(b): _stats(resid[bands == b]) for b in np.unique(bands)}
-    unit = "mag" if lik.space == "magnitude" else "Jy"
-    return {"space": lik.space, "unit": unit, "bands": per_band, "overall": _stats(resid)}
+    per_band = {str(b): _stats(resid[det & (bands == b)]) for b in np.unique(bands)}
+    return {"space": sp, "unit": "mag" if sp == "magnitude" else "Jy",
+            "n_upper_limits_excluded": int(np.sum(~det)),
+            "bands": per_band, "overall": _stats(resid[det])}
 
 
 #: default nominal levels for the coverage-calibration curve.
@@ -239,51 +364,24 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     * Vehtari, Gelman & Gabry 2017, *Stat. Comput.* 27, 1413 — WAIC & PSIS-LOO from the pointwise
       predictive density; Watanabe 2010, *JMLR* 11, 3571 — WAIC.
     """
-    from ..likelihood import GaussianLikelihoodWithScatter
-
     samples, names, model_name = _resolve_samples(result, model)
     m = get_model(model if model is not None else model_name)
     if m is None:
         raise ValueError("No model given and the posterior has no .model; pass model=...")
     names = list(m.parameters) if names is None else names
 
-    # Resolve the extra-scatter column. "auto" = the lone posterior column that is not a model
-    # parameter (the fitted nuisance scatter sigma); explicit name forces it; None disables.
-    extra_cols = [c for c in names if c not in set(m.parameters) and c not in (fixed or {})]
-    if scatter_param == "auto":
-        sp = extra_cols[0] if len(extra_cols) == 1 else None
-    elif scatter_param and scatter_param in names:
-        sp = scatter_param
-    else:
-        sp = None
-    sp_idx = names.index(sp) if sp is not None else None
+    sp, sp_idx = _resolve_scatter(names, m, fixed, scatter_param)
 
     n_total = samples.shape[0]
     if n_total > n_draws:
         samples = samples[np.random.default_rng(seed).choice(n_total, size=n_draws, replace=False)]
-    if sp is not None:
-        lik = GaussianLikelihoodWithScatter(lc, space=space, scatter_param=sp)
-    else:
-        lik = make_likelihood(lc, kind=likelihood, space=space)
-    if not hasattr(lik, "log_likelihood_pointwise"):
-        raise TypeError(f"{type(lik).__name__} has no log_likelihood_pointwise(); predictive_metrics "
-                        "needs a Gaussian (with/without upper limits) likelihood.")
+    lik = _scoring_likelihood(lc, space, likelihood, sp, "predictive_metrics")
     times, bands = np.asarray(lc.time, float), np.asarray(lc.band).astype(str)
     y = np.asarray(lik.y, float)
     sigma = np.where(np.isfinite(lik.sigma) & (lik.sigma > 0), lik.sigma, 0.0)
-    extra = dict(fixed or {})
 
-    preds, lls, sig_tot = [], [], []
-    for row in samples:
-        s = float(row[sp_idx]) if sp_idx is not None else 0.0
-        mf = m.predict({**extra, **{nm: float(v) for nm, v in zip(names, row)}}, times, bands)
-        preds.append(np.asarray(lik.model_in_space(mf), float))
-        lls.append(np.asarray(lik.log_likelihood_pointwise(mf, sigma_extra=s)
-                              if sp_idx is not None else lik.log_likelihood_pointwise(mf), float))
-        sig_tot.append(np.sqrt(sigma ** 2 + s ** 2))            # per-draw predictive sd (errors ⊕ σ)
-    P = np.vstack(preds)                                        # (draws, data) in comparison space
-    ll = np.vstack(lls)
-    S = np.vstack(sig_tot)
+    P, ll, sig_s = _score_draws(m, lik, names, samples, sp_idx, fixed, times, bands)
+    S = np.sqrt(sigma ** 2 + sig_s[:, None] ** 2)               # per-draw predictive sd (errors ⊕ σ)
     good = np.all(np.isfinite(ll), axis=1)
     ll, P_ok, S_ok = ll[good], P[good], S[good]
     n_used = ll.shape[0]
@@ -303,7 +401,7 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     lpd = {"total": float(np.sum(lppd_i)), "per_point": float(np.mean(lppd_i))}
 
     # ELPD (PSIS-LOO) and WAIC via arviz when available; plug-in WAIC otherwise.
-    loo_out, waic_out = _loo_waic(ll)
+    loo_out, waic_out, loo_error = _loo_waic(ll)
 
     # Coverage-calibration curve: posterior-predictive intervals with the fit's own noise model
     # (reported errors ⊕ per-draw scatter σ).
@@ -319,9 +417,15 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
             cov_bands[str(b)].append({"nominal": float(q), "empirical": float(np.mean(inside[sel]))})
     coverage = {"levels": [float(q) for q in levels], "overall": cov_overall, "bands": cov_bands}
 
+    # `space`/`likelihood`/`scatter_param`/`n_draws_requested` record HOW this block was scored, so
+    # `waic(result, lc)` can reproduce exactly this number instead of a differently-specified one.
     out = {"space": lik.space, "unit": "mag" if lik.space == "magnitude" else "Jy",
-           "n_draws": int(n_used), "scatter_param": sp, "rmse": rmse, "lpd": lpd,
+           "likelihood": str(likelihood), "n_draws": int(n_used),
+           "n_draws_requested": int(n_draws), "seed": int(seed),
+           "scatter_param": sp, "rmse": rmse, "lpd": lpd,
            "elpd_loo": loo_out, "waic": waic_out, "coverage": coverage}
+    if loo_error is not None:
+        out["elpd_loo_error"] = loo_error
     for key in ("aic", "bic"):
         v = getattr(result, key, None)
         if v is not None and np.isfinite(v):
@@ -332,9 +436,17 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
 def _loo_waic(ll):
     """PSIS-LOO + WAIC from a (draws, data) pointwise log-likelihood matrix.
 
-    WAIC is the standard plug-in estimator (Watanabe 2010 / Gelman et al. 2014). LOO uses ``arviz``'s
-    Pareto-smoothed importance sampling (Vehtari et al. 2017) with its ``k`` diagnostic when installed;
-    without arviz, ``elpd_loo`` is ``None`` (PSIS smoothing is not reimplemented here).
+    Returns ``(loo_out, waic_out, loo_error)``. WAIC is :func:`_waic_from_ll` — the same code
+    :func:`waic` runs. LOO uses ``arviz``'s Pareto-smoothed importance sampling (Vehtari et al. 2017)
+    with its ``k`` diagnostic when installed; without arviz, ``elpd_loo`` is ``None`` and
+    ``loo_error`` is ``None`` too (PSIS smoothing is not reimplemented here).
+
+    **arviz ABSENT and arviz FAILING are different things.** This used to be one bare
+    ``except Exception: pass``, so a genuine arviz error — a version whose ``loo`` signature moved, a
+    matrix it rejects — was indistinguishable from the documented no-arviz degradation: both gave a
+    silent ``elpd_loo = None``. The import is now caught on its own, and a failure of ``az.loo``
+    itself is recorded in ``loo_error`` (surfaced by :func:`predictive_metrics` as
+    ``elpd_loo_error``) so the caller can tell "you did not install arviz" from "arviz broke".
 
     **``p_waic`` is returned with a reliability flag.** ``p_waic`` estimates the effective number of
     parameters, so on a well-behaved fit it lands at or below the model's parameter count. When the
@@ -353,33 +465,19 @@ def _loo_waic(ll):
     logL -15950.8 against a posterior median of +112.6. Conversely the badly misspecified redback
     kilonova gives ``p_waic = 11.73``, flagged reliable, under ABC on the same 88 points.
     """
-    n_samp, n_data = ll.shape
-    lppd_i = logsumexp(ll, axis=0) - np.log(n_samp)
-    p_waic_i = np.var(ll, axis=0, ddof=1)
-    elpd_waic_i = lppd_i - p_waic_i
-    p_waic = float(np.sum(p_waic_i))
-    reliable = bool(np.isfinite(p_waic) and p_waic <= 0.5 * n_data)
-    if not reliable:
-        warnings.warn(
-            f"WAIC is unreliable for this fit: p_waic = {p_waic:.4g} against n_data = {n_data} "
-            f"(Gelman/Hwang/Vehtari's guidance is p_waic <= n_data/2). The posterior contains draws "
-            f"whose pointwise log-likelihood varies by orders of magnitude. The usual cause is ONE "
-            f"OR MORE STRANDED CHAINS -- a single walker parked in a bad region contributes a huge "
-            f"per-point variance -- so check the chains before blaming the model. Do NOT compare "
-            f"this WAIC against another model's, and do not read it on the same scale as AIC/BIC.",
-            stacklevel=3)
-    waic_out = {
-        "waic": float(-2.0 * np.sum(elpd_waic_i)), "elpd_waic": float(np.sum(elpd_waic_i)),
-        "p_waic": p_waic, "p_waic_reliable": reliable, "n_data": int(n_data),
-        "se": float(np.sqrt(n_data * np.var(-2.0 * elpd_waic_i, ddof=1))) if n_data > 1 else float("nan")}
-    loo_out = None
+    n_samp = ll.shape[0]
+    waic_out = _waic_from_ll(ll, stacklevel=4)
+    loo_out, loo_error = None, None
     try:
         import arviz as az
+    except ImportError:
+        return loo_out, waic_out, loo_error        # documented degraded mode, not a failure
+    try:
         loo = az.loo(az.from_dict(posterior={"_": np.zeros((1, n_samp))},
                                   log_likelihood={"y": ll[None]}), pointwise=True)
         loo_out = {"elpd_loo": float(loo.elpd_loo), "p_loo": float(loo.p_loo), "se": float(loo.se),
                    "looic": float(-2.0 * float(loo.elpd_loo)),
                    "pareto_k_max": float(np.nanmax(np.asarray(loo.pareto_k)))}
-    except Exception:
-        pass
-    return loo_out, waic_out
+    except Exception as exc:                       # noqa: BLE001 - arviz is installed and broke
+        loo_error = f"arviz {getattr(az, '__version__', '?')}: {type(exc).__name__}: {exc}"
+    return loo_out, waic_out, loo_error

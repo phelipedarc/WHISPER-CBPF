@@ -112,6 +112,11 @@ class SamplerResult:
     ``chi2 = -2 ln L`` **up to an additive constant** (the Gaussian normalization is dropped, so
     absolute values are offset, but model comparison on the same data is unaffected); a proper
     ``whisper_cbpf.likelihood`` gives exact values. ``info`` carries sampler-specific diagnostics.
+
+    ``aic`` and ``bic`` are plain fields; the posterior-predictive numbers live in the
+    ``info['predictive_metrics']`` block and are surfaced beside them as the read-only properties
+    :attr:`waic`, :attr:`waic_reliable`, :attr:`elpd_loo` and :attr:`rmse`, each ``None`` rather
+    than raising when that block is missing or failed.
     """
 
     sampler: str
@@ -133,7 +138,66 @@ class SamplerResult:
     def n_samples(self):
         return int(len(self.samples))
 
+    def _metric(self, *path):
+        """Read one number out of ``info['predictive_metrics']``; ``None`` if it is not there.
+
+        The block is best-effort (see :func:`attach_predictive_metrics`): when it fails the key is
+        absent entirely and the reason is parked in ``info['predictive_metrics_error']``. So the
+        four-hop ``result.info["predictive_metrics"]["waic"]["waic"]`` that users were writing
+        raises ``KeyError`` on exactly the fits where something already went wrong. This walk
+        returns ``None`` instead, at every level -- including the documented ``elpd_loo is None``
+        when arviz is absent.
+        """
+        node = self.info.get("predictive_metrics") if isinstance(self.info, dict) else None
+        for key in path:
+            if not isinstance(node, dict):
+                return None
+            node = node.get(key)
+        return node
+
+    @property
+    def waic(self):
+        """WAIC on the deviance scale (lower is better), or ``None`` if the metric block is absent.
+
+        Equal by construction to ``whisper_cbpf.waic(result, lc)["waic"]`` -- the manual call adopts
+        the likelihood, space, scatter column and draw count recorded here. Check :attr:`waic_reliable`
+        before comparing it against another model's.
+        """
+        return self._metric("waic", "waic")
+
+    @property
+    def waic_reliable(self):
+        """``p_waic <= n_data/2`` (Gelman/Hwang/Vehtari 2014 §4), or ``None`` if WAIC is absent.
+
+        ``False`` means the posterior's pointwise log-likelihood varies by orders of magnitude --
+        usually a stranded chain -- and this WAIC must not be compared or read beside AIC/BIC.
+        """
+        return self._metric("waic", "p_waic_reliable")
+
+    @property
+    def elpd_loo(self):
+        """PSIS-LOO expected log predictive density (higher is better).
+
+        ``None`` when the metric block is absent **or** ``arviz`` is not installed; in the latter
+        case ``info['predictive_metrics']['elpd_loo']`` is ``None`` and, if arviz is installed but
+        errored, ``info['predictive_metrics']['elpd_loo_error']`` says why.
+        """
+        return self._metric("elpd_loo", "elpd_loo")
+
+    @property
+    def rmse(self):
+        """Overall RMSE of ``observed - posterior-mean prediction``, in the fit's comparison space.
+
+        Jy for a flux fit, mag for a magnitude fit (``info['predictive_metrics']['unit']``); per-band
+        values are under ``['rmse']['bands']``. ``None`` if the metric block is absent.
+        """
+        return self._metric("rmse", "overall")
+
     def to_dict(self):
+        # waic/elpd_loo/rmse are deliberately NOT added here: they are views on
+        # info["predictive_metrics"], which this dict already carries in full, so promoting them
+        # would duplicate the same numbers under new top-level keys and change the JSON shape that
+        # existing readers (and tests/goldens) parse.
         return {
             "sampler": self.sampler,
             "model": self.model,
