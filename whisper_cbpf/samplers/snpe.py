@@ -278,26 +278,61 @@ def _torch_model_in_space(space, zeropoint_jy, torch):
     return to_mag
 
 
+def _predict_torch_accepts_bands(predict_torch):
+    """Does this batched torch forward map take a third, ``bands`` argument?
+
+    The hook's original signature was ``predict_torch(theta, times)``, which is why **no photometric
+    model could use it**: turning parameters into a flux in a filter needs to know which filter each
+    observation is in, and there was nowhere to say so. Rather than break the two-argument callables
+    that already exist (the flare's), the argument is passed only when the callable declares it.
+    A ``*args``/``**kwargs`` signature counts as accepting it.
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(predict_torch)
+    except (TypeError, ValueError):                    # builtins / C callables: assume the old shape
+        return False
+    positional = 0
+    for p in sig.parameters.values():
+        if p.kind is inspect.Parameter.VAR_POSITIONAL or p.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            positional += 1
+    return positional >= 3
+
+
 def _torch_simulate(proposal, num_simulations, predict_torch, times_t, sig_t, extra_t, torch, seed,
-                    show_progress=False, scatter_idx=None, model_in_space=None):
+                    show_progress=False, scatter_idx=None, model_in_space=None, bands=None,
+                    theta=None):
     """GPU-vectorized simulation: one batched ``predict_torch`` call replaces the per-row Python loop.
 
-    ``predict_torch(theta, times)`` maps a ``(B, D)`` parameter tensor and ``(n,)`` time tensor to a
-    ``(B, n)`` FLUX tensor **on the same device** — so 30k simulations are a single kernel launch
-    instead of 30k Python iterations.
+    ``predict_torch(theta, times[, bands])`` maps a ``(B, D)`` parameter tensor and ``(n,)`` time
+    tensor to a ``(B, n)`` FLUX tensor **on the same device** — so 30k simulations are a single
+    kernel launch instead of 30k Python iterations. ``bands`` (the light curve's own band labels, in
+    row order) is passed only when the callable declares a third parameter, so a **photometric**
+    model can resolve each observation's filter; see :func:`_predict_torch_accepts_bands`.
 
     ``model_in_space`` then maps that flux into the COMPARISON space before noise is added, exactly
     as the CPU simulator does (`mf = model_in_space(flux)`, then `mf + noise`). Getting that order
     wrong — adding magnitude-scale noise to a flux, or flux-scale noise to a magnitude — silently
     trains the flow on the wrong summaries.
+
+    ``theta`` may be supplied already drawn. That is how the multi-round leakage guard reaches this
+    path: the between-round draw from a trained posterior is plain rejection sampling against the
+    prior and can stall indefinitely, so the caller draws it through
+    :func:`_robust_proposal_draw` and hands the result in rather than letting ``proposal.sample``
+    run unguarded here.
     """
     with torch.no_grad():
-        try:
-            theta = proposal.sample((int(num_simulations),), show_progress_bars=show_progress)
-        except TypeError:                              # plain torch priors take no progress kwarg
-            theta = proposal.sample((int(num_simulations),))
+        if theta is None:
+            try:
+                theta = proposal.sample((int(num_simulations),), show_progress_bars=show_progress)
+            except TypeError:                          # plain torch priors take no progress kwarg
+                theta = proposal.sample((int(num_simulations),))
         theta = theta.to(times_t.device)               # e.g. RestrictedPrior samples on CPU (sbi 0.23)
-        flux = predict_torch(theta, times_t)
+        flux = (predict_torch(theta, times_t, bands) if _predict_torch_accepts_bands(predict_torch)
+                else predict_torch(theta, times_t))
         flux = flux.to(times_t.device)
         # Space map FIRST, noise AFTER -- the order the CPU simulator uses. nan_to_num runs after
         # the map so a non-finite magnitude is scrubbed too, not just a non-finite flux.
@@ -429,10 +464,7 @@ def _robust_final_sample(posterior, inference, de_net, torch_prior, torch, x_o_n
             f"SNPE: final posterior sampling {reason}; falling back to MCMC-based sampling "
             "(slice_np_vectorized) which conditions via log_prob instead of the flow's inverse.",
             stacklevel=3)
-        mcmc_posterior = inference.build_posterior(
-            de_net, sample_with="mcmc", mcmc_method="slice_np_vectorized",
-            mcmc_parameters={"num_chains": min(20, max(4, num_workers)), "warmup_steps": 100})
-        mcmc_posterior.set_default_x(x_o_norm)
+        mcmc_posterior = _build_mcmc_posterior(inference, de_net, x_o_norm, num_workers)
         return mcmc_posterior.sample((num_samples,), x=x_o_norm, show_progress_bars=show_progress)
 
     try:
@@ -453,6 +485,152 @@ def _robust_final_sample(posterior, inference, de_net, torch_prior, torch, x_o_n
     return samples_np, method, rate
 
 
+def _build_mcmc_posterior(inference, de_net, x_o_norm, num_workers):
+    """An ``MCMCPosterior`` over the same trained estimator, conditioned on ``x_o_norm``.
+
+    Shared by the final draw and the between-round proposal draw so both escape hatches are the
+    same object: slice sampling on the estimator's raw ``log_prob``, with no rejection loop and
+    therefore no acceptance rate to stall on.
+    """
+    mcmc_posterior = inference.build_posterior(
+        de_net, sample_with="mcmc", mcmc_method="slice_np_vectorized",
+        mcmc_parameters={"num_chains": min(20, max(4, int(num_workers))), "warmup_steps": 100})
+    mcmc_posterior.set_default_x(x_o_norm)
+    return mcmc_posterior
+
+
+def _nudge_into_prior_density(theta, torch_prior, torch, max_tries=4):
+    """Move draws that sit EXACTLY on a prior bound one ULP inside, and say how many were left.
+
+    THE TWO TESTS SBI APPLIES TO THE SAME DRAW DO NOT AGREE AT THE BOUNDARY, and this is what that
+    costs. ``DirectPosterior.sample`` accepts a draw when ``support.check`` passes; torch's
+    ``interval(low, high)`` constraint is CLOSED, so ``theta == high`` passes. sbi's NPE-C atomic
+    loss then evaluates ``prior.log_prob`` on the accepted draws, and
+    ``torch.distributions.Uniform.log_prob`` is HALF-OPEN (``high.gt(value)``), so ``theta == high``
+    is ``-inf`` — and sbi's own ``assert_all_finite(log_prob_prior, "prior eval")`` turns the whole
+    round-2 training into ``ValueError: NaN/Inf present in prior eval``. Measured on the AT2017GFO
+    two-component kilonova: exactly **1 draw in 1500** landed on ``mej_red == 0.1``, with
+    ``within_support`` reporting 1500/1500 inside, and the fit died after round 1 had already been
+    paid for. This is not a leakage failure, it is a boundary-convention failure, and it kills
+    ``num_rounds>1`` at random.
+
+    ``nextafter`` toward the batch's own centre is the minimal repair: it touches ONLY rows the
+    prior density rejects, and moves them by one unit in the last place — a relative change of
+    ~1e-7, far below any physical resolution of these parameters — into the half-open interval where
+    the two tests agree. Rows still rejected after ``max_tries`` are genuinely outside the box
+    (which neither sampling path should produce) and are reported to the caller rather than nudged
+    further. Returns ``(theta, n_nudged, n_still_bad)``.
+    """
+    lp = torch_prior.log_prob(theta)
+    bad = ~torch.isfinite(lp.reshape(-1))
+    n_bad = int(bad.sum())
+    if n_bad == 0:
+        return theta, 0, 0
+    theta = theta.clone()
+    good = ~bad
+    centre = (theta[good].median(dim=0).values if bool(good.any())
+              else theta.mean(dim=0))
+    for _ in range(int(max_tries)):
+        idx = torch.nonzero(bad).flatten()
+        theta[idx] = torch.nextafter(theta[idx], centre.to(theta.dtype).expand(idx.numel(), -1))
+        bad = ~torch.isfinite(torch_prior.log_prob(theta).reshape(-1))
+        if not bool(bad.any()):
+            break
+    return theta, n_bad, int(bad.sum())
+
+
+def _robust_proposal_draw(proposal, num_draws, inference, de_net, torch_prior, torch, x_o_norm,
+                          show_progress, num_workers, min_acceptance=1e-3, n_probe=4000):
+    """Draw the NEXT round's parameters, escaping to MCMC when the proposal leaks.
+
+    THE SAME HAZARD AS THE FINAL DRAW, ON THE SAME OBJECT, AND IT USED TO BE UNGUARDED HERE.
+    Rounds 2+ of SNPE-C propose from the round-1 posterior conditioned on the real observation, and
+    ``DirectPosterior.sample()`` gets those draws by rejection sampling against the prior. When the
+    estimator puts most of its conditional mass outside the prior box — which is exactly what a real
+    observation the network extrapolates to produces — that loop does not raise, it simply almost
+    never accepts: observed at 0 of 1500 draws after 42 s, with no end in sight. ``num_rounds>1``
+    was therefore a coin flip on whether the fit returned at all.
+
+    :func:`_robust_final_sample` already had the answer for the *final* draw; this applies it one
+    call earlier. Probe the within-prior acceptance rate with the bounded, hang-proof probe (a fixed
+    ``n_probe`` unconditional sample, cost independent of the rate), and below ``min_acceptance``
+    take the draws from an ``MCMCPosterior`` over the same estimator instead — slower per sample,
+    but it conditions through ``log_prob`` and has no rejection loop to stall in.
+
+    ``proposal`` objects with no ``posterior_estimator`` (the prior itself, or a ``RestrictedPrior``
+    in truncated mode) have no flow inverse and no reject-against-the-prior loop, so they are drawn
+    from directly. Returns ``(theta, method, rate)``.
+    """
+    import warnings
+
+    def _direct(n):
+        try:
+            return proposal.sample((int(n),), show_progress_bars=show_progress)
+        except TypeError:                              # plain torch priors take no progress kwarg
+            return proposal.sample((int(n),))
+
+    def _finish(theta, method, rate):
+        """Every path leaves through here, so the boundary repair cannot be forgotten on one."""
+        theta, n_nudged, n_bad = _nudge_into_prior_density(theta, torch_prior, torch)
+        if n_bad:
+            warnings.warn(
+                f"SNPE: {n_bad} of {int(num_draws)} proposal draws are outside the prior's own "
+                "density and could not be nudged inside. sbi's atomic loss asserts a finite prior "
+                "log-probability, so training this round would raise; replacing those rows with "
+                "prior draws.", stacklevel=3)
+            replacement = torch_prior.sample((n_bad,)).to(theta.device).to(theta.dtype)
+            still = ~torch.isfinite(torch_prior.log_prob(theta).reshape(-1))
+            theta[torch.nonzero(still).flatten()] = replacement
+        return theta, method, rate
+
+    if getattr(proposal, "posterior_estimator", None) is None:
+        return _finish(_direct(num_draws), "direct", None)
+
+    try:
+        rate = _probe_acceptance_rate(proposal, torch_prior, torch, x_o_norm, n_probe)
+    except Exception:
+        rate = 1.0
+
+    reason = None
+    if rate < min_acceptance:
+        reason = f"has a pathologically low acceptance rate (~{rate:.2e})"
+    else:
+        try:
+            return _finish(_direct(num_draws), "rejection", rate)
+        except AssertionError:
+            reason = "hit a numerically-degenerate flow transform (AssertionError)"
+
+    warnings.warn(
+        f"SNPE: the round-to-round proposal {reason}; drawing this round's simulations from an "
+        "MCMC-based posterior (slice_np_vectorized) instead of the flow's rejection sampler, which "
+        "would stall rather than fail.", stacklevel=3)
+    mcmc_posterior = _build_mcmc_posterior(inference, de_net, x_o_norm, num_workers)
+    theta = mcmc_posterior.sample((int(num_draws),), x=x_o_norm, show_progress_bars=show_progress)
+    return _finish(theta, "mcmc_fallback", rate)
+
+
+class _PredrawnProposal:
+    """Proposal whose ``.sample`` hands back parameters that were ALREADY drawn.
+
+    sbi's ``simulate_for_sbi`` insists on drawing from a proposal object itself, so the only way to
+    give the CPU simulate path a leakage-guarded draw (see :func:`_robust_proposal_draw`) is to
+    present that draw as a proposal. ``.sample`` therefore ignores nothing and invents nothing — it
+    returns the stored tensor, and refuses a size it was not built for rather than silently
+    recycling rows.
+    """
+
+    def __init__(self, theta, to_cpu=False):
+        self._theta = theta.detach().cpu() if to_cpu else theta.detach()
+
+    def sample(self, sample_shape, **kwargs):
+        n = int(sample_shape[0]) if len(tuple(sample_shape)) else 1
+        if n != int(self._theta.shape[0]):
+            raise ValueError(
+                f"_PredrawnProposal holds {int(self._theta.shape[0])} parameter rows but was asked "
+                f"for {n}. The guarded proposal draw and the simulation count must agree.")
+        return self._theta
+
+
 class SNPESampler(BaseSampler):
     """Sequential Neural Posterior Estimation (sbi ``NPE``). See the module docstring."""
 
@@ -463,7 +641,8 @@ class SNPESampler(BaseSampler):
             predict_torch=None, scatter_param=None, hidden_features=None, num_transforms=None,
             num_bins=None, proposal_mode="posterior", truncate_quantile=1e-4,
             support_samples=10000, num_samples=10000, device="cpu", seed=0, show_progress=False,
-            num_workers=1, max_logl_scan=2000, scan_timeout=300, standardize_x=True, **train_kwargs):
+            num_workers=1, max_logl_scan=2000, scan_timeout=300, standardize_x=True,
+            proposal_min_acceptance=1e-3, **train_kwargs):
         """Fit ``lc`` with ``model`` via SNPE/NPE.
 
         ``num_rounds=1`` is amortized NPE; ``num_rounds>1`` focuses simulations sequentially.
@@ -497,10 +676,23 @@ class SNPESampler(BaseSampler):
         or any ``torch.nn.Module``. ``hidden_features`` / ``num_transforms`` / ``num_bins`` build a
         custom architecture via ``sbi``'s ``posterior_nn``.
 
-        **GPU simulation:** pass ``predict_torch(theta, times) -> flux`` (a batched, device-agnostic
-        torch implementation of the model: ``(B, D)`` parameters + ``(n,)`` times → ``(B, n)`` flux) to
-        replace the per-row Python simulator with a single on-device batched call — per-point white
-        noise ``N(0, err)`` is added on-device. Flux-space data only.
+        **GPU simulation:** pass ``predict_torch(theta, times)`` — or
+        ``predict_torch(theta, times, bands)`` for a **photometric** model, which needs to know which
+        filter each observation is in — a batched, device-agnostic torch implementation of the model
+        (``(B, D)`` parameters + ``(n,)`` times → ``(B, n)`` FLUX) to replace the per-row Python
+        simulator with a single on-device batched call. The three-argument form is detected from the
+        signature (:func:`_predict_torch_accepts_bands`), so two-argument callables keep working.
+        Whichever form it takes, the returned flux is mapped into the comparison space and only then
+        given per-point white noise ``N(0, err)``, on-device — so **magnitude-space data is fully
+        supported** (tested in ``tests/test_snpe.py``); the claim that this path was flux-only was
+        never true after the space map landed. ``sampler="snpe_gpu"`` builds this callable for you
+        from any model registered through the JAX factories.
+
+        **Multi-round leakage guard:** ``proposal_min_acceptance`` (default ``1e-3``) is the
+        within-prior acceptance rate below which the ROUND-TO-ROUND proposal draw stops using the
+        flow's rejection sampler and takes its draws from an ``MCMCPosterior`` over the same
+        estimator instead. Without it a ``num_rounds>1`` fit can stall indefinitely in a rejection
+        loop that never raises (see :func:`_robust_proposal_draw`).
 
         **Free extra scatter (Villar+2017):** ``scatter_param`` names a prior parameter that is a
         LIKELIHOOD scatter term, not a model input: each simulation's noise becomes
@@ -520,8 +712,11 @@ class SNPESampler(BaseSampler):
         **Device:** ``device`` selects where the neural density estimator trains — ``'cpu'`` (default),
         ``'cuda'`` / ``'gpu'`` / ``'cuda:N'``, or ``'auto'`` (CUDA when available, else CPU). The torch
         prior and observed data are placed on the device automatically; requesting a GPU without one
-        warns and falls back to CPU. The GPU accelerates *training*, not the (CPU) simulator — so it
-        helps most with many simulations / large networks (see ``sanity_check/benchmark_snpe_device.py``).
+        warns and falls back to CPU. **Without** ``predict_torch`` the GPU accelerates *training*
+        only — the simulator stays a per-row Python loop over the model's numpy ``predict`` — so it
+        helps most with many simulations / large networks. **With** it (which is what
+        ``sampler="snpe_gpu"`` supplies) the simulator is on-device too and the whole round is GPU
+        resident.
         """
         if proposal_mode not in ("posterior", "restricted"):
             raise ValueError(f"proposal_mode must be 'posterior' or 'restricted'; got {proposal_mode!r}.")
@@ -632,15 +827,34 @@ class SNPESampler(BaseSampler):
         t0 = time.perf_counter()
         proposal = torch_prior
         posteriors = []
+        de_net = None
+        proposal_draw_methods, proposal_draw_rates = [], []
         for r in range(int(num_rounds)):
+            # LEAKAGE GUARD ON THE PROPOSAL DRAW. From round 1 on, `proposal` is a DirectPosterior
+            # conditioned on the REAL observation, and drawing from it is rejection sampling against
+            # the prior -- the same loop `_robust_final_sample` guards at the end, one call earlier,
+            # and until now unguarded (observed: 0 of 1500 accepted after 42 s, no error, no end).
+            # Draw it here, guarded, and hand the result to whichever simulate path runs.
+            theta_pre = None
+            if r > 0:
+                theta_pre, _m, _rate = _robust_proposal_draw(
+                    proposal, int(num_simulations), inference, de_net, torch_prior, torch,
+                    _norm(x_o), show_progress, max(1, int(num_workers)),
+                    min_acceptance=float(proposal_min_acceptance))
+                proposal_draw_methods.append(_m)
+                proposal_draw_rates.append(_rate)
             if predict_torch is not None:
                 theta, x = _torch_simulate(proposal, num_simulations, predict_torch, times_t, sig_t,
                                            extra_t, torch, int(seed) + 7919 * r, show_progress,
                                            scatter_idx,
-                                           _torch_model_in_space(lik.space, lik.zeropoint_jy, torch))
+                                           _torch_model_in_space(lik.space, lik.zeropoint_jy, torch),
+                                           bands, theta_pre)
             else:
                 # Parallel simulation needs CPU theta (sbi calls theta.numpy() when chunking).
-                sim_proposal = _CPUSampleProxy(proposal) if int(num_workers) > 1 else proposal
+                if theta_pre is not None:
+                    sim_proposal = _PredrawnProposal(theta_pre, to_cpu=int(num_workers) > 1)
+                else:
+                    sim_proposal = _CPUSampleProxy(proposal) if int(num_workers) > 1 else proposal
                 theta, x = sb.simulate_for_sbi(
                     simulator, sim_proposal, num_simulations=int(num_simulations),
                     num_workers=num_workers, seed=int(seed) + r, show_progress_bar=show_progress)
@@ -730,6 +944,8 @@ class SNPESampler(BaseSampler):
             "normalize_x": _norm_method,
             "final_sample_method": final_sample_method,
             "final_sample_acceptance_rate": final_sample_acceptance,
+            "proposal_draw_methods": list(proposal_draw_methods),
+            "proposal_draw_acceptance_rates": list(proposal_draw_rates),
             "sim_backend": "torch" if predict_torch is not None else "numpy",
             "scatter_param": scatter_param,
             "proposal_mode": proposal_mode,

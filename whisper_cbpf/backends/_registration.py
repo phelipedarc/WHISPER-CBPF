@@ -73,20 +73,40 @@ def _flare_jax_predict(parameters, times, bands=None):
     return predict_numpy(parameters, times, bands)
 
 
+def _flare_jax_predict_jax(theta, times, band_idx=None):
+    """``Model.predict_jax`` for ``flare_jax``: flat theta, jax-traceable, band-independent.
+
+    The slot was simply never filled. ``models.jax.flare`` has had a ``predict_jax`` all along, but
+    with the module's own signature -- a **dict** of named parameters -- while ``Model.predict_jax``
+    is contractually ``(theta_flat, times, band_idx=None)``. This is that adapter, and it is what
+    lets the generic GPU forward map (``samplers.jax._adapters.make_batched_predict_jax``) build a
+    batched simulator for the flare exactly as it does for the kilonovae, instead of ``snpe_gpu``
+    carrying a flare-shaped special case.
+
+    ``band_idx`` is accepted and ignored: the flare is self-contained (one flux for all filters), so
+    it carries no ``.band_index`` attribute and the adapter never passes one. Module-level so it
+    stays picklable, like ``_flare_jax_predict`` above.
+    """
+    from ..models.jax._flare_spec import PARAMETERS
+    from ..models.jax.flare import predict_jax
+
+    return predict_jax({nm: theta[i] for i, nm in enumerate(PARAMETERS)}, times)
+
+
 #: name -> zero-argument factory returning a sampler instance. Every entry must construct with ZERO
 #: arguments, because ``get_sampler(name)`` does ``_SAMPLERS[name]()``; all GPU configuration
 #: therefore travels through ``fit(**kwargs)``, never ``__init__``.
 #:
-#: ``snpe_gpu`` is DELIBERATELY ABSENT, for the same reason the kilonova model is absent from
-#: ``GPU_MODELS`` below: it cannot honour the contract this dict advertises. ``fit_snpe_gpu`` takes
-#: a ``model`` argument but always passes ``flare_jax.predict_torch``, so registering it would let
+#: ``snpe_gpu`` IS registered, as of the generalisation of its simulator. It used to be absent, and
+#: the reason was real: ``fit_snpe_gpu`` took a ``model`` argument but always passed
+#: ``flare_jax.predict_torch``, so registering it would have let
 #: ``wp.fit(lc, "kilonova_one_jax", sampler="snpe_gpu")`` return FLARE simulations labelled with a
-#: kilonova's parameter names — a wrong answer with no error. It raises ``NotImplementedError``
-#: on a non-flare model, and stays reachable as a direct call::
-#:
-#:     from whisper_cbpf.samplers.jax.snpe_gpu import fit_snpe_gpu
-#:
-#: Generalising its ``predict_torch`` hook is what would make it registrable.
+#: kilonova's parameter names -- a wrong answer with no error. The root cause was that SNPE's
+#: ``predict_torch(theta, times)`` hook had **no bands argument**, so no photometric model could be
+#: expressed through it at all. It now takes ``(theta, times, bands)`` and the simulator is built
+#: from ``model.predict_jax`` via ``samplers.jax._adapters.make_batched_predict_jax``, so the
+#: sampler honours the contract this dict advertises: it fits whatever model it is given, and
+#: raises naming ``sampler='snpe'`` for a model with no ``predict_jax`` to build from.
 #: The two PyMC entries import PyMC lazily inside ``fit``, so registering them costs nothing and
 #: ``import whisper_cbpf`` still works without PyMC installed -- they raise a message naming the
 #: install command only if someone actually calls them.
@@ -95,6 +115,7 @@ GPU_SAMPLERS = {
     "abc_gpu": _LazySampler("abc_gpu", "ABCGPUSampler"),
     "abc_smc_gpu": _LazySampler("abc_smc_gpu", "ABCSMCGPUSampler"),
     "emcee_jax": _LazySampler("emcee_jax", "EmceeJAXSampler"),
+    "snpe_gpu": _LazySampler("snpe_gpu", "SNPEGPUSampler"),
     "pymc_jax_gpu_vectorized": _LazySampler("pymc_gpu", "PyMCJAXVectorizedSampler"),
     "pymc_jax_gpu_parallelized": _LazySampler("pymc_gpu", "PyMCJAXParallelizedSampler"),
 }
@@ -135,6 +156,7 @@ def register(overwrite=True):
             "flare_jax", _flare_jax_predict, list(PARAMETERS), prior=default_prior(),
             description="JAX Gaussian-rise/exponential-decay flare, log-space parameters "
                         "(JAX/GPU; registered by whisper_cbpf as 'flare_jax').",
+            predict_jax=_flare_jax_predict_jax,
             overwrite=True,
         )
     return sorted(GPU_SAMPLERS), sorted(GPU_MODELS)

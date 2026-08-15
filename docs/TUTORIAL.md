@@ -342,7 +342,10 @@ kilonova reddening):
 
 All inference can run in **flux** or **apparent-magnitude** space, with Gaussian, upper-limit, and
 mixture (outlier-robust) likelihoods (`whisper_cbpf.likelihood`). The default is chosen by data type;
-override for edge cases (non-detections, outliers):
+override for edge cases (non-detections, outliers). The **upper-limit likelihood is flux-only** — a
+non-detection bounds the flux, and the magnitude of zero flux is undefined — so `space="magnitude"`
+raises there; and a likelihood that does not model censoring refuses a light curve that carries
+non-detections rather than silently fitting the limits as measurements:
 
 ```python
 from whisper_cbpf.likelihood import make_likelihood, GaussianLikelihoodWithUpperLimits
@@ -413,7 +416,7 @@ pairplot(samples, labels=res.parameters)
 ```python
 res = wp.fit_SNPE(
     r, "flare", prior=prior,
-    x_format="stacked",                            # condition on (value, err, time, band) per point
+    x_format="stacked",                            # condition on (value, err, time) per point
     embedding_net="tcn", embedding_latent=32,      # built-in: "mlp" | "tcn" (or any torch.nn.Module)
     density_estimator="nsf", hidden_features=64, num_transforms=8,                # custom architecture
     proposal_mode="restricted", truncate_quantile=1e-4, support_samples=10_000,   # truncated SNPE
@@ -421,9 +424,12 @@ res = wp.fit_SNPE(
 )
 ```
 
-- **`x_format="stacked"`** — condition the network on the full observation tuple
-  `(value, error, time, band)` instead of the values alone: the same information the likelihood-based
-  samplers get, and what an embedding net needs to exploit cadence/noise structure.
+- **`x_format="stacked"`** — condition the network on `(value, error, time)` per point instead of
+  the values alone, which is what an embedding net needs to exploit cadence/noise structure.
+  The **band is deliberately not a channel**: every simulation is drawn on the observation's own
+  `(time, band)` grid in its own row order, so position *i* is the same filter for the data and for
+  every simulation — band identity is carried positionally, and a constant channel would carry no
+  information for a single-object fit (sbi's z-scoring maps it to exactly 0.0 anyway).
 - **`embedding_net`** — `"mlp"` or `"tcn"` build the built-in compressors (`whisper_cbpf.embeddings`;
   the TCN is a Temporal Convolutional Network — dilated causal convolutions specialized for time
   series), trained jointly with the estimator to `embedding_latent` features; or pass any
@@ -435,9 +441,12 @@ res = wp.fit_SNPE(
   factory; `hidden_features` / `num_transforms` / `num_bins` tune the built-in architectures.
 - **`proposal_mode='restricted'`** — truncated SNPE (`RestrictedPrior` + `get_density_thresholder`),
   more robust than SNPE-C when between-round posterior sampling leaks; keep `support_samples` modest.
-- **`predict_torch`** — a batched torch forward model (`(B, D)` params + `(n,)` times → `(B, n)` flux)
-  replaces the per-row Python simulator with one on-device call: **~2000× faster simulation** on a GPU
-  (flux-space data). Per-point noise from the reported errors is added on-device.
+- **`predict_torch`** — a batched torch forward model (`(B, D)` params + `(n,)` times → `(B, n)` flux,
+  or `(theta, times, bands)` for a photometric model) replaces the per-row Python simulator with one
+  on-device call. The returned flux is mapped into the comparison space **before** the per-point noise
+  is added, on-device, so magnitude-space data is supported as well as flux. You rarely need to write
+  one: **`sampler="snpe_gpu"` builds it for you** from any model registered through the JAX factories
+  (see [`MODEL_COMPARISON_GPU.md`](MODEL_COMPARISON_GPU.md)).
 - **`device`** — train on a GPU: `'cpu'` (default), `'cuda'` / `'gpu'` / `'cuda:N'`, or **`'auto'`**
   (CUDA when available, else CPU; a GPU request with no CUDA warns and falls back). With
   `predict_torch` the GPU also runs the simulator; `training_batch_size`/`stop_after_epochs` (passed

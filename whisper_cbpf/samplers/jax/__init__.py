@@ -9,8 +9,8 @@ are load-bearing:
 * jax is imported at module scope in these files, so every name below resolves lazily (PEP 562) --
   importing :mod:`whisper_cbpf` must not require JAX, CUDA or torch to be installed.
 
-``snpe_gpu`` is reachable here by direct import but is deliberately **not** registered; see
-:mod:`whisper_cbpf.backends._registration` for why.
+``snpe_gpu`` is registered like the rest, as of the generalisation of its simulator; see
+:mod:`whisper_cbpf.backends._registration` for what used to keep it out.
 
 Adapted from whisper-GPU @ 10796a0, ``samplers/__init__.py``, which lazily exposed the NUTS sampler
 only. The same pattern now covers all six, because the merged package promises a CPU-only import.
@@ -23,7 +23,8 @@ __all__ = ["NUTSGPUSampler", "fit_NUTSGPU",
            "EmceeJAXSampler", "fit_emcee_jax", "fit_emcee_numpy",
            "PyMCJAXVectorizedSampler", "fit_PyMCJAXVectorized",
            "PyMCJAXParallelizedSampler", "fit_PyMCJAXParallelized",
-           "ContextEmbedding", "encode_bands", "fit_snpe_gpu"]
+           "SNPEGPUSampler", "fit_snpe_gpu", "make_predict_torch",
+           "ContextEmbedding", "encode_bands"]
 
 _MODULE_OF = {
     "NUTSGPUSampler": "nuts_gpu", "fit_NUTSGPU": "nuts_gpu",
@@ -33,7 +34,9 @@ _MODULE_OF = {
     "fit_emcee_numpy": "emcee_jax",
     "PyMCJAXVectorizedSampler": "pymc_gpu", "fit_PyMCJAXVectorized": "pymc_gpu",
     "PyMCJAXParallelizedSampler": "pymc_gpu", "fit_PyMCJAXParallelized": "pymc_gpu",
-    "ContextEmbedding": "snpe_gpu", "encode_bands": "snpe_gpu", "fit_snpe_gpu": "snpe_gpu",
+    "SNPEGPUSampler": "snpe_gpu", "fit_snpe_gpu": "snpe_gpu",
+    "make_predict_torch": "snpe_gpu",
+    "ContextEmbedding": "snpe_gpu", "encode_bands": "snpe_gpu",
 }
 
 
