@@ -2,8 +2,9 @@
 
 Workflow: sample prior -> simulate light curve -> compute distance to data -> accept the closest.
 Acceptance is by ``quantile`` (keep the best fraction; robust, default) or a fixed ``threshold``.
-Simulations are split across processes (``n_jobs``); the model ``predict``, ``prior`` and
-``distance`` must be picklable for ``n_jobs > 1`` (use ``n_jobs=1`` for closures/lambdas).
+Simulations run serially by default. ``n_jobs > 1`` splits them across ``spawn``ed processes and
+needs the model ``predict``, ``prior`` and ``distance`` to be picklable -- and is measurably slower
+at ordinary budgets, so it is opt-in. See the ``n_jobs`` parameter.
 """
 from __future__ import annotations
 
@@ -125,8 +126,14 @@ class ABCSampler(BaseSampler):
             ``simulate_noise=True``; the parameter is ignored by ``model.predict`` (models read only
             the keys they know) and appears in the posterior like any other.
         n_jobs : int, optional
-            Worker processes (default ``min(os.cpu_count(), 8)``). **The result is independent of
-            ``n_jobs``** for a fixed ``seed`` — parallelism affects speed only, not the science.
+            Worker processes. **Default 1 (serial), deliberately** — workers are started with
+            ``spawn``, which pays a fresh interpreter, a JAX import and an XLA compile each, and at
+            ordinary budgets that costs more than it saves: measured 3.5x to 8.3x SLOWER than serial
+            on AT2017GFO, with bit-identical AICs. Raise it only when the simulation count is large
+            enough to amortise that. A script passing ``n_jobs > 1`` needs an
+            ``if __name__ == "__main__":`` guard, because ``spawn`` re-imports ``__main__``.
+            **The result is independent of ``n_jobs``** for a fixed ``seed`` — parallelism affects
+            speed only, not the science.
         seed : int, default 0
             Base RNG seed; the full posterior is reproducible given ``(seed, n_simulations)``.
 
@@ -159,7 +166,22 @@ class ABCSampler(BaseSampler):
                 raise ValueError("scatter_param requires simulate_noise=True (the scatter enters "
                                  "the generative noise).")
 
-        n_jobs = n_jobs or min(os.cpu_count() or 1, 8)
+        # DEFAULT IS SERIAL, and that is a measured choice rather than timidity.
+        #
+        # Every photometric JAX model must now be sent to workers by `spawn` (see _MP_CONTEXT), and
+        # spawn pays a fresh interpreter, a JAX import and an XLA compile PER WORKER. Measured on
+        # AT2017GFO at these budgets, n_jobs=8 was slower than serial in every case tried:
+        #
+        #     kilonova_one_jax  abc      14.3 s vs  4.1 s   (0.28x)
+        #     tde_gaussianrise  abc      12.3 s vs  1.7 s   (0.14x)
+        #     tde_gaussianrise  abc_smc  23.3 s vs  2.8 s   (0.12x)
+        #
+        # with AICs bit-identical, so the parallelism is correct and simply not worth its startup.
+        # It wins only once the simulation count is large enough to amortise that, which is a
+        # judgement about YOUR budget -- hence opt-in. Pass n_jobs explicitly to use it, and note
+        # that spawn re-imports __main__, so a script doing so needs an
+        # `if __name__ == "__main__":` guard.
+        n_jobs = 1 if n_jobs is None else int(n_jobs)
         n_jobs = max(1, min(int(n_jobs), n_simulations))
         # Split the GLOBAL simulation indices into contiguous chunks; each index keeps its own RNG
         # stream, so the union of draws (and their order) is identical for any n_jobs.
