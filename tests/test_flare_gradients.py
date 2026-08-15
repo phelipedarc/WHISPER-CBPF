@@ -32,14 +32,29 @@ def test_gradients_finite_across_the_prior_including_the_dt0_boundary():
 
 
 def test_naive_single_where_would_fail_here():
-    """Control: the property under test is real, not vacuous."""
+    """Control: the property under test is real, not vacuous.
+
+    THE OFFSET HAS TO OVERFLOW IN float64 TOO, NOT JUST float32.
+        ``jax_enable_x64`` is a global, irreversible flag, and ``tests/t2_autodiff/`` turns it on.
+        Pytest collects ``t2_autodiff`` before this file (``t2`` sorts before ``test``), so by the
+        time this control runs the session may be in float64 -- whereas run alone it is float32.
+
+        ``exp`` overflows once its argument passes ``log(finfo.max)``: about 88.7 in float32 but
+        709.8 in float64. The original ``t = -500`` gives ``dt/tau = 510/e = 187.6``, which
+        overflows float32 and is a perfectly finite 1e81 in float64 -- so this control PASSED
+        alone and FAILED in the full suite, reporting that the naive form "no longer fails" when
+        all that had changed was the precision it inherited.
+
+        ``t = -2500`` gives ``dt/tau = 2510/e = 923``, past both limits, so the control now means
+        the same thing whatever an earlier test did to the global flag.
+    """
     def naive(la, ls, lt, t0, t):
         amp, s, tau = jnp.exp(la), jnp.exp(ls), jnp.exp(lt)
         dt = t - t0
         return jnp.where(dt < 0, amp * jnp.exp(-(dt ** 2) / (2 * s ** 2)),
                           amp * jnp.exp(-dt / tau))       # evaluated on RAW dt -> overflows
 
-    times = jnp.asarray([-500.0])
+    times = jnp.asarray([-2500.0])
     p = dict(log_amp=jnp.asarray(1.0), log_sigma=jnp.asarray(0.5),
              log_tau=jnp.asarray(1.0), t0=jnp.asarray(10.0))
     g = jax.grad(lambda q: jnp.sum(jax.vmap(naive, in_axes=(None,) * 4 + (0,))(
