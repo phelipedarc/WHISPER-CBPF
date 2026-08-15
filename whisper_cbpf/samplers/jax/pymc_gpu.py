@@ -52,6 +52,7 @@ from ...samplers.base import (
 from ...backends._env import require_jax
 from ...models import get_model
 from ._adapters import resolve_density as _resolve_density
+from ._adapters import resolve_sampling_names as _resolve_sampling_names
 
 
 def _build_ops(log_prob_fn, jax, jnp):
@@ -166,7 +167,7 @@ class _PyMCJAXBase(BaseSampler):
     chain_method = "vectorized"
 
     def fit(self, lc, model, prior=None, *, log_prob_fn=None, num_warmup=1000, num_samples=2000,
-            num_chains=4, space="auto", seed=0, progress=False,
+            num_chains=4, space="auto", likelihood="auto", seed=0, progress=False,
             target_accept_prob=0.8) -> SamplerResult:
         """Fit ``lc`` with ``model`` via PyMC's model API, sampled by NumPyro NUTS on GPU.
 
@@ -183,6 +184,13 @@ class _PyMCJAXBase(BaseSampler):
         space : {"auto", "flux", "magnitude"}
             Live on the auto-built path; a label only when you pass your own ``log_prob_fn``.
             ``info["space_source"]`` records which. See ``nuts_gpu.fit``.
+        likelihood : str, default "auto"
+            Registered likelihood ``kind`` for the auto-built density — ``"auto"`` (upper limits
+            when the light curve carries them, else Gaussian), ``"gaussian"``, ``"upper_limits"``
+            (flux space only) or ``"gaussian_scatter"``. Ignored when ``log_prob_fn`` is passed.
+            ``"gaussian_scatter"`` needs its ``scatter_param`` (default ``"sigma"``) in ``prior``:
+            it is then sampled as an ordinary site and routed to the likelihood rather than to
+            ``model.predict``. The resolved class lands in ``info["likelihood"]``.
         num_warmup, num_samples, num_chains, seed, target_accept_prob
             NUTS budget and adaptation, as for ``nuts_gpu``.
         """
@@ -202,11 +210,11 @@ class _PyMCJAXBase(BaseSampler):
         prior = prior if prior is not None else model.default_prior
         if prior is None:
             raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
-        names = list(model.parameters)
+        names, likelihood = _resolve_sampling_names(lc, model, prior, log_prob_fn, space, likelihood)
         k, n = len(names), int(len(lc.time))
         log_prob_fn, space, space_source, fn_source = _resolve_density(
             lc, model, prior, log_prob_fn, space, names,
-            include_prior=False, sampler=self.name)
+            include_prior=False, sampler=self.name, likelihood=likelihood)
 
         # local_device_count(), not device_count(): NumPyro checks the LOCAL count, and the two
         # differ on a multi-host setup.
@@ -307,6 +315,11 @@ class _PyMCJAXBase(BaseSampler):
             "target_accept_prob": float(target_accept_prob),
             "space": space,
             "space_source": space_source,
+            # `type(likelihood).__name__`, the key `samplers.base._LIKELIHOOD_KINDS` maps back to a
+            # registry name so `waic`/`predictive_metrics` re-score under the density that was
+            # fitted. None when the caller supplied their own log_prob_fn -- we do not know then.
+            "likelihood": getattr(log_prob_fn, "likelihood", None),
+            "scatter_param": getattr(log_prob_fn, "scatter_param", None),
             "log_prob_fn": fn_source,
             "x64": bool(jax.config.jax_enable_x64),
             "pymc_version": pm.__version__,

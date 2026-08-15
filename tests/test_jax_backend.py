@@ -131,13 +131,92 @@ def test_log_likelihood_jax_matches_the_object_it_was_built_from(lc, jnp, space)
         like.log_likelihood(flux), rel=_rel())
 
 
-@pytest.mark.parametrize("cls", ["GaussianLikelihoodWithUpperLimits", "MixtureGaussianLikelihood",
-                                 "GaussianLikelihoodWithScatter"])
-def test_log_likelihood_jax_refuses_the_subclasses_by_name(lc, cls):
-    """Each is a different density, and ``isinstance`` would silently accept all three."""
+@pytest.mark.parametrize("space", ["flux", "magnitude"])
+def test_log_likelihood_jax_scatter_matches_at_every_sigma(lc, jnp, space):
+    """The scatter arm takes a SECOND argument, so parity has to be checked along it too.
+
+    ``sigma_extra = 0`` must additionally reproduce the plain Gaussian exactly — that is the
+    class's own documented reduction, and it is the one value at which a wrong normaliser hides.
+    """
+    like = wp.GaussianLikelihoodWithScatter(lc, space=space)
+    rng = np.random.default_rng(1)
+    flux = np.abs(np.asarray(lc.flux) * (1.0 + 0.1 * rng.standard_normal(like.y.size)))
+    f = log_likelihood_jax(like)
+    for sigma_extra in (0.0, 0.02, 0.2):
+        assert float(f(jnp.asarray(flux), sigma_extra)) == pytest.approx(
+            like.log_likelihood(flux, sigma_extra=sigma_extra), rel=_rel())
+    assert float(f(jnp.asarray(flux), 0.0)) == pytest.approx(
+        GaussianLikelihood(lc, space=space).log_likelihood(flux), rel=_rel())
+
+
+def _upper_limit_lc(n=24, n_ul=8, seed=0):
+    """A flux light curve whose non-detections carry a limiting flux and a NaN error.
+
+    ``tests/data/at2017gfo.csv`` has no ``upper_limit`` column, so the censored case has to be
+    constructed. NaN in ``flux_err`` on those rows is what whisper's loader writes for a
+    non-detection, and it is exactly what must not reach a plain Gaussian.
+    """
+    rng = np.random.default_rng(seed)
+    t = np.linspace(1.0, 20.0, n)
+    truth = 3e-5 * np.exp(-t / 8.0)
+    ul = np.zeros(n, dtype=bool)
+    ul[rng.choice(n, size=n_ul, replace=False)] = True
+    return wp.LightCurve(time=t, band=np.array(["r"] * n),
+                         flux=np.where(ul, 6e-6, truth + 2e-6 * rng.standard_normal(n)),
+                         flux_err=np.where(ul, np.nan, 2e-6), upper_limit=ul, name="ul")
+
+
+@pytest.mark.parametrize("scale", [1.0, 0.02, 60.0])
+def test_log_likelihood_jax_upper_limits_matches_the_object_it_was_built_from(jnp, scale):
+    """Flux space only — the magnitude branch does not exist on either backend.
+
+    Three regimes, because the censoring term is the only piece with a non-quadratic shape:
+    a model at the data, one far below the limits (``prob -> 1``, log-term -> 0) and one far above
+    (``prob`` into the ``_MIN_PROB`` clip).
+    """
+    ulc = _upper_limit_lc()
+    like = wp.GaussianLikelihoodWithUpperLimits(ulc, space="flux", upper_limit_sigma=3.0)
+    flux = np.abs(scale * 3e-5 * np.exp(-np.asarray(ulc.time) / 8.0))
+    assert float(log_likelihood_jax(like)(jnp.asarray(flux))) == pytest.approx(
+        like.log_likelihood(flux), rel=_rel())
+
+
+@pytest.mark.parametrize("ul", [[False, False, False], [True, True, True]])
+def test_log_likelihood_jax_upper_limits_handles_an_empty_half(jnp, ul):
+    """All-detections and all-censored both drop one of the two terms; neither may drop both."""
+    ulc = wp.LightCurve(time=[1.0, 2.0, 3.0], band=["r"] * 3, flux=[1.0, 0.5, 0.2],
+                        flux_err=[np.nan if u else 0.05 for u in ul], upper_limit=ul)
+    like = wp.GaussianLikelihoodWithUpperLimits(ulc, space="flux")
+    flux = np.array([0.9, 0.55, 0.2])
+    assert float(log_likelihood_jax(like)(jnp.asarray(flux))) == pytest.approx(
+        like.log_likelihood(flux), rel=_rel())
+
+
+def test_log_likelihood_jax_refuses_the_mixture_by_name(lc):
+    """The one remaining refusal, and it is a decision rather than an omission — so the message
+    has to say so, not read as "not implemented yet"."""
     pytest.importorskip("jax")
-    with pytest.raises(NotImplementedError, match=cls):
-        log_likelihood_jax(getattr(wp, cls)(lc, space="flux"))
+    with pytest.raises(NotImplementedError, match="MixtureGaussianLikelihood"):
+        log_likelihood_jax(wp.MixtureGaussianLikelihood(lc, space="flux"))
+
+
+def test_log_likelihood_jax_refuses_a_user_subclass_rather_than_scoring_its_base(lc):
+    """Dispatch is on the exact type. ``isinstance`` would score this as a plain Gaussian."""
+    pytest.importorskip("jax")
+
+    class MyLikelihood(GaussianLikelihood):
+        pass
+
+    with pytest.raises(NotImplementedError, match="MyLikelihood"):
+        log_likelihood_jax(MyLikelihood(lc, space="flux"))
+
+
+def test_log_likelihood_jax_advertises_its_scatter_column(lc):
+    """``.scatter_param`` is how the adapter tells a consumed sampling column from a flat one."""
+    pytest.importorskip("jax")
+    assert log_likelihood_jax(GaussianLikelihood(lc, space="flux")).scatter_param is None
+    assert log_likelihood_jax(
+        wp.GaussianLikelihoodWithScatter(lc, space="flux", scatter_param="s")).scatter_param == "s"
 
 
 # --------------------------------------------------------------------------- kilonova predict_jax

@@ -29,6 +29,7 @@ from ._numpy import (  # noqa: F401
     GaussianLikelihoodWithScatter,
     GaussianLikelihoodWithUpperLimits,
     MixtureGaussianLikelihood,
+    flux_to_space,
     list_likelihoods,
     make_likelihood,
     register_likelihood,
@@ -43,7 +44,7 @@ from ._numpy import _LN2PI, _MIN_FLUX_JY, _MIN_PROB  # noqa: F401
 __all__ = ["GaussianLikelihood", "GaussianLikelihoodWithUpperLimits",
            "MixtureGaussianLikelihood", "GaussianLikelihoodWithScatter",
            "register_likelihood", "list_likelihoods", "make_likelihood",
-           "resolve_space", "log_likelihood_jax"]
+           "resolve_space", "flux_to_space", "log_likelihood_jax"]
 
 _LAZY = {"log_likelihood_jax": "._jax"}
 

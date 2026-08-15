@@ -26,7 +26,8 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = ["MAX_UNCHUNKED_BATCH", "float_dtype", "resolve_band_index",
-           "make_batched_predict_jax", "make_log_prob_jax", "resolve_density"]
+           "make_batched_predict_jax", "make_log_prob_jax", "resolve_density",
+           "resolve_sampling_names"]
 
 #: Largest leading batch axis :func:`make_batched_predict_jax` will vmap in one compiled call.
 #:
@@ -253,10 +254,17 @@ def make_log_prob_jax(lc, model, prior=None, *, space="auto", names=None,
         themselves, so returning a log-posterior would count the prior twice. ``True`` adds the
         prior density, which is what ``emcee_jax`` needs — it samples this function directly and
         contributes nothing of its own.
-    likelihood : object, optional
-        A pre-built whisper likelihood. Defaults to ``make_likelihood(lc, space=space)``.
+    likelihood : str or object, optional
+        A registered ``kind`` name (``"auto"``, ``"gaussian"``, ``"upper_limits"``,
+        ``"gaussian_scatter"``, ...) or an already-built whisper likelihood object. ``None`` means
+        ``"auto"``. The JAX backend implements three of the four registered classes; see
+        :func:`whisper_cbpf.likelihood.log_likelihood_jax` for which, and what each refuses.
+        ``"gaussian_scatter"`` additionally requires its ``scatter_param`` (default ``"sigma"``) to
+        be in ``names`` — that column is read straight out of ``theta`` and passed as
+        ``sigma_extra``, which is what makes the density non-constant in it.
 
-    The returned function carries ``.space``, ``.names``, ``.includes_prior`` and
+    The returned function carries ``.space``, ``.names``, ``.includes_prior``, ``.likelihood``
+    (``type(like).__name__``, for ``result.info["likelihood"]``), ``.scatter_param`` and
     ``.log_likelihood`` (the ``include_prior=False`` twin, so a caller that sampled the posterior
     can still rank draws by likelihood for AIC/BIC).
 
@@ -282,32 +290,45 @@ def make_log_prob_jax(lc, model, prior=None, *, space="auto", names=None,
 
     lows, highs = _box_bounds(prior, names, model.name)
     perm = _gather_permutation(names, model.parameters, getattr(model, "name", "?"))
-    # A prior-only column is fine for the FORWARD MAP (make_batched_predict_jax drops it, which is
-    # the scatter_param case). It is NOT fine here: nothing downstream consumes it -- the JAX
-    # likelihood takes model_flux alone and refuses GaussianLikelihoodWithScatter -- so the density
-    # would be exactly CONSTANT in that parameter. Measured: logL = 71.834030 identically at
-    # sigma = 0.02, 0.1 and 0.4, with d(logL)/d(sigma) == 0.0, where the CPU twin gives 63.516 /
-    # 32.737 / -0.094. The sampler would converge and report the PRIOR as that parameter's
-    # marginal, labelled as a fit. Refuse, as the missing-parameter case does.
-    extra = [n for n in names if n not in set(model.parameters)]
-    if extra:
-        raise ValueError(
-            f"parameter(s) {extra} are in the sampling order but not in model {model.name!r}, so "
-            f"the automatic density would be exactly constant in them and their posterior would be "
-            f"the prior. This is what a `scatter_param` looks like here: the JAX likelihood scores "
-            f"model flux only. Drop them from the prior for this sampler, or pass log_prob_fn= "
-            f"with a density that actually uses them.")
 
-    like = likelihood if likelihood is not None else make_likelihood(lc, space=space)
+    like = (likelihood if not isinstance(likelihood, (str, type(None)))
+            else make_likelihood(lc, kind=(likelihood or "auto"), space=space))
     try:
         loglik = log_likelihood_jax(like)
     except NotImplementedError as exc:
         raise NotImplementedError(
-            f"{exc}\n\nThis density was built automatically from the light curve. "
-            f"`make_likelihood(lc, space={space!r})` chose {type(like).__name__}, most often "
-            f"because the light curve carries upper limits. Either drop them "
-            f"(`lc.select_detections()` or an equivalent mask) so a plain Gaussian is correct, or "
-            f"build `log_prob_fn` yourself and pass it explicitly.") from None
+            f"{exc}\n\nThis density was built automatically from the light curve: "
+            f"`make_likelihood(lc, kind={(likelihood or 'auto')!r}, space={space!r})` chose "
+            f"{type(like).__name__}. Pass `likelihood=` naming a kind the JAX backend implements "
+            f"(gaussian / upper_limits / gaussian_scatter), drop the rows that force this choice "
+            f"(`lc.where(upper_limit=False)`), or build `log_prob_fn` yourself and pass it "
+            f"explicitly.") from None
+
+    # A prior-only column is fine for the FORWARD MAP (make_batched_predict_jax drops it, which is
+    # the scatter_param case). Here it is fine only if the LIKELIHOOD consumes it. When it does not,
+    # nothing downstream does, and the density would be exactly CONSTANT in that parameter.
+    # Measured with a plain Gaussian: logL = 71.834030 identically at sigma = 0.02, 0.1 and 0.4,
+    # with d(logL)/d(sigma) == 0.0, where the CPU twin gives 63.516 / 32.737 / -0.094. The sampler
+    # would converge and report the PRIOR as that parameter's marginal, labelled as a fit. Refuse,
+    # as the missing-parameter case does.
+    scatter_param = getattr(loglik, "scatter_param", None)
+    refused = [n for n in names if n not in set(model.parameters) and n != scatter_param]
+    if refused:
+        raise ValueError(
+            f"parameter(s) {refused} are in the sampling order but neither in model "
+            f"{model.name!r} nor consumed by {type(like).__name__}, so the automatic density would "
+            f"be exactly constant in them and their posterior would be the prior. A free-scatter "
+            f"column is the one exception, and it needs the likelihood that reads it: pass "
+            f"likelihood='gaussian_scatter'. Otherwise drop them from the prior for this sampler, "
+            f"or pass log_prob_fn= with a density that actually uses them.")
+    if scatter_param is not None and scatter_param not in names:
+        raise ValueError(
+            f"{type(like).__name__} fits a free extra scatter on parameter {scatter_param!r}, but "
+            f"that parameter is not in the sampling order {names}. The density would then evaluate "
+            f"it at sigma_extra = 0, which is EXACTLY GaussianLikelihood -- a plain Gaussian fit "
+            f"reported as a scatter fit. Add {scatter_param!r} to the prior (and to names=), or "
+            f"use likelihood='gaussian'.")
+    scatter_idx = None if scatter_param is None else names.index(scatter_param)
 
     bidx = resolve_band_index(lc, model)
     t_ref = jnp.asarray(np.asarray(lc.time if times is None else times, dtype=float),
@@ -323,7 +344,10 @@ def make_log_prob_jax(lc, model, prior=None, *, space="auto", names=None,
         th = safe if perm_j is None else safe[perm_j]
         flux = predict_jax(th, t_ref) if bidx is None else predict_jax(th, t_ref, bidx)
         inside = jnp.all((theta >= lo_j) & (theta <= hi_j))
-        return jnp.where(inside, loglik(flux), -jnp.inf)
+        # `safe`, not `theta`: the clipped value is what the physics saw, and a scatter drawn
+        # outside the box could be <= 0, whose log(var) is a NaN cotangent on the backward pass.
+        ll = loglik(flux) if scatter_idx is None else loglik(flux, safe[scatter_idx])
+        return jnp.where(inside, ll, -jnp.inf)
 
     if include_prior:
         from ...priors import log_prob_jax as prior_log_prob_jax
@@ -342,6 +366,11 @@ def make_log_prob_jax(lc, model, prior=None, *, space="auto", names=None,
     out.space = like.space
     out.names = names
     out.includes_prior = bool(include_prior)
+    # The class name, not the registry key: `samplers.base._LIKELIHOOD_KINDS` maps class name ->
+    # key, and it is what every numpy sampler already records in info["likelihood"] and what
+    # `waic`/`predictive_metrics` read back to score the fit under the density it was fitted with.
+    out.likelihood = type(like).__name__
+    out.scatter_param = scatter_param
     out.log_likelihood = jax.jit(_log_likelihood) if jit else _log_likelihood
     return out
 
@@ -369,11 +398,46 @@ def _box_bounds(prior, names, model_name):
     return np.asarray(lows, dtype=float), np.asarray(highs, dtype=float)
 
 
+def resolve_sampling_names(lc, model, prior, log_prob_fn, space, likelihood):
+    """``(names, likelihood)`` for the samplers that take a scalar density.
+
+    ``names`` is ``model.parameters``, **plus** the resolved likelihood's free-scatter column when
+    the prior supplies it. That column is not a model parameter — it is a likelihood parameter, and
+    ``GaussianLikelihoodWithScatter`` is the only likelihood that reads one — so without this the
+    samplers would build a ``gaussian_scatter`` density and never sample the very parameter it
+    exists to fit, silently returning a plain Gaussian fit (``sigma_extra`` defaults to 0). Nothing
+    is appended when the prior does not carry the column: ``make_log_prob_jax`` then refuses with a
+    message naming it, which is better than a ``KeyError`` out of ``_box_bounds``.
+
+    The likelihood object is returned alongside so the caller can hand it back to
+    ``resolve_density`` instead of building a second one from the same light curve.
+
+    A caller-supplied ``log_prob_fn`` (or a ``model.log_prob_jax``) is left completely alone: for
+    those, ``names`` is the *caller's* contract — ``model.parameters`` order — and appending a
+    column would feed their function a theta of the wrong width.
+    """
+    names = list(model.parameters)
+    if log_prob_fn is not None or getattr(model, "log_prob_jax", None) is not None:
+        return names, likelihood
+
+    from ...likelihood import make_likelihood
+
+    like = (likelihood if not isinstance(likelihood, (str, type(None)))
+            else make_likelihood(lc, kind=(likelihood or "auto"), space=space))
+    sp = getattr(like, "scatter_param", None)
+    if sp is not None and sp not in names and prior is not None and sp in prior.distributions:
+        names.append(sp)
+    return names, like
+
+
 def resolve_density(lc, model, prior, log_prob_fn, space, names, *,
-                    include_prior=False, sampler="this sampler"):
+                    include_prior=False, sampler="this sampler", likelihood="auto"):
     """Shared resolution order for the three samplers that take a scalar ``log_prob_fn``.
 
-    Returns ``(log_prob_fn, space, space_source, fn_source)``.
+    Returns ``(log_prob_fn, space, space_source, fn_source)`` — four elements, unchanged, because
+    all three samplers unpack it positionally. The resolved likelihood travels on the returned
+    function instead, as ``.likelihood``; a caller-supplied density carries no such attribute, and
+    ``getattr(fn, "likelihood", None)`` is what the samplers record.
 
     Order, identical in ``nuts_gpu``, ``pymc_gpu`` and ``emcee_jax``:
 
@@ -433,5 +497,5 @@ def resolve_density(lc, model, prior, log_prob_fn, space, names, *,
             f"register_supernova), or pass log_prob_fn= yourself.")
 
     fn = make_log_prob_jax(lc, model, prior, space=space, names=names,
-                           include_prior=include_prior)
+                           include_prior=include_prior, likelihood=likelihood)
     return fn, fn.space, "density", "auto"

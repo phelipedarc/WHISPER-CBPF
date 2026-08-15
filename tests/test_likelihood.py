@@ -1,6 +1,7 @@
 import pickle
 
 import numpy as np
+import pytest
 
 from whisper_cbpf import LightCurve
 from whisper_cbpf.io.photometry import mag_to_flux_density
@@ -66,6 +67,93 @@ def test_make_likelihood_auto_picks_upper_limits():
     lc = LightCurve(time=[1.0, 2.0], band=["r", "r"], flux=[1.0, 0.3], flux_err=[0.1, np.nan],
                     upper_limit=[False, True])
     assert isinstance(make_likelihood(lc), GaussianLikelihoodWithUpperLimits)
+
+
+def test_upper_limits_survival_term_is_not_flat_in_the_tail():
+    """``0.5*(1 + erf(z/sqrt2))`` saturated at the ``_MIN_PROB`` clip for ``z <~ -8.3``.
+
+    That gave one flat value (-69.0776) with zero gradient over the whole range a sampler has to
+    cross to bring an over-bright model back under a limit — measured 26 log units wrong at
+    ``z = -8.94``. ``ndtr`` computes the same function through ``erfc`` and has no cancellation.
+    """
+    lc = LightCurve(time=[1.0], band=["r"], flux=[1.0], flux_err=[np.nan], upper_limit=[True])
+    lik = GaussianLikelihoodWithUpperLimits(lc, space="flux", upper_limit_sigma=1.0)
+    # sigma_ul = limit / 1 = 1, so model = 1 - z puts the row at exactly z.
+    ll = [lik.log_likelihood(np.array([1.0 - z])) for z in (-8.0, -8.5, -9.0, -10.0, -11.0)]
+    assert all(a > b for a, b in zip(ll, ll[1:])), f"survival term is flat in the tail: {ll}"
+    assert ll[1] == pytest.approx(-39.1974, abs=1e-3)      # z=-8.5: was clipped to -69.0776
+    # ... and it still bottoms out at the clip rather than going to -inf.
+    assert lik.log_likelihood(np.array([1e6])) == pytest.approx(np.log(1e-30))
+
+
+def test_upper_limits_refuses_magnitude_space():
+    """The magnitude branch was REMOVED, so this has to fail loudly rather than fall back.
+
+    A non-detection is a statement about flux; the magnitude of zero flux is undefined. The old
+    branch widened every limit by the Pogson constant instead of by the data, and it had no JAX
+    twin — one density, two backends, is the point.
+    """
+    mlc = LightCurve(time=[1.0, 2.0], band=["r", "r"], magnitude=[20.0, 22.0],
+                     magnitude_err=[0.1, np.nan], upper_limit=[False, True])
+    for space in ("magnitude", "auto"):          # 'auto' resolves to magnitude for magnitude data
+        with pytest.raises(ValueError, match="flux-only"):
+            GaussianLikelihoodWithUpperLimits(mlc, space=space)
+    # ... and the same data IS fittable once it is in flux space.
+    lik = GaussianLikelihoodWithUpperLimits(mlc.add_flux(), space="flux")
+    assert np.isfinite(lik.log_likelihood(np.array([1e-8, 1e-11])))
+
+
+def test_make_likelihood_auto_refuses_magnitude_upper_limits():
+    """``kind='auto'`` must not route magnitude data with non-detections into the removed branch."""
+    mlc = LightCurve(time=[1.0, 2.0], band=["r", "r"], magnitude=[20.0, 22.0],
+                     magnitude_err=[0.1, np.nan], upper_limit=[False, True])
+    with pytest.raises(ValueError, match="flux-only"):
+        make_likelihood(mlc)
+
+
+def test_gaussian_on_upper_limits_fails_loudly_instead_of_returning_nan():
+    """Forcing ``likelihood='gaussian'`` on censored rows used to give a silent NaN fit.
+
+    ``_log_norm`` sums ``log(sigma)`` over every row, so the single NaN error bar of the
+    non-detection made ``log_likelihood`` NaN at EVERY parameter value — and every sampler
+    completes on that and reports NaN scores as a result.
+    """
+    lc = LightCurve(time=[1.0, 2.0], band=["r", "r"], flux=[1.0, 0.3], flux_err=[0.1, np.nan],
+                    upper_limit=[False, True])
+    with pytest.raises(ValueError, match="upper_limit=True"):
+        make_likelihood(lc, kind="gaussian")
+    # Two layers, and the second one matters on its own: the flag catches the censored rows, but a
+    # DETECTION with a missing or zero error bar is just as fatal and carries no flag to catch it.
+    bad = LightCurve(time=[1.0, 2.0], band=["r", "r"], flux=[1.0, 0.3], flux_err=[0.1, 0.0])
+    with pytest.raises(ValueError, match="not finite and positive"):
+        GaussianLikelihood(bad, space="flux")
+
+
+def test_free_scatter_and_upper_limits_are_refused_as_a_combination():
+    """There is no combined scatter + censoring likelihood, so the conflict must not be silent.
+
+    The metrics layer builds ``GaussianLikelihoodWithScatter`` whenever a fit has a scatter column,
+    which on a censored light curve used to drop the censoring term without a word — a plain
+    scatter fit reported as a fit to data that includes non-detections. The refusal is on the
+    ``upper_limit`` FLAG, not on the NaN error bar, so a limit carrying a finite placeholder error
+    is caught too.
+    """
+    from whisper_cbpf.likelihood import GaussianLikelihoodWithScatter
+
+    for err in (np.nan, 0.1):        # NaN limits and finite-placeholder limits alike
+        lc = LightCurve(time=[1.0, 2.0], band=["r", "r"], flux=[1.0, 0.3], flux_err=[0.1, err],
+                        upper_limit=[False, True])
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            GaussianLikelihoodWithScatter(lc, space="flux")
+
+
+def test_upper_limits_tolerates_the_nan_errors_it_is_built_for():
+    """The detections-only normaliser is the reason this class survives what the base refuses."""
+    lc = LightCurve(time=[1.0, 2.0], band=["r", "r"], flux=[1.0, 0.3], flux_err=[0.1, np.nan],
+                    upper_limit=[False, True])
+    lik = GaussianLikelihoodWithUpperLimits(lc, space="flux")
+    assert np.isfinite(lik.log_likelihood(np.array([1.0, 0.05])))
+    assert np.all(np.isfinite(lik.log_likelihood_pointwise(np.array([1.0, 0.05]))))
 
 
 def test_mixture_tolerates_outlier():

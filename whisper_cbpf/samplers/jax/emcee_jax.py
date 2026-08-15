@@ -125,7 +125,7 @@ def _init_walkers(nwalkers, lows, highs, seed):
 
 
 def fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nsteps=5000, burnin=1000,
-                  thin=10, seed=0, progress=False, space="auto",
+                  thin=10, seed=0, progress=False, space="auto", likelihood="auto",
                   walker_chunk=DEFAULT_WALKER_CHUNK) -> SamplerResult:
     """Arm A(1): emcee vectorized against a jitted JAX log-density.
 
@@ -147,24 +147,31 @@ def fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nstep
 
     If you pass ``log_prob_fn`` yourself, pass a log-**posterior**; a pure likelihood silently
     imposes a flat box.
+
+    ``likelihood`` selects the registered likelihood ``kind`` for the auto-built density —
+    ``"auto"``, ``"gaussian"``, ``"upper_limits"`` (flux space only), ``"gaussian_scatter"``. It is
+    ignored when ``log_prob_fn`` is supplied. With ``"gaussian_scatter"`` the prior's
+    ``scatter_param`` column (default ``"sigma"``) becomes a sampled walker dimension routed to the
+    likelihood instead of to ``model.predict``. The resolved class lands in ``info["likelihood"]``.
     """
     import jax
     import jax.numpy as jnp
 
     from ._adapters import float_dtype, resolve_density as _resolve_density
+    from ._adapters import resolve_sampling_names as _resolve_sampling_names
 
     model = get_model(model) if isinstance(model, str) else model
     prior = prior if prior is not None else model.default_prior
     if prior is None:
         raise ValueError(f"No prior available for model {model.name!r}; pass prior=...")
-    names = list(model.parameters)
+    names, likelihood = _resolve_sampling_names(lc, model, prior, log_prob_fn, space, likelihood)
     lows = np.array([prior.distributions[nm].bounds[0] for nm in names], dtype=float)
     highs = np.array([prior.distributions[nm].bounds[1] for nm in names], dtype=float)
     ndim = len(names)
 
     log_prob_fn, space, space_source, fn_source = _resolve_density(
         lc, model, prior, log_prob_fn, space, names,
-        include_prior=True, sampler="emcee_jax")
+        include_prior=True, sampler="emcee_jax", likelihood=likelihood)
     # Rank draws by LIKELIHOOD for AIC/BIC even though we SAMPLE the posterior.
     loglik_fn = getattr(log_prob_fn, "log_likelihood", None)
 
@@ -218,6 +225,11 @@ def fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nstep
         "nwalkers": int(nwalkers), "nsteps": int(nsteps), "burnin": int(burnin), "thin": int(thin),
         "space": space, "seed": int(seed),
         "space_source": space_source, "log_prob_fn": fn_source,
+        # `type(likelihood).__name__` -- the key `samplers.base._LIKELIHOOD_KINDS` maps back to a
+        # registry name so `waic`/`predictive_metrics` re-score under the density that was fitted.
+        # None when the caller supplied their own log_prob_fn: we do not know then.
+        "likelihood": getattr(log_prob_fn, "likelihood", None),
+        "scatter_param": getattr(log_prob_fn, "scatter_param", None),
         "x64": bool(jax.config.jax_enable_x64),
         "walker_chunk": (int(walker_chunk) if walker_chunk else None),
         "max_log_likelihood_is": ("likelihood" if loglik_fn is not None else "sampled density"),
@@ -313,9 +325,10 @@ class EmceeJAXSampler(BaseSampler):
     benchmark calls it directly). This class is the thin ``BaseSampler`` shell whisper needs:
     ``get_sampler(name)`` constructs with zero arguments, so every option travels through ``fit``.
 
-    Registered, unlike ``snpe_gpu``, because this sampler is genuinely model-agnostic -- it consumes
-    a ``log_prob_fn`` and never touches a specific forward model. ``fit_emcee_numpy`` in this same
-    module is NOT registered for the opposite reason: it hard-wires the flare spec.
+    Registered because this sampler is genuinely model-agnostic -- it consumes a ``log_prob_fn`` and
+    never touches a specific forward model. ``fit_emcee_numpy`` in this same module is NOT
+    registered for the opposite reason: it hard-wires the flare spec. (``snpe_gpu`` used to be the
+    other example here; it became model-agnostic and is now registered too.)
     """
 
     name = "emcee_jax"
@@ -324,8 +337,9 @@ class EmceeJAXSampler(BaseSampler):
         """Fit via emcee against a jitted JAX log-density. See :func:`fit_emcee_jax`.
 
         ``log_prob_fn`` is optional: omit it and one is built from ``model.predict_jax`` and the
-        likelihood implied by ``space=``. If you do pass one, pass a log-**POSTERIOR** -- emcee has
-        no prior mechanism of its own, so a pure log-likelihood silently imposes a flat box. That
-        differs from ``nuts_gpu``, which wants a pure likelihood; see :func:`fit_emcee_jax`.
+        likelihood ``likelihood=``/``space=`` imply. If you do pass one, pass a log-**POSTERIOR** --
+        emcee has no prior mechanism of its own, so a pure log-likelihood silently imposes a flat
+        box. That differs from ``nuts_gpu``, which wants a pure likelihood; see
+        :func:`fit_emcee_jax`.
         """
         return fit_emcee_jax(lc, model, log_prob_fn, prior=prior, **kwargs)

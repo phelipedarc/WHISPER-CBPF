@@ -8,9 +8,9 @@ in the package docstring (``whisper_cbpf/likelihood/__init__.py``); the JAX twin
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import erf
+from scipy.special import ndtr
 
-from ..io.photometry import AB_ZEROPOINT_JY, POGSON, flux_density_to_mag
+from ..io.photometry import AB_ZEROPOINT_JY, flux_density_to_mag
 
 _LN2PI = np.log(2.0 * np.pi)
 _MIN_FLUX_JY = 1e-300       # floor a (clipped) model flux before log10 in the flux->magnitude transform
@@ -42,8 +42,39 @@ def resolve_space(lc, space):
 _resolve_space = resolve_space
 
 
+def flux_to_space(model_flux, space, zeropoint_jy=AB_ZEROPOINT_JY):
+    """Convert a **model** flux [Jy] into an already-resolved comparison ``space``.
+
+    Flux space is the identity. Magnitude space clips at ``_MIN_FLUX_JY`` before converting, so a
+    non-positive model flux maps to a very faint magnitude (~+759) — a large but FINITE chi-square
+    penalty. That keeps the log-likelihood finite (such draws are effectively rejected rather than
+    NaN-ed) and avoids spurious non-finite values that WAIC would otherwise drop. It is the
+    model-side counterpart of :func:`whisper_cbpf.io.photometry.flux_density_to_mag`, which returns
+    NaN instead because inventing a magnitude for a *measured* negative flux would fabricate a
+    detection.
+
+    ``space`` must already be ``'flux'`` or ``'magnitude'`` — pass ``resolve_space(lc, space)``.
+    Module-level for the same reason :func:`resolve_space` is: a caller that needs only the
+    CONVERSION should not have to build a likelihood to reach it, and a second copy of the floor is
+    how the two would drift. :meth:`GaussianLikelihood.model_in_space` is this function bound to the
+    instance's space and zero point.
+    """
+    if space not in ("flux", "magnitude"):
+        raise ValueError(f"flux_to_space needs a resolved space ('flux' or 'magnitude'), got "
+                         f"{space!r}; pass resolve_space(lc, space).")
+    mf = np.asarray(model_flux, dtype=float)
+    if space == "magnitude":
+        return flux_density_to_mag(np.clip(mf, _MIN_FLUX_JY, None), zeropoint_jy=zeropoint_jy)
+    return mf
+
+
 class GaussianLikelihood:
     """Independent-Gaussian likelihood in flux or magnitude space."""
+
+    #: Does this class READ ``lc.upper_limit``? Only :class:`GaussianLikelihoodWithUpperLimits`
+    #: does. Every other likelihood here would score a limiting flux as though it were a
+    #: measurement, so instead of doing that quietly it refuses the data -- see :meth:`__init__`.
+    _handles_upper_limits = False
 
     def __init__(self, lc, space="auto", zeropoint_jy=AB_ZEROPOINT_JY):
         self.space = _resolve_space(lc, space)
@@ -67,17 +98,64 @@ class GaussianLikelihood:
                 "the light curve has no data points, so there is nothing to fit. A common cause is "
                 "calling select_time_window(...) BEFORE set_explosion_date(...) -- the window is "
                 "then compared against raw MJD. Check lc.n_points after each selection step.")
+        self._check_censoring(lc)
+        self._check_errors(lc)
         self._log_norm = -0.5 * np.sum(_LN2PI + 2.0 * np.log(self.sigma))
 
+    def _check_censoring(self, lc):
+        """Refuse a light curve carrying non-detections, unless this class models them.
+
+        Two silent wrongs, one rule. (1) Whisper's loader stores **NaN** in the error column of an
+        ``upper_limit=True`` row, and ``_log_norm`` sums ``log(sigma)`` over every row -- so one
+        such row makes ``log_likelihood`` NaN at every parameter value, and every sampler completes
+        on that and reports NaN ``max_log_likelihood``/``aic``/``bic`` as a result. (2) When the
+        limits happen to carry a *finite* placeholder error instead, nothing is NaN and the
+        limiting flux is fitted as if it were a measurement -- the censoring information is
+        dropped without a word. That second case is how a ``gaussian_scatter`` fit on a censored
+        light curve silently becomes a plain scatter fit: there is no combined
+        scatter-and-censoring likelihood in this package, and picking one of the two in silence is
+        the worst of the three available answers.
+        """
+        ul = lc.upper_limit
+        if self._handles_upper_limits or ul is None:
+            return
+        n_ul = int(np.sum(np.asarray(ul, dtype=bool)))
+        if n_ul:
+            raise ValueError(
+                f"{type(self).__name__} does not model censoring, but {n_ul} of "
+                f"{int(np.size(ul))} rows are flagged upper_limit=True. A non-detection is a "
+                f"CENSORED measurement, not a measurement with an error bar: its y value is a "
+                f"limit and its error bar is typically NaN, which would make the log-likelihood "
+                f"NaN at every parameter value. Use likelihood='upper_limits' with space='flux', "
+                f"which models the censoring, or drop those rows with lc.where(upper_limit=False) "
+                f"and fit the detections alone. (There is no combined free-scatter + upper-limit "
+                f"likelihood; the two are mutually exclusive here.)")
+
+    def _check_errors(self, lc, mask=None):
+        """Refuse an error bar that is not finite and positive, BEFORE it becomes a NaN fit.
+
+        ``_log_norm`` sums ``log(sigma)`` over every row and ``log_likelihood`` divides the residual
+        by it, so ONE NaN sigma makes the log-likelihood NaN at every parameter value. The censored
+        rows are handled earlier by :meth:`_check_censoring`; this catches the rest — a detection
+        with a missing or zero error bar, which is just as fatal and much easier to overlook.
+
+        ``mask`` restricts the check to the rows this likelihood actually divides by; see
+        :meth:`GaussianLikelihoodWithUpperLimits._check_errors`, the only override.
+        """
+        bad = ~(np.isfinite(self.sigma) & (self.sigma > 0.0))
+        if mask is not None:
+            bad = bad & np.asarray(mask, dtype=bool)
+        if not np.any(bad):
+            return
+        raise ValueError(
+            f"{type(self).__name__} in {self.space} space was given {int(np.sum(bad))} of "
+            f"{self.sigma.size} error bar(s) that are not finite and positive, so the "
+            f"log-likelihood would be NaN at every parameter value and the fit would report NaN "
+            f"scores rather than failing. Fix or drop those rows.")
+
     def model_in_space(self, model_flux):
-        mf = np.asarray(model_flux, dtype=float)
-        if self.space == "magnitude":
-            # A non-positive model flux has no magnitude; clip to a tiny floor so it maps to a very
-            # faint magnitude (~+759) -> a large but FINITE chi-square penalty. This keeps the
-            # log-likelihood finite (so it effectively rejects, rather than NaN-ing, such draws) and
-            # avoids spurious non-finite values that would otherwise be dropped by WAIC.
-            return flux_density_to_mag(np.clip(mf, _MIN_FLUX_JY, None), zeropoint_jy=self.zeropoint_jy)
-        return mf
+        """This instance's :func:`flux_to_space` — the model flux in the comparison space."""
+        return flux_to_space(model_flux, self.space, self.zeropoint_jy)
 
     def log_likelihood(self, model_flux):
         res = (self.y - self.model_in_space(model_flux)) / self.sigma
@@ -94,27 +172,81 @@ class GaussianLikelihood:
 
 
 class GaussianLikelihoodWithUpperLimits(GaussianLikelihood):
-    """Gaussian for detections + a CDF/survival term for upper limits (non-detections).
+    """Gaussian for detections + a censoring (CDF) term for upper limits — **flux space only**.
 
-    Upper-limit ``y`` values are the limiting flux/magnitude. ``upper_limit_sigma`` is the N-sigma
-    level of those limits (e.g. 3.0 for 3-sigma). Flux space treats a limit as "true value < limit";
-    magnitude space as "true value > limit" (fainter than the limit).
+    Upper-limit ``y`` values are the limiting flux in Jy. ``upper_limit_sigma`` is the N-sigma level
+    of those limits (e.g. 3.0 for 3-sigma), so a limit contributes
+    ``P(true flux < limit) = Phi((limit - model) / (limit / upper_limit_sigma))``.
+
+    ``space='magnitude'`` is **refused**. A non-detection is a statement about FLUX -- "the source
+    was fainter than this limiting flux" -- and the magnitude of zero flux is undefined
+    (``-2.5 log10(0) = +inf``), so the censoring integral has no magnitude-space counterpart that
+    is a bound on the same quantity. This class used to carry a magnitude branch (a survival term
+    ``1 - Phi((limit - model) / (POGSON / upper_limit_sigma))`` with a width that came from the
+    Pogson constant rather than from the data); it was removed deliberately rather than ported to
+    the JAX backend, so the two backends implement one density and not two. Convert with
+    ``lc.add_flux()`` and pass ``space='flux'``.
     """
 
+    _handles_upper_limits = True
+
     def __init__(self, lc, space="auto", upper_limit_sigma=3.0, zeropoint_jy=AB_ZEROPOINT_JY):
+        # Refused BEFORE super().__init__ so nothing is half-built, and resolved through the same
+        # rule the base class uses so `space='auto'` on magnitude data is caught too.
+        if _resolve_space(lc, space) == "magnitude":
+            raise ValueError(
+                f"{type(self).__name__} is flux-only; space={space!r} resolves to 'magnitude'. A "
+                f"non-detection is a statement about FLUX -- the source was fainter than a "
+                f"limiting flux -- and the magnitude of zero flux is undefined "
+                f"(-2.5*log10(0) = +inf), so there is no magnitude-space censoring integral over "
+                f"the same quantity. Pass space='flux' (lc.add_flux() supplies the flux columns), "
+                f"or fit the detections alone with lc.where(upper_limit=False).")
         super().__init__(lc, space=space, zeropoint_jy=zeropoint_jy)
         ul = lc.upper_limit
         self.detections = np.ones(self.y.size, dtype=bool) if ul is None else ~np.asarray(ul, dtype=bool)
         self.upper_limit_sigma = float(upper_limit_sigma)
         if np.any(~self.detections) and np.any(~np.isfinite(self.y[~self.detections])):
-            raise ValueError("Upper limits require finite limiting values (flux or magnitude).")
+            raise ValueError("Upper limits require finite limiting fluxes.")
         det = self.detections
         self._log_norm_det = (-0.5 * np.sum(_LN2PI + 2.0 * np.log(self.sigma[det]))
                               if np.any(det) else 0.0)
 
+    def _check_errors(self, lc, mask=None):
+        """Only the DETECTIONS need a usable error bar.
+
+        The censored rows carry their own width, ``limit / upper_limit_sigma``, and whisper's loader
+        stores NaN in ``flux_err`` for a non-detection -- which is exactly why ``_log_norm_det`` is
+        computed over detections only.
+        """
+        ul = lc.upper_limit
+        det = np.ones(self.sigma.size, dtype=bool) if ul is None else ~np.asarray(ul, dtype=bool)
+        super()._check_errors(lc, mask=det if mask is None else (det & np.asarray(mask, dtype=bool)))
+
     @staticmethod
     def _cdf(x):
-        return 0.5 * (1.0 + erf(x / np.sqrt(2.0)))
+        """Standard normal CDF, via ``ndtr`` rather than ``0.5 * (1 + erf(x / sqrt(2)))``.
+
+        Mathematically the same function; numerically not. ``1 + erf(w)`` cancels catastrophically
+        in the left tail, and this term lives in that tail — it is evaluated exactly when a model
+        is far ABOVE an upper limit, which is where the likelihood has to push back hardest.
+        Measured on the same eight non-detections, ``log P`` per row:
+
+        ==========  =====================  ============  ===================
+        ``z``       ``0.5(1+erf)`` float64  ``ndtr``      what changed
+        ==========  =====================  ============  ===================
+        -4.90       -14.5464826            -14.5464826   nothing
+        -8.94       **-69.0775528**        -43.0720974   26 log units
+        -10.24      **-69.0775528**        -55.6570429   13 log units
+        ==========  =====================  ============  ===================
+
+        ``erf`` returns exactly -1 for ``w <= -8.3`` in float64, so the old form floored every such
+        row at the ``_MIN_PROB`` clip: a FLAT plateau of -69.0776 with zero gradient across the
+        whole range a gradient sampler has to cross to bring the model back under the limit.
+        ``ndtr`` calls ``erfc`` on the tail and has no cancellation, which is also what makes the
+        JAX twin agree in float32 (measured: -55.6570396 against this function's -55.6570429,
+        where the ``erf`` form gave -14.6896 against -14.5465 at ``z = -4.90`` alone).
+        """
+        return ndtr(x)
 
     def log_likelihood(self, model_flux):
         m = self.model_in_space(model_flux)
@@ -126,12 +258,8 @@ class GaussianLikelihoodWithUpperLimits(GaussianLikelihood):
         ul = ~det
         if np.any(ul):
             limit, model_ul = self.y[ul], m[ul]
-            if self.space == "magnitude":
-                sigma_ul = POGSON / self.upper_limit_sigma
-                prob = 1.0 - self._cdf((limit - model_ul) / sigma_ul)   # true mag > limit (fainter)
-            else:
-                sigma_ul = limit / self.upper_limit_sigma
-                prob = self._cdf((limit - model_ul) / sigma_ul)         # true flux < limit
+            sigma_ul = limit / self.upper_limit_sigma
+            prob = self._cdf((limit - model_ul) / sigma_ul)             # true flux < limit
             ll += float(np.sum(np.log(np.clip(prob, _MIN_PROB, 1.0 - _MIN_PROB))))
         return float(ll)
 
@@ -146,10 +274,7 @@ class GaussianLikelihoodWithUpperLimits(GaussianLikelihood):
         ul = ~det
         if np.any(ul):
             limit, model_ul = self.y[ul], m[ul]
-            if self.space == "magnitude":
-                prob = 1.0 - self._cdf((limit - model_ul) / (POGSON / self.upper_limit_sigma))
-            else:
-                prob = self._cdf((limit - model_ul) / (limit / self.upper_limit_sigma))
+            prob = self._cdf((limit - model_ul) / (limit / self.upper_limit_sigma))
             out[ul] = np.log(np.clip(prob, _MIN_PROB, 1.0 - _MIN_PROB))
         return out
 
