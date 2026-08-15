@@ -96,7 +96,7 @@ wp.list_models()
 |---|---|---|
 | `bazin`, `gaussian_rise`, `flare` | empirical rise/fall shapes | — |
 | `mck19` | analytic kilonova | — |
-| `two_component_kilonova` | blue + red kilonova (redback) | `[models]` |
+| `two_component_kilonova` | blue + red kilonova (redback, CPU) | `[models]` |
 | `flare_jax` | JAX flare | `[gpu]` |
 
 Physical JAX models are built on demand, because they need your bands and distance:
@@ -105,11 +105,26 @@ Physical JAX models are built on demand, because they need your bands and distan
 import jax; jax.config.update("jax_enable_x64", True)   # FIRST -- before any array exists
 import whisper_cbpf as wp
 
-kn  = wp.register_kilonova(["sdssg"], redshift=0.0098, dl_cm=1.23e26)
-kn2 = wp.register_kilonova_two(["sdssg"], redshift=0.0098, dl_cm=1.23e26)
+kn  = wp.register_kilonova(["sdssg"], redshift=0.0098, dl_cm=1.23e26)        # one component
+kn2 = wp.register_kilonova_two(["sdssg"], redshift=0.0098, dl_cm=1.23e26)    # blue + red
+kn3 = wp.register_kilonova_three(["sdssg"], redshift=0.0098, dl_cm=1.23e26)  # blue + purple + red
 tde = wp.register_tde(["sdssg"], redshift=0.0098, dl_cm=1.23e26)
 sn  = wp.register_supernova(["sdssg"], redshift=0.0098, dl_cm=1.23e26)
 ```
+
+The multi-component kilonovae default to **Villar et al. (2017)** priors, with each component given
+its own **disjoint opacity corridor**:
+
+| component | `kappa` prior | Villar's fixed value |
+|---|---|---|
+| blue (lanthanide-poor) | U(0.1, 1.0) | 0.5 cm² g⁻¹ |
+| purple (3-component only) | U(1.0, 5.0) | 3 cm² g⁻¹ |
+| red (lanthanide-rich) | U(5.0, 30.0) — U(1.0, 30.0) with no purple | 10 cm² g⁻¹ |
+
+The name of a component is cosmetic; **the opacity corridor is what makes it blue, purple or red**.
+Keeping the corridors disjoint also means the components cannot swap labels, so the posterior has no
+mirror modes to average over. Villar's white-noise term `sigma` is a *likelihood* parameter, not a
+model one — fit it with `likelihood="scatter"`.
 
 `float64` is **mandatory** for the TDE and every supernova — they raise at the first `predict`
 without it, rather than returning a wrong answer.
@@ -162,8 +177,10 @@ Honest list, so you do not discover these in review:
   anything you intend to publish, and check `result.info["converged"]`.
 * **No sampler has a published calibration result yet.** Simulation-based calibration is in
   progress; until it lands, treat credible intervals as unvalidated.
-* **Two-component kilonova components are exchangeable.** Nothing enforces "component 1 is blue", so
-  fits can label-switch. Impose disjoint `kappa` ranges in your prior if that matters.
+* **The redback CPU model `two_component_kilonova` has exchangeable components.** Its prior gives
+  both the same `kappa` range, so fits can label-switch. The JAX models
+  (`kilonova_two_jax`, `kilonova_three_jax`) do not have this problem — their default Villar priors
+  use disjoint corridors. Impose disjoint `kappa` ranges yourself if you use the redback model.
 * **A WAIC whose `p_waic` is flagged unreliable is not a number** — check the flag before quoting it.
 
 ## Documentation

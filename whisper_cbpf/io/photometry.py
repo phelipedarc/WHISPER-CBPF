@@ -39,7 +39,10 @@ def flux_density_to_mag(flux, flux_err=None, zeropoint_jy=AB_ZEROPOINT_JY):
     instead, because a model that predicts zero flux should score as "very faint" rather than poison
     a fit with NaN. The floored ones, all agreeing at 758.90 mag in float64 and ~103.72 in float32:
 
-    * :meth:`whisper_cbpf.likelihood.GaussianLikelihood.model_in_space` (pre-clips, then calls this)
+    * :func:`whisper_cbpf.likelihood.flux_to_space` (pre-clips, then calls this) — and with it
+      :meth:`whisper_cbpf.likelihood.GaussianLikelihood.model_in_space`, which is that function
+      bound to the instance, and :func:`whisper_cbpf.metrics.per_band_metrics`, which calls it
+      directly
     * :func:`whisper_cbpf.likelihood._jax.log_likelihood_jax`
     * :func:`whisper_cbpf.samplers.jax.abc_gpu._model_in_space_jnp`
     * :func:`whisper_cbpf.samplers.snpe._torch_model_in_space`

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 __all__ = ["flare_model", "kilonova_model", "register_kilonova",
            "kilonova_two_model", "register_kilonova_two",
+           "kilonova_three_model", "register_kilonova_three",
            "tde_model", "register_tde",
            "supernova_model", "supernova_models", "register_supernova"]
 

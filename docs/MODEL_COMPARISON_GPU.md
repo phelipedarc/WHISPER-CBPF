@@ -1,8 +1,9 @@
 # Model comparison on GPU
 
-The same job as [`MODEL_COMPARISON_CPU.md`](MODEL_COMPARISON_CPU.md) — the **two-component
-kilonova** with a **personalised prior** — but with the JAX models and GPU samplers, where larger
-budgets become affordable.
+The same job as [`MODEL_COMPARISON_CPU.md`](MODEL_COMPARISON_CPU.md) — fitting and comparing
+multi-component kilonovae — but with the JAX models and GPU samplers, where larger budgets become
+affordable. Here the defaults are already the physically motivated Villar+2017 priors, so the page
+also answers the question a kilonova paper asks: **one component, two, or three?**
 
 ```bash
 pip install "whisper-cbpf[gpu] @ git+https://github.com/phelipedarc/WHISPER-CBPF.git"
@@ -82,36 +83,64 @@ time for very little change in a broad band.
 > ### The JAX and redback two-component models are not interchangeable
 >
 > ```
-> two_component_kilonova (redback, CPU):  mej_1, vej_1, kappa_1, temperature_floor_1, ... + redshift   (9)
-> kilonova_two_jax       (JAX,     GPU):  mej_1, vej_1, temperature_floor_1, kappa_1, ...              (8)
+> two_component_kilonova (redback, CPU):  mej_1,    vej_1,    kappa_1,    temperature_floor_1,    ... + redshift  (9)
+> kilonova_two_jax       (JAX,     GPU):  mej_blue, vej_blue, temperature_floor_blue, kappa_blue, ...             (8)
 > ```
 >
-> `kappa` and `temperature_floor` are **in the opposite order**, and the JAX model has no `redshift`
-> parameter — it is fixed when you register it. A prior written for one and reused on the other will
-> fit something you did not intend. Always build the prior from `model.parameters`.
+> Three differences, any one of which silently changes what you fit: the names differ, `kappa` and
+> `temperature_floor` are **in the opposite order**, and the JAX model has no `redshift` parameter —
+> it is fixed when you register it. Always build the prior from `model.parameters`.
 
-## 2. A personalised prior, in the model's own order
+## 2. The default prior is already the physical one
+
+You do not have to build a prior to get a sensible fit. The JAX kilonovae ship with
+**Villar et al. (2017)** priors, and the thing that makes them physical is that each component gets
+its own **disjoint opacity corridor**:
+
+| component | `kappa` prior | Villar's fixed value |
+|---|---|---|
+| blue (lanthanide-poor) | U(0.1, 1.0) | 0.5 cm² g⁻¹ |
+| purple (three-component only) | U(1.0, 5.0) | 3 cm² g⁻¹ |
+| red (lanthanide-rich) | U(5.0, 30.0) — U(1.0, 30.0) when there is no purple | 10 cm² g⁻¹ |
+
+**The label is cosmetic; the corridor is what makes a component blue, purple or red.** Keeping them
+disjoint also removes label switching at the source: with identical per-component priors the
+posterior is exactly symmetric under relabelling, every mode has a mirror twin, chains lock into
+different labellings, and `r-hat` then measures which labelling each chain fell into rather than
+convergence. Disjoint corridors mean there is nothing to relabel.
+
+Inspect what you are about to fit:
+
+```python
+for n in two.parameters:
+    d = two.default_prior.distributions[n]
+    print(f"{n:24s} {type(d).__name__}({d.low}, {d.high})")
+```
+
+To personalise it — a measured redshift, a mass range you trust — build a `Prior` **in the model's
+own parameter order** and pass `prior=`:
 
 ```python
 prior = wp.Prior({
-    "mej_1":               wp.Uniform(0.01, 0.03,     name="mej_1"),
-    "vej_1":               wp.Uniform(0.15, 0.45,     name="vej_1"),
-    "temperature_floor_1": wp.LogUniform(1000., 6000., name="temperature_floor_1"),
-    "kappa_1":             wp.Uniform(1.0,  5.0,      name="kappa_1"),
-    "mej_2":               wp.Uniform(0.01, 0.03,     name="mej_2"),
-    "vej_2":               wp.Uniform(0.05, 0.20,     name="vej_2"),
-    "temperature_floor_2": wp.LogUniform(100., 1000.,  name="temperature_floor_2"),
-    "kappa_2":             wp.Uniform(10.0, 30.0,     name="kappa_2"),
+    "mej_blue":               wp.Uniform(1e-3, 0.1,      name="mej_blue"),
+    "vej_blue":               wp.Uniform(0.03, 0.40,     name="vej_blue"),
+    "temperature_floor_blue": wp.LogUniform(100., 5000., name="temperature_floor_blue"),
+    "kappa_blue":             wp.Uniform(0.1,  1.0,      name="kappa_blue"),
+    "mej_red":                wp.Uniform(1e-3, 0.1,      name="mej_red"),
+    "vej_red":                wp.Uniform(0.01, 0.30,     name="vej_red"),
+    "temperature_floor_red":  wp.LogUniform(100., 5000., name="temperature_floor_red"),
+    "kappa_red":              wp.Uniform(1.0,  30.0,     name="kappa_red"),
 })
 
 assert list(prior.names) == list(two.parameters)     # cheap, and worth it
 ```
 
-**The `kappa` corridors are disjoint** — `[1, 5]` for the blue component and `[10, 30]` for the red.
-The model's default prior gives both components the *same* `[1, 30]` range, which makes them
-exchangeable: swap component 1 and component 2 and the likelihood is identical. That is label
-switching, and it yields a bimodal posterior that more sampling will never fix. Disjoint corridors
-remove the symmetry by construction.
+If you narrow a bound, check afterwards that the posterior has not simply moved onto it — see
+[Check whether the posterior is railed](#check-whether-the-posterior-is-railed).
+
+> **`sigma` is not a model parameter.** Villar's white-noise term belongs to the likelihood. Fit it
+> with `likelihood="scatter"`; adding it as a prior column the model cannot consume is refused by
+> the density adapter, deliberately.
 
 ## 3. Load the data and fit
 
@@ -131,112 +160,123 @@ runs = [
 
 results = {}
 for sampler, kwargs in runs:
-    r = wp.fit(lc, two.name, sampler=sampler, prior=prior, space="magnitude", seed=0, **kwargs)
+    r = wp.fit(lc, two.name, sampler=sampler, space="magnitude", seed=0, **kwargs)
     results[sampler] = r
     print(f"{sampler:26s} AIC={r.aic:9.2f} BIC={r.bic:9.2f} conv={r.info.get('converged')}")
 ```
 
-Measured on one NVIDIA GPU, 53 g-band points, `kilonova_two_jax`, float64:
+Measured on one NVIDIA GPU, 53 g-band points, `kilonova_two_jax`, float64, **default prior**:
 
 | sampler | wall clock | AIC | BIC | `converged` |
 |---|---:|---:|---:|---|
-| `abc_gpu` | 18.1 s | 260.49 | 276.25 | n/a |
-| `abc_smc_gpu` | 17.2 s | 1370.26 | 1386.02 | n/a |
-| `emcee_jax` | 26.7 s | −7.98 | 7.78 | False |
-| `snpe` | 93.2 s | 57.10 | 72.86 | n/a |
-| `nuts_gpu` | 396.8 s | −12.07 | 3.69 | False |
-| `pymc_jax_gpu_vectorized` | 856.8 s | **−33.23** | **−17.47** | False |
+| `abc_gpu` | 15.1 s | 416.24 | 432.00 | n/a |
+| `abc_smc_gpu` | 15.9 s | 1489.51 | 1505.27 | n/a |
+| `emcee_jax` | 21.3 s | −30.64 | −14.88 | False |
+| `snpe` | 100.5 s | 52.26 | 68.02 | n/a |
+| `pymc_jax_gpu_vectorized` | 770.8 s | **−37.65** | **−21.89** | False |
 
 ### Do not read that table as a sampler ranking
 
 Two things in it are traps.
 
 **ABC's AIC is not comparable with a likelihood-based sampler's.** ABC never evaluates the
-likelihood — it accepts draws whose simulated light curve is *close enough* under a distance. The
-AIC you get back is computed from whichever accepted draw happened to be best, so `abc_gpu`'s 260
-and `emcee_jax`'s −8 are not measuring the same thing. Compare ABC with ABC, and likelihood samplers
-with likelihood samplers.
+likelihood — it accepts draws whose simulated light curve is *close enough* under a distance, so the
+AIC comes from whichever accepted draw happened to be best. Compare ABC with ABC.
 
-**`converged=False` on every MCMC row.** At these budgets none of the chains passed the r-hat test,
-which means the intervals are not yet trustworthy even though the point estimates look sensible.
-This is a documentation example sized to finish in minutes, not a publication run. Raise
-`num_samples` / `nsteps` until `converged` is `True`.
+**`converged=False` on both MCMC rows.** These budgets are sized to finish in minutes, not to
+converge. And you can see the cost directly:
 
-Where two comparable samplers *can* be checked against each other, they agree:
-
-| parameter | `emcee_jax` median | `pymc_jax_gpu_vectorized` median |
+| parameter | `emcee_jax` | `pymc_jax_gpu_vectorized` |
 |---|---:|---:|
-| `mej_1` | 0.0295 | 0.0293 |
-| `vej_1` | 0.2526 | 0.2301 |
-| `kappa_1` | 0.1653 | 0.1398 |
-| `mej_2` | 0.0258 | 0.0245 |
-| `vej_2` | 0.1959 | 0.1381 |
-| `kappa_2` | 1.0261 | 1.3319 |
+| `mej_blue` | 0.0388 | 0.0461 |
+| `vej_blue` | 0.2882 | 0.3701 |
+| `kappa_blue` | 0.1886 | 0.2731 |
+| `temperature_floor_blue` | **4462** | **825** |
+| `mej_red` | 0.0477 | 0.0347 |
+| `vej_red` | 0.1326 | 0.2178 |
+| `kappa_red` | 1.6293 | 1.1921 |
+| `temperature_floor_red` | **520** | **3443** |
 
-### The prior is not a detail — it is most of the answer
+Masses and opacities agree to a few tens of percent. The **temperature floors do not** — they are
+almost exchanged between the two fits. Disjoint opacity corridors stop the *components* swapping,
+but they do not make every other direction unimodal, and neither chain has converged. This is what
+`converged=False` looks like from the outside, and it is why the flag is worth more than the AIC:
+raise the budget until it is `True` before quoting an interval.
 
-The identical `abc_gpu` run, changing **only** the prior:
+### Why the default prior is Villar's and not redback's
 
-| prior on `kappa_1` | AIC |
-|---|---:|
-| `[1, 30]` — the shape of the model's own default | 20006.76 |
-| `[0.1, 0.5]` — a real blue component | **260.49** |
+redback's two-component prior gives **both** components `kappa` U(1, 30), so it cannot represent
+low-opacity blue ejecta at all — and early g-band emission is exactly that. It also cannot contain
+Villar's published AT2017GFO solution: `kappa_blue = 0.5` is below its floor and `M_ej,red = 0.050`
+is above its `Uniform(0.01, 0.03)` ceiling, so a fit inside it rails on both.
 
-The model's default prior gives *both* components `kappa ∈ [1, 30]`, so it cannot represent
-low-opacity blue ejecta — and early g-band emission from a kilonova is exactly that. Searching 400
-random draws from each box, the best χ² was 38,450 under the default versus 1,574 with the split, a
-**24× difference**, and only the split reaches the observed brightness at all. If you take one thing
-from this page: **check that your prior can express the physics before blaming the sampler.**
+Measured on this dataset, searching 400 random draws from each box:
+
+| prior | best χ² (53 points) | reduced χ² |
+|---|---:|---:|
+| redback's, both `kappa` U(1, 30) | 38450.8 | 725.5 |
+| Villar's, `kappa_blue` U(0.1, 1.0) | **1574.3** | **29.7** |
+
+A factor of 24, and only the Villar box reaches the observed brightness. redback's prior is still
+available as `kilonova_two.default_prior()` — it is the right choice for one job only, an
+apples-to-apples comparison against redback itself.
 
 ### Check whether the posterior is railed
 
-`mej_1` comes back at 0.0293–0.0295 against a prior ceiling of 0.03, and `kappa_1` at 0.14–0.17
-against a floor of 0.1. Both are pressed against their bounds, which means the prior — not the data
-— is setting them. The honest response is to widen those bounds and refit, and to say so in the
-paper. A posterior median sitting on a prior edge is a result about your prior.
+Look at where the medians sit relative to their bounds. Here `mej_red` comes back at 0.048 against a
+ceiling of 0.1 and `kappa_blue` at 0.19 against a floor of 0.1 — comfortable. If a median sits *on*
+a bound, the prior is setting it, not the data. Widen and refit, and say so in the paper: a
+posterior median on a prior edge is a result about your prior.
 
-## 4. One component or two?
+## 4. One, two, or three components?
 
 The question a kilonova paper actually asks. Same sampler, same data, same space — only the model
 changes:
 
 ```python
-for label, model, pr in [("one-component", one, None), ("two-component", two, prior)]:
-    r = wp.fit(lc, model.name, sampler="emcee_jax", prior=pr, space="magnitude", seed=0,
+one   = wp.register_kilonova(["sdssg"], redshift=REDSHIFT, dl_cm=DL_CM, n_wave=300,
+                             band_aliases={"g": "sdssg"})
+three = wp.register_kilonova_three(["sdssg"], redshift=REDSHIFT, dl_cm=DL_CM, n_wave=300,
+                                   band_aliases={"g": "sdssg"})
+
+for label, model in [("one", one), ("two", two), ("three", three)]:
+    r = wp.fit(lc, model.name, sampler="emcee_jax", space="magnitude", seed=0,
                nwalkers=32, nsteps=3000, burnin=1000, thin=5)
-    print(f"{label:16s} k={len(model.parameters)}  AIC={r.aic:9.2f}  BIC={r.bic:9.2f}")
+    print(f"{label:6s} k={len(model.parameters):2d}  AIC={r.aic:9.2f}  BIC={r.bic:9.2f}")
 ```
 
-Measured, `emcee_jax`, same 53 points, `space="magnitude"`:
+Measured:
 
 | model | k | AIC | BIC |
 |---|---:|---:|---:|
-| one-component | 4 | 146.23 | 154.11 |
-| two-component | 8 | **−7.98** | **7.78** |
+| one-component | 4 | 26.93 | 34.81 |
+| **two-component** | 8 | **−30.64** | **−14.88** |
+| three-component | 12 | −23.14 | 0.50 |
 
-ΔAIC = **154.2** in favour of two components. Anything above ~10 is decisive, so the data clearly
-wants two components — it pays for four extra parameters many times over. BIC agrees.
+**Two components win, and three do not.** ΔAIC = 57.6 for two over one — decisive, and worth the
+four extra parameters. But going to three *costs* 7.5 AIC and 15.4 BIC: the extra component buys no
+fit and is charged for anyway.
 
-### Give both models a fair prior, or the answer is meaningless
+That is not a contradiction of Villar+2017, which preferred three. They had UV through near-infrared
+coverage; this is **one band over ten days**. A purple component is distinguished from blue and red
+mainly by where it emits, so a single filter cannot separate it. The lesson is the general one:
+*model complexity you cannot constrain is complexity you should not fit* — and an information
+criterion will tell you so if you ask it.
 
-The first time this page was written, the one-component model was run with its **default** prior
-(`kappa ∈ [1, 30]`, which cannot be blue) while the two-component model got the personalised prior
-above. That produced ΔAIC = **13,681** — a result that looks overwhelming and is largely an artefact
-of handicapping one side.
+### Give every model a prior it can actually use
 
-Rerunning with `kappa ∈ [0.1, 30]` for the one-component model, so it can reach the blue solution
-too, gives the honest **154.2**. Same conclusion, but the inflated figure was **89× too large**.
+The one-component number above is **26.93** because it was given `kappa` U(0.1, 30), spanning both
+regimes. On its own default prior — `kappa` U(1, 30) — the same fit returns **13673.37**, and ΔAIC
+against two components inflates from 57.6 to 13704, a factor of 238.
 
-When you compare models, give each one the prior it deserves. A comparison where one model was
-denied the parameter range it needs is not a comparison.
+**That is not a defect in the one-component model's prior.** A single component has nothing to be
+distinguished *from*, so it correctly gets the broad opacity range; disjoint corridors only make
+sense once there are two components to keep apart. Widening it here is a **device for a like-for-like
+comparison**, not a fix — for a one-component fit on its own, the default is the right prior.
 
-> The fair one-component fit lands at `mej` = 0.030 (ceiling 0.03), `kappa` = 0.111 (floor 0.1),
-> `temperature_floor` = 5996 K (ceiling 6000) — railed against three bounds at once. That is the
-> model straining to do a job it cannot do, which is itself the physical answer here: one component
-> cannot reproduce a blue *and* a red phase.
-
-The two-component model has twice the parameters, so it will always fit at least as well in raw
-likelihood. AIC and BIC ask whether it fits *enough* better to justify them — BIC more harshly.
+The lesson is about the comparison, not the model: a candidate denied the parameter range it needs
+cannot compete, and the inflated margin is the one that looks most impressive. Whenever you compare
+models, check that each can actually reach the solution.
 
 ## 5. Checks worth doing before you believe it
 
