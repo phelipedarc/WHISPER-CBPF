@@ -9,10 +9,26 @@ from __future__ import annotations
 
 import os
 import time
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pandas as pd
+
+#: Worker start method for the ``n_jobs > 1`` pools below. MUST be "spawn", not the Linux default
+#: "fork".
+#:
+#: Any photometric JAX model has an initialised XLA runtime in the parent -- measured at 254 threads
+#: -- and ``fork()`` carries only the calling thread into the child. A mutex held by any of the other
+#: 253 at fork time stays locked forever, so every worker blocks in ``futex_wait_queue`` and the fit
+#: hangs rather than failing. Measured: 8 workers at 0.0% CPU holding 373 MB each, indefinitely, on
+#: a fit that takes 3.4 s at ``n_jobs=1``.
+#:
+#: "spawn" starts each worker from a fresh interpreter, so there is no inherited lock to deadlock on.
+#: It also *requires* the payload to be picklable, which is why the photometric factories build their
+#: ``predict`` as a module-level class rather than a closure.
+_MP_CONTEXT = multiprocessing.get_context("spawn")
+
 
 import warnings
 
@@ -162,7 +178,8 @@ class ABCSampler(BaseSampler):
             args = [(predict, prior, distance, times, bands, obs_y, obs_err, idx, seed,
                      simulate_noise, lik_space.model_in_space, scatter_param)
                     for idx in index_chunks]
-            with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            with ProcessPoolExecutor(max_workers=n_jobs,
+                                     mp_context=_MP_CONTEXT) as executor:
                 for th, ds in executor.map(_worker, args):
                     thetas.extend(th)
                     dist_parts.append(ds)

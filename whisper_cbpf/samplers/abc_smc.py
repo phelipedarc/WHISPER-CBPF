@@ -26,11 +26,27 @@ from __future__ import annotations
 import os
 import time
 import warnings
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pandas as pd
 from scipy.special import logsumexp
+
+#: Worker start method for the ``n_jobs > 1`` pools below. MUST be "spawn", not the Linux default
+#: "fork".
+#:
+#: Any photometric JAX model has an initialised XLA runtime in the parent -- measured at 254 threads
+#: -- and ``fork()`` carries only the calling thread into the child. A mutex held by any of the other
+#: 253 at fork time stays locked forever, so every worker blocks in ``futex_wait_queue`` and the fit
+#: hangs rather than failing. Measured: 8 workers at 0.0% CPU holding 373 MB each, indefinitely, on
+#: a fit that takes 3.4 s at ``n_jobs=1``.
+#:
+#: "spawn" starts each worker from a fresh interpreter, so there is no inherited lock to deadlock on.
+#: It also *requires* the payload to be picklable, which is why the photometric factories build their
+#: ``predict`` as a module-level class rather than a closure.
+_MP_CONTEXT = multiprocessing.get_context("spawn")
+
 
 from ..distance import chi2_distance, get_distance
 from ..likelihood import make_likelihood
@@ -225,7 +241,8 @@ class ABCSMCSampler(BaseSampler):
         round_info = []
         total_attempts = 0
         epsilon = epsilon_schedule[0] if epsilon_schedule is not None else np.inf
-        pool = ProcessPoolExecutor(max_workers=n_jobs) if n_jobs > 1 else None
+        pool = (ProcessPoolExecutor(max_workers=n_jobs, mp_context=_MP_CONTEXT)
+                if n_jobs > 1 else None)
         try:
             for round_idx in range(n_rounds):
                 if epsilon_schedule is not None:
