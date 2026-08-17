@@ -259,6 +259,111 @@ def test_predictive_metrics_block_and_autoattach():
     assert "predictive_metrics" in info and "coverage" in info["predictive_metrics"]
 
 
+def _tight_posterior(n=300, seed=3):
+    """A posterior clustered tightly around ``TRUE`` — enough to score, cheaper than a real fit."""
+    rng = np.random.default_rng(seed)
+    names = list(TRUE)
+    return pd.DataFrame(
+        np.array([[TRUE[k] * (1 + 0.01 * z) for k, z in zip(names, row)]
+                  for row in rng.normal(0, 1, size=(n, len(names)))]), columns=names)
+
+
+def test_predictive_metrics_rmse_and_coverage_score_detections_only():
+    """``rmse`` and ``coverage`` compare POINTS, so a limit does not belong in either.
+
+    ``observed - model`` on a non-detection is not a residual — a model correctly below an upper
+    limit still contributes ``(limit - model)**2``, so the deeper the limit the worse a correct fit
+    looks — and asking whether a bound falls inside a central predictive interval is not a
+    calibration question. Both blocks used to run over every row: measured here, the RMSE was 10x+
+    its true value. The fix must reproduce the same light curve with the limits dropped up front.
+    """
+    lc = _censored_lc()
+    post = _tight_posterior()
+    pm = wp.predictive_metrics(post, lc, model="gaussian_rise", space="flux", n_draws=300, seed=0)
+    assert pm["n_upper_limits_excluded"] == 8
+
+    det = np.asarray(lc.upper_limit, dtype=bool) == False        # noqa: E712 - explicit mask
+    det_lc = wp.LightCurve(time=np.asarray(lc.time)[det], band=np.asarray(lc.band)[det],
+                           flux=np.asarray(lc.flux)[det], flux_err=np.asarray(lc.flux_err)[det],
+                           name="det-only")
+    ref = wp.predictive_metrics(post, det_lc, model="gaussian_rise", space="flux",
+                                n_draws=300, seed=0)
+    assert pm["rmse"]["overall"] == pytest.approx(ref["rmse"]["overall"])
+    for b in pm["rmse"]["bands"]:
+        assert pm["rmse"]["bands"][b] == pytest.approx(ref["rmse"]["bands"][b])
+    for a, c in zip(pm["coverage"]["overall"], ref["coverage"]["overall"]):
+        assert a["empirical"] == pytest.approx(c["empirical"])
+
+    # The all-rows RMSE this replaced is far larger, which is the whole point.
+    resid_all = np.asarray(lc.flux, float) - np.asarray(
+        get_model("gaussian_rise").predict(TRUE, np.asarray(lc.time, float),
+                                           np.asarray(lc.band)), float)
+    assert float(np.sqrt(np.mean(resid_all ** 2))) > 10 * pm["rmse"]["overall"]
+
+
+def test_predictive_metrics_density_blocks_still_count_the_limits():
+    """The asymmetry is deliberate: LPD/WAIC/LOO keep every row, rmse/coverage do not.
+
+    A censored row's contribution to a predictive DENSITY is its survival term
+    ``log P(flux < limit)`` — real information that ``log_likelihood_pointwise`` supplies. Dropping
+    it would both discard that and make the totals incomparable with a fit whose likelihood counted
+    it, so ``lpd`` on the censored curve must NOT equal ``lpd`` with the limits deleted.
+    """
+    lc = _censored_lc()
+    post = _tight_posterior()
+    pm = wp.predictive_metrics(post, lc, model="gaussian_rise", space="flux", n_draws=300, seed=0)
+
+    det = ~np.asarray(lc.upper_limit, dtype=bool)
+    det_lc = wp.LightCurve(time=np.asarray(lc.time)[det], band=np.asarray(lc.band)[det],
+                           flux=np.asarray(lc.flux)[det], flux_err=np.asarray(lc.flux_err)[det],
+                           name="det-only")
+    ref = wp.predictive_metrics(post, det_lc, model="gaussian_rise", space="flux",
+                                n_draws=300, seed=0)
+    assert pm["lpd"]["total"] != pytest.approx(ref["lpd"]["total"])
+    assert pm["waic"]["n_data"] == lc.n_points                   # every row scored by the density
+    assert ref["waic"]["n_data"] == int(det.sum())
+
+
+def test_predictive_metrics_unchanged_without_upper_limits():
+    """No limits -> identical numbers whether the column is absent or present-and-all-False.
+
+    Guards the exclusion against changing the uncensored path — the coverage block draws its
+    predictive replications from an RNG, so masking the wrong array would silently reshuffle them.
+    """
+    m = get_model("gaussian_rise")
+    t = np.linspace(0.1, 30, 24)
+    bands = np.array(["g"] * 12 + ["r"] * 12)
+    flux = np.asarray(m.predict(TRUE, t, bands), dtype=float)
+    obs = flux + np.random.default_rng(0).normal(0, 0.1, 24)
+    post = _tight_posterior()
+    kw = dict(model="gaussian_rise", space="flux", n_draws=300, seed=0)
+
+    bare = wp.LightCurve(time=t, band=bands, flux=obs, flux_err=np.full(24, 0.1), name="bare")
+    flagged = wp.LightCurve(time=t, band=bands, flux=obs, flux_err=np.full(24, 0.1),
+                            upper_limit=np.zeros(24, dtype=bool), name="flagged")
+    a, b = wp.predictive_metrics(post, bare, **kw), wp.predictive_metrics(post, flagged, **kw)
+    assert a["n_upper_limits_excluded"] == b["n_upper_limits_excluded"] == 0
+    assert a["rmse"] == b["rmse"] and a["coverage"] == b["coverage"]
+    assert a["lpd"] == b["lpd"]
+
+
+def test_predictive_metrics_keeps_an_all_censored_band_as_nan():
+    """A band with no detection reports NaN in rmse and coverage rather than disappearing."""
+    base = _censored_lc()
+    ul = np.zeros(24, dtype=bool)
+    ul[12:] = True                                               # all of r
+    lc = wp.LightCurve(time=base.time, band=base.band, flux=base.flux,
+                       flux_err=np.where(ul, np.nan, 0.1), upper_limit=ul, name="r-blind")
+    pm = wp.predictive_metrics(_tight_posterior(), lc, model="gaussian_rise", space="flux",
+                               n_draws=300, seed=0)
+    assert pm["n_upper_limits_excluded"] == 12
+    assert set(pm["rmse"]["bands"]) == {"g", "r"} and np.isnan(pm["rmse"]["bands"]["r"])
+    assert np.isfinite(pm["rmse"]["bands"]["g"])
+    assert set(pm["coverage"]["bands"]) == {"g", "r"}
+    assert all(np.isnan(c["empirical"]) for c in pm["coverage"]["bands"]["r"])
+    assert all(np.isfinite(c["empirical"]) for c in pm["coverage"]["bands"]["g"])
+
+
 def test_predictive_metrics_coverage_calibrated_for_good_fit():
     """A correct model + Gaussian noise gives empirical coverage close to nominal at each level."""
     m = get_model("gaussian_rise")

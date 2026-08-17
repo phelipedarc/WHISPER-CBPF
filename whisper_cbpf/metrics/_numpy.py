@@ -317,9 +317,9 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     Evaluates the model across ``n_draws`` posterior samples once and returns, in one dict:
 
     * **rmse** — root-mean-squared error of ``observed - posterior_mean_prediction`` (per band + overall),
-      in the fit's comparison space (Jy for flux, mag for magnitude).
+      in the fit's comparison space (Jy for flux, mag for magnitude). **Detections only** — see below.
     * **lpd** — log predictive density: ``sum_i log mean_s p(y_i | θ_s)`` (the ``lppd``; higher is
-      better), with the per-point mean.
+      better), with the per-point mean. Over **every** row, non-detections included.
     * **elpd_loo** — expected log predictive density by **PSIS-LOO** cross-validation (Vehtari et al.
       2017; higher is better), with ``p_loo``, standard error ``se``, ``looic = -2·elpd_loo`` and the
       max Pareto-``k`` diagnostic (``k > 0.7`` ⇒ LOO estimate unreliable).
@@ -329,7 +329,18 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
       ``result`` when available.
     * **coverage** — the calibration curve: for each nominal ``level`` the *empirical* fraction of
       observations inside the central posterior-predictive interval, overall and per band. A calibrated
-      fit has empirical ≈ nominal at every level.
+      fit has empirical ≈ nominal at every level. **Detections only** — see below.
+
+    **Non-detections are in the density, not in the point comparisons.** ``rmse`` and ``coverage``
+    score the **detections** alone, and ``n_upper_limits_excluded`` reports how many rows that dropped;
+    ``lpd``, ``waic`` and ``elpd_loo`` score **every** row. The asymmetry is the point. A censored row's
+    ``y`` is a *limit*: its principled contribution to a predictive *density* is the survival term
+    ``log P(flux < limit)``, which ``log_likelihood_pointwise`` supplies and which is real information
+    about the fit — but ``observed - model`` on that row is not a residual (a model correctly *below* an
+    upper limit still contributes ``(limit - model)**2``, the more so the deeper the limit), and asking
+    whether a bound falls inside a central predictive interval is not a calibration question. Scoring
+    them in ``rmse``/``coverage`` reported inflated error and collapsed calibration for any censored fit.
+    Bands with no detection are kept in both blocks with ``NaN`` rather than dropped.
 
     **Scatter-aware predictive density.** The log-predictive quantities (LPD, WAIC, PSIS-LOO) and the
     coverage intervals must be evaluated under the *same* generative model the fit optimised — otherwise
@@ -386,6 +397,28 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     ll, P_ok, S_ok = ll[good], P[good], S[good]
     n_used = ll.shape[0]
 
+    # WHICH ROWS EACH BLOCK SCORES. A non-detection's `y` is a LIMIT, not a measurement, so it
+    # belongs in the DENSITY blocks (lpd, waic/loo) and NOT in the POINT-COMPARISON ones
+    # (rmse, coverage). The asymmetry is deliberate, and it is the reverse of the intuition that
+    # "a row with no measurement should be dropped everywhere":
+    #
+    #   * `lpd` / `waic` / `elpd_loo` keep EVERY row. They go through `log_likelihood_pointwise`,
+    #     which gives a censored row its survival term log P(flux < limit) -- the correct, and
+    #     genuinely informative, contribution of a non-detection to a predictive density. Dropping
+    #     those rows would throw information away AND make the totals incomparable with a fit whose
+    #     likelihood counted them.
+    #   * `rmse` / `coverage` keep DETECTIONS only. `observed - model` on a limit is not a residual:
+    #     a model correctly sitting BELOW an upper limit still contributes (limit - model)^2, and
+    #     the deeper (more constraining) the limit the worse it makes a correct fit look. Coverage
+    #     asks whether the observation falls inside the central predictive interval, which is not a
+    #     calibration question when the "observation" is a bound rather than a draw from that
+    #     interval. Both used to run over every row and silently reported inflated error and
+    #     collapsed calibration on any censored fit.
+    #
+    # `n_upper_limits_excluded` (top level of the returned dict) reports the rows this dropped.
+    ul = lc.upper_limit
+    det = np.ones(y.size, dtype=bool) if ul is None else ~np.asarray(ul, dtype=bool)
+
     # RMSE vs the posterior-MEAN prediction (per band + overall) — unaffected by the noise model.
     mean_pred = P_ok.mean(axis=0)
     resid = y - mean_pred
@@ -394,7 +427,8 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
         r = r[np.isfinite(r)]
         return float(np.sqrt(np.mean(r ** 2))) if r.size else float("nan")
 
-    rmse = {"overall": _rmse(resid), "bands": {str(b): _rmse(resid[bands == b]) for b in np.unique(bands)}}
+    rmse = {"overall": _rmse(resid[det]),
+            "bands": {str(b): _rmse(resid[det & (bands == b)]) for b in np.unique(bands)}}
 
     # LPD (log pointwise predictive density).
     lppd_i = logsumexp(ll, axis=0) - np.log(n_used)
@@ -404,17 +438,22 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     loo_out, waic_out, loo_error = _loo_waic(ll)
 
     # Coverage-calibration curve: posterior-predictive intervals with the fit's own noise model
-    # (reported errors ⊕ per-draw scatter σ).
+    # (reported errors ⊕ per-draw scatter σ), over the detections. Band keys stay the FULL observed
+    # set, so a band with no detection reports NaN rather than vanishing from the curve.
     rng = np.random.default_rng(seed + 1)
-    y_rep = P_ok + rng.normal(0.0, 1.0, size=P_ok.shape) * S_ok
+    y_det, bands_det = y[det], bands[det]
+    y_rep = P_ok[:, det] + rng.normal(0.0, 1.0, size=(n_used, int(np.sum(det)))) * S_ok[:, det]
     cov_overall, cov_bands = [], {str(b): [] for b in np.unique(bands)}
     for q in levels:
         lo, hi = np.percentile(y_rep, [50 * (1 - q), 50 * (1 + q)], axis=0)
-        inside = (y >= np.minimum(lo, hi)) & (y <= np.maximum(lo, hi))
-        cov_overall.append({"nominal": float(q), "empirical": float(np.mean(inside))})
+        inside = (y_det >= np.minimum(lo, hi)) & (y_det <= np.maximum(lo, hi))
+        cov_overall.append({"nominal": float(q),
+                            "empirical": float(np.mean(inside)) if inside.size else float("nan")})
         for b in np.unique(bands):
-            sel = bands == b
-            cov_bands[str(b)].append({"nominal": float(q), "empirical": float(np.mean(inside[sel]))})
+            sel = bands_det == b
+            cov_bands[str(b)].append({"nominal": float(q),
+                                      "empirical": float(np.mean(inside[sel])) if sel.any()
+                                      else float("nan")})
     coverage = {"levels": [float(q) for q in levels], "overall": cov_overall, "bands": cov_bands}
 
     # `space`/`likelihood`/`scatter_param`/`n_draws_requested` record HOW this block was scored, so
@@ -422,6 +461,7 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     out = {"space": lik.space, "unit": "mag" if lik.space == "magnitude" else "Jy",
            "likelihood": str(likelihood), "n_draws": int(n_used),
            "n_draws_requested": int(n_draws), "seed": int(seed),
+           "n_upper_limits_excluded": int(np.sum(~det)),
            "scatter_param": sp, "rmse": rmse, "lpd": lpd,
            "elpd_loo": loo_out, "waic": waic_out, "coverage": coverage}
     if loo_error is not None:

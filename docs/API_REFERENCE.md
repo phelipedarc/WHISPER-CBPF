@@ -595,8 +595,9 @@ this, building a `GaussianLikelihood` purely as a space converter made every cen
 — the **posterior-predictive metric block** reported for every fit. Evaluates the model across `n_draws`
 posterior samples once and returns:
 - **`rmse`** — root-mean-squared error of `observed − posterior_mean_prediction`, per band + overall.
+  **Detections only** (see below).
 - **`lpd`** — log predictive density `Σ_i log mean_s p(y_i|θ_s)` (the `lppd`; higher is better), `total`
-  and `per_point`.
+  and `per_point`. Over **every** row, non-detections included.
 - **`elpd_loo`** — expected log predictive density by **PSIS-LOO** cross-validation (Vehtari 2017;
   higher is better) with `p_loo`, `se`, `looic = −2·elpd_loo`, and `pareto_k_max` (>0.7 ⇒ unreliable);
   uses `arviz` when installed (`None` otherwise).
@@ -604,13 +605,25 @@ posterior samples once and returns:
 - **`aic` / `bic`** — carried through from the fit's best-fit likelihood.
 - **`coverage`** — the **calibration curve**: for each nominal `level`, the empirical fraction of
   observations inside the central posterior-predictive interval, overall and per band (empirical ≈
-  nominal ⇒ calibrated).
+  nominal ⇒ calibrated). **Detections only** (see below).
+- **`n_upper_limits_excluded`** — rows dropped from `rmse` / `coverage` because they are non-detections.
 - **`scatter_param`** — the posterior column used as the extra-scatter σ (or `null`).
 - **`space` / `likelihood` / `scatter_param` / `n_draws_requested` / `seed`** — how this block was
   scored. `waic(result, lc)` reads them back so the manual call reproduces exactly this number.
 - **`elpd_loo_error`** — present only when `arviz` **is** installed and `az.loo` raised; `elpd_loo` is
   `null` both when arviz is absent (documented degradation) and when it failed, and this key is what
   tells the two apart.
+
+**Non-detections are in the density, not in the point comparisons.** `rmse` and `coverage` score the
+**detections** alone, with `n_upper_limits_excluded` reporting the rest; `lpd`, `waic` and `elpd_loo`
+score **every** row. The asymmetry is deliberate. A censored row's `y` is a *limit*: its principled
+contribution to a predictive *density* is the survival term `log P(flux < limit)`, which
+`log_likelihood_pointwise` supplies and which is real information about the fit — but `observed − model`
+on that row is not a residual (a model correctly *below* an upper limit still contributes
+`(limit − model)²`, the more so the deeper the limit), and asking whether a bound falls inside a central
+predictive interval is not a calibration question. Before this, both blocks ran over every row and
+silently reported inflated error and collapsed calibration on any censored fit. Bands with no detection
+stay in both blocks as `NaN` rather than being dropped. Same rule as `per_band_metrics` (§6.6).
 
 `levels` defaults to **`DEFAULT_COVERAGE_LEVELS = (0.5, 0.68, 0.8, 0.9, 0.95, 0.99)`** — import it from
 `whisper_cbpf.metrics` to extend rather than retype the set (e.g.
@@ -704,7 +717,7 @@ Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`
 | `test_schema.py` | 11 | Validation, subsetting, `add_*`, `snr`/`select_snr`, `set_explosion_date`, upper limits. |
 | `test_loader.py` | 12 | AT2017GFO load, window/subset, grouping, `min_snr`, `explosion_date`, upper limits. |
 | `test_plotting.py` | 11 | report/grid layouts, flux/absolute-mag, redshift guard, upper-limit markers; `plot_corner` overlay/legend, common-params + log axes + array/empty errors; `plot_ppc` single/multi × flux/magnitude × panel-by band/method; `plot_calibration` multi + per-band. |
-| `test_metrics.py` | 21 | WAIC keys + finite + better-fit-lower ordering, `fixed=`/subsampling, pointwise log-lik summing to the total; **WAIC pinned to a closed-form value** (two-point Gaussian posterior, derivation in the docstring) both through `_loo_waic` and end-to-end through `wp.waic`, and cross-checked against `arviz.waic` on the same matrix (exact up to arviz's ddof=0); **`wp.waic(res, lc)` == `res.waic` on a scatter fit**; the `waic`/`waic_reliable`/`elpd_loo`/`rmse` properties returning `None` instead of raising on a failed block; arviz-failing distinguished from arviz-absent; `per_band_metrics` zero-at-truth / offset / JSON, **and on a censored light curve** — it builds no likelihood (so NaN `flux_err` on a non-detection is fine), scores detections only with `n_upper_limits_excluded` reporting the rest, keeps an all-censored band at `n = 0`, and `flux_to_space` matching the bound `model_in_space`; `predictive_metrics` RMSE/LPD/ELPD-LOO/WAIC/AIC-BIC/coverage block + auto-attach, coverage-calibration for a good fit, and scatter-aware WAIC/coverage vs mis-specified. |
+| `test_metrics.py` | 25 | WAIC keys + finite + better-fit-lower ordering, `fixed=`/subsampling, pointwise log-lik summing to the total; **WAIC pinned to a closed-form value** (two-point Gaussian posterior, derivation in the docstring) both through `_loo_waic` and end-to-end through `wp.waic`, and cross-checked against `arviz.waic` on the same matrix (exact up to arviz's ddof=0); **`wp.waic(res, lc)` == `res.waic` on a scatter fit**; the `waic`/`waic_reliable`/`elpd_loo`/`rmse` properties returning `None` instead of raising on a failed block; arviz-failing distinguished from arviz-absent; `per_band_metrics` zero-at-truth / offset / JSON, **and on a censored light curve** — it builds no likelihood (so NaN `flux_err` on a non-detection is fine), scores detections only with `n_upper_limits_excluded` reporting the rest, keeps an all-censored band at `n = 0`, and `flux_to_space` matching the bound `model_in_space`; `predictive_metrics` RMSE/LPD/ELPD-LOO/WAIC/AIC-BIC/coverage block + auto-attach, coverage-calibration for a good fit, scatter-aware WAIC/coverage vs mis-specified, **and its censoring split** — `rmse`/`coverage` reproducing the limits-dropped-up-front curve exactly while `lpd`/`waic` keep every row, the uncensored path bit-identical with the column absent vs present-and-all-False, and an all-censored band held at NaN. |
 | `test_validation.py` | 4 | recovery z-score + coverage signs, PPC (reduced χ²≈1, predictive coverage, p≈0.5), SBC rank uniformity (calibrated vs edge-biased), `sbc_rank` bounds. |
 | `test_embeddings.py` | 6 | MLP/TCN embedding shapes + finite output, TCN receptive field covers the input, `build_embedding` dispatch + unknown-name error, `x_format` validation, ABC `simulate_noise` (n_jobs-reproducible, optional, noisy-vs-noiseless distance floor). |
 | `test_scatter.py` | 4 | Villar+17 scatter likelihood (formula vs hand calc, σ=0 reduces to Gaussian, pointwise sums, registry), MCMC recovers injected extra scatter (σ counted in AIC), ABC scatter validation + posterior column, ABC magnitude-space acceptance. |
