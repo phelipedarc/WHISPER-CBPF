@@ -44,6 +44,12 @@ from .likelihood import (
     register_likelihood,
 )
 from .models import Model, get_model, list_models, register_model
+
+# Binding factories for redback's own models, on the CPU. Like the JAX factories below these stay
+# factories: the parameters and the prior are read out of redback at build time (never transcribed),
+# which needs redback importable -- so naming a model here is a runtime call, not an import-time one,
+# and `import whisper_cbpf` keeps working with the [models] extra absent.
+from .models.redback_adapter import redback_model, register_redback  # noqa: E402
 from .samplers import (
     SamplerResult,
     fit,
@@ -67,6 +73,7 @@ __all__ = [
     # priors / models
     "Prior", "Uniform", "LogUniform",
     "Model", "register_model", "get_model", "list_models",
+    "redback_model", "register_redback",
     # distances (registry)
     "chi2_distance", "register_distance", "get_distance", "list_distances",
     # likelihoods (registry)

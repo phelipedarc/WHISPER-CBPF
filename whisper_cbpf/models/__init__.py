@@ -90,9 +90,10 @@ def list_models():
 
 
 # --- register built-in models ---
-# two_component_kilonova imports redback lazily (only inside predict), so importing it here is safe
-# even when the optional [models] extra is not installed.
-from . import bazin, flare, gaussian_rise, mck19, two_component_kilonova  # noqa: E402
+# two_component_kilonova and redback_adapter import redback lazily (only inside the functions that
+# need it), so importing them here is safe even when the optional [models] extra is not installed.
+from . import bazin, flare, gaussian_rise, mck19, redback_adapter  # noqa: E402
+from . import two_component_kilonova  # noqa: E402
 
 register_model("flare", flare.flare_flux, flare.PARAMETERS,
                prior=flare.PRIOR, description=flare.DESCRIPTION)
