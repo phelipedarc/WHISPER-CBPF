@@ -3,8 +3,6 @@
 Bayesian model comparison for astronomical transient light curves — supernovae, kilonovae and tidal
 disruption events — on CPU or GPU.
 
-You give it a light curve. You pick some models. It fits each one, and tells you which the data
-prefers.
 
 ```bash
 pip install "git+https://github.com/phelipedarc/WHISPER-CBPF.git"
