@@ -24,13 +24,10 @@ classifiers = [
     "Development Status :: 3 - Alpha",
 ]
 
-# Core deps cover data ingestion + plotting and the Whisper-owned samplers; they are all
-# pure-Python / wheels (no compiler needed), with permissive bounds so installing never forces
-# a numpy/scipy downgrade. `pip install whisper-cbpf` gives a working CPU package: it imports with
-# NO jax, NO CUDA, NO torch and NO redback, and every GPU sampler/model still appears in
-# list_samplers() / list_models() / list_distances() as available-requiring-an-extra.
-# redback is OPTIONAL (physical models + priors, needs a C compiler for sncosmo); its strict
-# numpy==1.26 / scipy<1.14 pins come from redback itself, not from here.
+# Data ingestion, plotting and the CPU samplers. All pure-Python or wheels, with permissive bounds
+# so installing never forces a numpy/scipy downgrade. This alone is a working package: it imports
+# with no jax, no CUDA, no torch and no redback, and the GPU entries still appear in the registries
+# as available-requiring-an-extra.
 dependencies = [
     "numpy>=1.23",
     "scipy>=1.9",
@@ -40,31 +37,22 @@ dependencies = [
     "emcee>=3.1",
     "dynesty>=2.0",
     "corner>=2.2",
-    "tqdm",
 ]
 
 [project.optional-dependencies]
-# THREE user-facing extras: [gpu], [models], [sbi]. Everything optional now lands in one of them,
-# so there is no menu to study before installing.
+# Three user-facing extras: [gpu], [models], [sbi].
 
-# The JAX/GPU half: every JAX model (kilonova one- and two-component, TDE, the twelve supernovae),
-# the samplers nuts_gpu / abc_gpu / abc_smc_gpu / emcee_jax / pymc_jax_gpu_*, and the *_jax
-# distances. CUDA 12 is pinned because that is the platform this package is validated on;
-# installing plain `jax` instead silently lands you on the CPU build, which is the single most
-# expensive mistake here (~50x slower, no error).
+# The JAX/GPU half: every JAX model, the samplers nuts_gpu / abc_gpu / abc_smc_gpu / emcee_jax /
+# pymc_jax_gpu_*, and the *_jax distances. CUDA 12 is pinned because that is the platform this
+# package is validated on; installing plain `jax` instead lands you on the CPU build silently,
+# at roughly 50x slower with no error.
 #
-# Also folded in here, so the extra list stays short:
-#   pymc       -- the two pymc_jax_gpu_* frontends (imported lazily inside fit())
-#   arviz      -- ESS and ESS/sec, and PSIS-LOO / ELPD in predictive_metrics
-#   astroquery -- SVO Filter Profile Service fallback for bands not in FILTER_LOOKUP
-# Consequence worth knowing: arviz and astroquery are NOT GPU-specific, so a CPU-only user who
-# wants PSIS-LOO or SVO band lookup installs them directly (`pip install arviz astroquery`);
-# predictive_metrics degrades to None for LOO without arviz rather than failing.
+# arviz (ESS, PSIS-LOO) and astroquery (the SVO filter-service fallback) are folded in here to keep
+# the extra list short, but neither is GPU-specific: a CPU-only user who wants them can install
+# them directly. Without arviz, predictive_metrics returns None for LOO rather than failing.
 #
-# Multi-GPU needs no further library: device selection is whisper_cbpf.backends.gpu_list() and the
-# parallel path is NumPyro's own chain_method.
-# NOTE: installing this extra is NOT sufficient on its own -- run `source "$(whisper-cbpf-env)"`
-# before starting Python, or JAX will not see the GPU. See docs/GPU_SETUP.md.
+# Installing this extra is not sufficient on its own -- run `source "$(whisper-cbpf-env)"` before
+# starting Python, or JAX will not see the GPU. See docs/GPU_SETUP.md.
 gpu = [
     "jax[cuda12]>=0.4.30",
     "numpyro>=0.15",
@@ -73,9 +61,9 @@ gpu = [
     "astroquery>=0.4.6",
 ]
 
-# Physical transient models + their priors, via redback (also pulls bilby, sncosmo, afterglowpy).
-# Needed for `two_component_kilonova` on CPU and for the TDE / supernova priors, which are read
-# from redback's own .prior files at runtime.
+# Physical models and their priors, via redback (which also pulls bilby, sncosmo, afterglowpy).
+# Needed for `two_component_kilonova` on CPU and for the TDE / supernova priors, read from
+# redback's own .prior files at runtime. redback pins numpy==1.26 / scipy<1.14.
 models = ["redback>=1.12"]
 
 # The SNPE / NPE simulation-based sampler (whisper_cbpf.samplers.snpe).
@@ -91,8 +79,8 @@ Documentation = "https://github.com/phelipedarc/WHISPER-CBPF/tree/main/docs"
 Issues = "https://github.com/phelipedarc/WHISPER-CBPF/issues"
 
 [project.scripts]
-# Resolves the bootstrap's path from an installed wheel as well as a checkout, so the one
-# documented command works everywhere:  source "$(whisper-cbpf-env)"
+# Prints the bootstrap's path from a wheel as well as a checkout, so one command works everywhere:
+#     source "$(whisper-cbpf-env)"
 whisper-cbpf-env = "whisper_cbpf.backends._env:_print_env_script"
 
 [tool.setuptools.dynamic]
@@ -104,9 +92,9 @@ include = ["whisper_cbpf*"]
 
 [tool.setuptools.package-data]
 whisper_cbpf = [
-    "py.typed",                            # ship the typing marker so type hints reach consumers
-    "backends/env.sh",                     # the GPU bootstrap -- without it JAX falls back to
-]                                          # the CPU at ~50x, silently. See docs/GPU_SETUP.md.
+    "py.typed",           # the typing marker, so type hints reach consumers
+    "backends/env.sh",    # the GPU bootstrap; without it JAX falls back to CPU silently
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

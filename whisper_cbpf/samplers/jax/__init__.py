@@ -10,12 +10,14 @@ are load-bearing:
   importing :mod:`whisper_cbpf` must not require JAX, CUDA or torch to be installed.
 
 ``snpe_gpu`` is registered like the rest, as of the generalisation of its simulator; see
-:mod:`whisper_cbpf.backends._registration` for what used to keep it out.
+:mod:`whisper_cbpf.backends._registration` for how the lazy binding works.
 
 Adapted from whisper-GPU @ 10796a0, ``samplers/__init__.py``, which lazily exposed the NUTS sampler
 only. The same pattern now covers all six, because the merged package promises a CPU-only import.
 """
 from __future__ import annotations
+
+from ...backends import gpu_extra_error
 
 __all__ = ["NUTSGPUSampler", "fit_NUTSGPU",
            "ABCGPUSampler", "fit_ABC_GPU",
@@ -57,17 +59,13 @@ def __getattr__(name):
             try:
                 return importlib.import_module(f".{name}", __name__)
             except ImportError as exc:
-                raise ImportError(
-                    f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
-                ) from exc
+                raise gpu_extra_error(name) from exc
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
     try:
         mod = importlib.import_module(f".{mod_name}", __name__)
     except ImportError as exc:
-        raise ImportError(
-            f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
-        ) from exc
+        raise gpu_extra_error(name) from exc
     value = getattr(mod, name)
     globals()[name] = value
     return value

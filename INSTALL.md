@@ -31,7 +31,7 @@ say so when you ask for them, rather than vanishing from the registry.
 | Compiler | not needed for the base install; `[models]` builds `sncosmo` |
 
 The base install is pure-Python wheels: numpy, scipy, pandas, matplotlib, astropy, emcee, dynesty,
-corner, tqdm.
+corner.
 
 ## 3. The three extras
 
@@ -155,8 +155,7 @@ python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is
 
 * [`README.md`](README.md) — a five-minute first fit.
 * [`docs/TUTORIAL.md`](docs/TUTORIAL.md) — the guided walkthrough.
-* [`docs/MODEL_COMPARISON_CPU.md`](docs/MODEL_COMPARISON_CPU.md) — comparing models on CPU, with a
-  personalised prior.
-* [`docs/MODEL_COMPARISON_GPU.md`](docs/MODEL_COMPARISON_GPU.md) — the same on GPU.
+* [`docs/MODEL_COMPARISON.md`](docs/MODEL_COMPARISON.md) — comparing models on CPU and on
+  GPU, with a personalised prior.
 * [`docs/CHOOSING.md`](docs/CHOOSING.md) — which sampler for which problem, and which combinations
   cannot work.

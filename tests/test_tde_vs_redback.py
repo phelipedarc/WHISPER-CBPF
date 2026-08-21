@@ -422,7 +422,7 @@ def test_flux_density_matches_redback():
         assert rel < 2e-3, f"{p}: max rel {rel:.3e}"
 
 
-#: Parameter sets an adversarial re-verification found, that the tests above did not.
+#: Parameter sets that the tests above do not reach, kept because each one once failed.
 #: Both are inside redback's own prior and both produced a finite, smooth, ordinary-looking
 #: likelihood for a light curve that does not exist.
 REGRESSIONS = {

@@ -18,7 +18,7 @@ pip install "git+https://github.com/phelipedarc/WHISPER-CBPF.git"
 ```python
 import whisper_cbpf as wp
 
-# 1. Load a light curve. AT2017GFO ships with the package.
+# 1. Load a light curve. AT2017GFO is in the repository, so this path works from a checkout.
 lc = wp.load_lightcurve("tests/data/at2017gfo.csv", redshift=0.0098)
 lc = lc.select_bands(["g"]).set_explosion_date(57982.529).select_time_window(0.0, 10.0)
 print(lc.n_points)          # 53
@@ -56,8 +56,7 @@ for name in ["bazin", "gaussian_rise"]:
 
 Full worked examples, with a personalised prior on the two-component kilonova:
 
-* [`docs/MODEL_COMPARISON_CPU.md`](docs/MODEL_COMPARISON_CPU.md) — on CPU
-* [`docs/MODEL_COMPARISON_GPU.md`](docs/MODEL_COMPARISON_GPU.md) — on GPU
+* [`docs/MODEL_COMPARISON.md`](docs/MODEL_COMPARISON.md) — CPU and GPU, with a personalised prior
 
 **AIC, BIC and WAIC compare models, not spaces.** Numbers from a flux-space fit are not comparable
 with numbers from a magnitude-space fit. Keep `space=` the same across everything you compare.
@@ -189,11 +188,12 @@ Honest list, so you do not discover these in review:
 |---|---|
 | [`INSTALL.md`](INSTALL.md) | installing, GPU setup, verifying |
 | [`docs/TUTORIAL.md`](docs/TUTORIAL.md) | guided walkthrough |
-| [`docs/MODEL_COMPARISON_CPU.md`](docs/MODEL_COMPARISON_CPU.md) | CPU comparison, personalised prior |
-| [`docs/MODEL_COMPARISON_GPU.md`](docs/MODEL_COMPARISON_GPU.md) | GPU comparison, personalised prior |
+| [`docs/MODEL_COMPARISON.md`](docs/MODEL_COMPARISON.md) | worked comparison on CPU and GPU |
 | [`docs/CHOOSING.md`](docs/CHOOSING.md) | picking a sampler; impossible combinations |
 | [`docs/GPU_SETUP.md`](docs/GPU_SETUP.md) | CUDA, float64, multi-GPU |
 | [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) | every public symbol |
+| [`docs/PORTING_NOTES.md`](docs/PORTING_NOTES.md) | how the JAX models differ from redback, and why |
+| [`notebooks/`](notebooks/) | ten runnable notebooks, one per subsystem |
 
 ## Citing
 

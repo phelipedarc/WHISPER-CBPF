@@ -26,10 +26,12 @@ import pandas as pd
 from ..likelihood import make_likelihood
 from ..models import get_model
 from .base import (
+    aic_bic,
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
     attach_predictive_metrics,
+    check_burnin,
     summarize_posterior,
 )
 
@@ -112,6 +114,7 @@ class MCMCSampler(BaseSampler):
         """
         import emcee
 
+        check_burnin(burnin, nsteps)
         model = get_model(model)
         prior = prior if prior is not None else model.default_prior
         if prior is None:
@@ -194,13 +197,13 @@ class MCMCSampler(BaseSampler):
             "converged": bool(converged), "seed": int(seed),
         }
         attach_band_metrics(info, lc, model.name, best_params, space)
+        aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
             sampler="mcmc", model=model.name, parameters=list(names), samples=samples,
             summary=summarize_posterior(samples, names), best_params=best_params,
             n_data=n, n_params=k, runtime_s=runtime, info=info,
             max_log_likelihood=max_log_likelihood,
-            aic=float(-2.0 * max_log_likelihood + 2 * k),
-            bic=float(-2.0 * max_log_likelihood + k * np.log(n)),
+            aic=aic, bic=bic,
         )
         result.emcee_sampler = sampler
         attach_predictive_metrics(result, lc, space)

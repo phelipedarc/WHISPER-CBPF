@@ -16,6 +16,16 @@ import os
 import shutil
 import subprocess
 
+#: One wording for "this needs the optional GPU stack", so the six lazy layers that can raise it
+#: cannot drift apart.
+GPU_EXTRA_HINT = "{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
+
+
+def gpu_extra_error(name, exc=None):
+    """An ``ImportError`` naming ``name`` and the extra that provides it."""
+    return ImportError(GPU_EXTRA_HINT.format(name=name))
+
+
 #: Environment variables that must be set before the first ``import jax``.
 REQUIRED_ENV = ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES", "XLA_PYTHON_CLIENT_MEM_FRACTION")
 
@@ -137,7 +147,7 @@ def x64_enabled():
     return bool(jax.config.jax_enable_x64)
 
 
-# ---------------------------------------------------------------------------------------------
+#
 # PRODUCTION RESOURCE BUDGET
 #
 # These are the limits real runs operate under, kept here so every script reads the same numbers

@@ -184,7 +184,7 @@ def _check_times(times, t_source, np_mod):
         return
     # SHAPE FIRST, and unconditionally: a tracer has a .shape even though it has no value, so the
     # cheap check that catches "wrong number of epochs" must not sit behind the conversion that
-    # only concrete arrays survive. This used to `return` from inside the except, so under a
+    # only concrete arrays survive. Returning from inside the except would mean that, under a
     # tracer NO check ran at all and a 7-element traced `times` was silently evaluated on the
     # closed-over 24-epoch grid.
     shape = getattr(times, "shape", None)
@@ -205,7 +205,7 @@ def _check_times(times, t_source, np_mod):
     # precision and no longer compares equal to the float64 source; float32 eps is 1.2e-7, so 1e-6
     # covers it with margin.
     #
-    # It used to be 1e-5, which is near-inert on MJD-valued times -- exactly what whisper's own
+    # 1e-5 would be near-inert on MJD-valued times -- exactly what
     # loader produces. At MJD 58000 a relative 1e-5 permits a 0.58 DAY epoch error, so shifts of
     # 0.001-0.5 d were all accepted; on a days-since-explosion grid the same rtol correctly
     # rejected 1e-5 d. Four orders of magnitude of behaviour depending on the caller's time origin

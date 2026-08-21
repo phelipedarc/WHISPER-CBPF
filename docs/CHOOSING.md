@@ -16,12 +16,11 @@ structural, not tuning problems.
 | You want a **Bayes factor**, not an information criterion | `nested` (alias `dynesty`) — the only sampler that returns `ln Z`, in `result.info["log_evidence"]`. Report `log_evidence_err` with it, and remember `ln Z` **depends on your prior widths in a way AIC/BIC do not**: measured on the same `flare` fit, widening one prior 100× moved `ln Z` by −4.1 ± 0.4 nats (analytic Occam expectation −ln 100 = −4.61) and moved AIC and BIC by −0.01. Only compare models whose priors you would defend *before* seeing the data. **Higher `ln Z` is better; lower AIC/BIC is better.** |
 | Amortised inference over many transients | `snpe` |
 
-## CPU or GPU: the crossover depends on two things this used to leave unsaid
+## CPU or GPU: there is no single crossover
 
-This section said, without qualification, "**the GPU crosses over at roughly 50,000 simulations**",
-and no measurement supporting it existed anywhere in the repository. It has now been measured, and
-the honest answer is that **there is no single crossover** — it moves by a factor of 60 depending on
-two choices the sentence never stated.
+It is tempting to quote one number — "the GPU wins past 50,000 simulations". Measured, that is not
+true: **the crossover moves by a factor of 60** depending on two choices, so both have to be stated
+alongside any figure.
 
 Measured on the one-component JAX kilonova, AT2017GFO, one idle A6000, 3 repeats:
 

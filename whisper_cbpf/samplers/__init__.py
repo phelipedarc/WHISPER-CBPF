@@ -9,8 +9,10 @@ from .abc_smc import ABCSMCSampler, fit_ABC_SMC
 from .base import (
     BaseSampler,
     SamplerResult,
+    aic_bic,
     attach_band_metrics,
     attach_predictive_metrics,
+    check_burnin,
     summarize_posterior,
 )
 from .mcmc import MCMCSampler, fit_MCMC

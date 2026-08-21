@@ -32,6 +32,8 @@ priors.
 """
 from __future__ import annotations
 
+from ...backends import gpu_extra_error
+
 __all__ = ["flare_model", "kilonova_model", "register_kilonova",
            "kilonova_two_model", "register_kilonova_two",
            "kilonova_three_model", "register_kilonova_three",
@@ -57,9 +59,7 @@ def _guarded(fn, name):
         try:
             import jax  # noqa: F401
         except ImportError as exc:
-            raise ImportError(
-                f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
-            ) from exc
+            raise gpu_extra_error(name) from exc
         return fn(*args, **kwargs)
 
     return wrapper
@@ -75,17 +75,13 @@ def __getattr__(name):
             try:
                 return importlib.import_module(f".{name}", __name__)
             except ImportError as exc:
-                raise ImportError(
-                    f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
-                ) from exc
+                raise gpu_extra_error(name) from exc
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
     try:
         mod = importlib.import_module("._factories", __name__)
     except ImportError as exc:
-        raise ImportError(
-            f"{name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
-        ) from exc
+        raise gpu_extra_error(name) from exc
     value = _guarded(getattr(mod, name), name)
     globals()[name] = value
     return value

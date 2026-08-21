@@ -54,7 +54,7 @@ _H_CGS = _h.cgs.value          # erg s
 _KB_CGS = _kB.cgs.value        # erg/K
 _MSUN_G = _Msun.cgs.value      # g
 _JY_CGS = 1e-23                # 1 Jy = 1e-23 erg s^-1 cm^-2 Hz^-1
-_AB_ZP_JY = 3631.0             # AB zero point
+from ..io.photometry import AB_ZEROPOINT_JY as _AB_ZP_JY
 _MDOT_EDD = 0.05               # disk accretion rate [Eddington] (fixed)
 _EXP_CLIP = 700.0              # keep exp() finite (just under float64's exp overflow ~709)
 _DEFAULT_LAMBDA_AA = 6000.0    # fallback effective wavelength for unresolved bands

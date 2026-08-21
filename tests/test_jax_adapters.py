@@ -6,8 +6,8 @@ error**: an auto-built density that quietly adds the prior on top of what NumPyr
 contributes, and a parameter order taken from the prior being fed to a model that expects its own.
 Both are tested first and directly.
 
-Most of these need JAX but **not a GPU** — they run on CPU-JAX in ``phe_sbi_2``. The three at the
-top need no JAX at all and run on the minimal install (``phe_sbi``) and in CI.
+Most of these need JAX but **not a GPU** — they run on CPU-JAX in ``a GPU environment``. The three at the
+top need no JAX at all and run on the minimal install (``a CPU environment``) and in CI.
 """
 from __future__ import annotations
 

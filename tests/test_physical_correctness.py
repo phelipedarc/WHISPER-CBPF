@@ -1,4 +1,5 @@
-"""Regression tests for the scientific-review fixes (physical + Bayesian correctness)."""
+"""Physical and Bayesian correctness: exact likelihoods, importance weights, blackbody
+normalisation, extinction bounds, and the flux-to-magnitude convention."""
 import warnings
 
 import numpy as np

@@ -1,7 +1,7 @@
 """Backend detection and the GPU environment policy.
 
-Re-export layer over :mod:`._env` (whisper-GPU @ 10796a0, ``_env.py``). Imports nothing heavier
-than the standard library, so ``import whisper_cbpf`` never touches JAX, CUDA or torch.
+Re-export layer over :mod:`._env`. Imports nothing heavier than the standard library, so
+``import whisper_cbpf`` never touches JAX, CUDA or torch.
 
 The environment bootstrap is a **shell script**, ``whisper_cbpf/backends/env.sh``, and has to be:
 it sets the CUDA variables *before Python starts*, because JAX reads device visibility and memory
@@ -18,6 +18,7 @@ from ._env import (  # noqa: F401
     env_report,
     env_script,
     env_script_hint,
+    gpu_extra_error,
     gpu_list,
     n_jobs,
     require_jax,

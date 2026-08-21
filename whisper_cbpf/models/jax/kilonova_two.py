@@ -1,42 +1,39 @@
 """Two-component (and N-component) kilonova in JAX -- redback's ``two_component_kilonova_model``.
 
-HOW THE COMPONENTS COMBINE
-    redback (``kilonova_models.py:1092-1181``) evaluates ``_one_component_kilonova_model`` once per
-    component and **sums the emitted radiation, not the luminosities**. Each component keeps its own
-    photosphere ``(T, R)`` and its own ``temperature_floor``, so they are two independent
-    blackbodies. Summing L and forming a single blackbody at some mean temperature would be a
-    different -- and wrong -- model. There is no interaction: no shared photosphere, no opacity
-    mixing, no reprocessing.
+**How the components combine.** redback (``kilonova_models.py:1092-1181``) evaluates
+``_one_component_kilonova_model`` once per component and sums the emitted radiation, not the
+luminosities. Each component keeps its own photosphere ``(T, R)`` and its own
+``temperature_floor``, so they are two independent blackbodies; there is no shared photosphere, no
+opacity mixing and no reprocessing. Summing L and forming a single blackbody at some mean
+temperature would be a different, and wrong, model.
 
-    Consequently **fluxes add before the band integral and before the log**. Magnitudes of separate
-    components must never be summed or averaged. Because the band integral and the AB zero point
-    are both linear in f_nu, summing the spectra and integrating once equals integrating each and
-    summing in *flux* -- but only in flux.
+So **fluxes add before the band integral and before the log**, and magnitudes of separate
+components must never be summed or averaged. Because the band integral and the AB zero point are
+both linear in f_nu, summing the spectra and integrating once equals integrating each and summing
+-- but only in flux.
 
-WHY THIS IMPORTS THE ONE-COMPONENT CORE INSTEAD OF COPYING IT
-    A self-contained copy is attractive until the original is fixed. ``kilonova.py`` currently
-    carries eight numbered algebraic identities, each removing a specific defect that a copy made
-    before them would silently reintroduce -- among them an arctan branch applied on the wrong side
-    of t0 (58% error in L), an XLA reassociation that makes float32 flux density NaN, a float32
-    gradient overflow that FLIPS THE SIGN of d/d(vej), and a magnitude clamp that does nothing
-    because ``float32(1e-300) == 0``. Sharing the core means a fix lands once. The cost is an
-    import; the benefit is that this file cannot drift.
+**Why this imports the one-component core rather than copying it.** ``kilonova.py`` carries eight
+algebraic identities, each removing a specific numerical defect that a copy made before them would
+silently reintroduce -- among them an arctan branch applied on the wrong side of t0 (58% error in
+L), an XLA reassociation that makes float32 flux density NaN, a float32 gradient overflow that
+flips the sign of d/d(vej), and a magnitude clamp that does nothing because
+``float32(1e-300) == 0``. Sharing the core means a fix lands once, and this file cannot drift.
 
-VALIDITY HORIZON -- read this before comparing against redback
-    ``kilonova.py`` deliberately diverges from redback past ``t ~ 2.66 * t_diff``, where redback's
-    trapezoid is under-resolved. With two components there are two ``t_diff`` values, and under
-    redback's own prior they can differ by up to a factor 21. So:
+**Validity horizon -- read this before comparing against redback.** ``kilonova.py`` deliberately
+diverges from redback past ``t ~ 2.66 * t_diff``, where redback's trapezoid is under-resolved. With
+two components there are two ``t_diff`` values, and under redback's own prior they can differ by up
+to a factor of 21. So:
 
-      * use ``2.66 * min(t_diff_1, t_diff_2)`` as the horizon, not the max and not a flux-weighted
-        average -- the SHORT component enters the bad regime first;
-      * cross-check **per component and per band**, never on the summed light curve. A bright,
-        correct component can mask a 10x-wrong faint one, letting a broken port pass an H/Ks test
-        while g-band is a magnitude off. The blue (short-t_diff) component is both the one that
-        dominates the blue bands and the one that breaks first.
+* use ``2.66 * min(t_diff_1, t_diff_2)`` as the horizon -- not the max, and not a flux-weighted
+  average, because the *short* component enters the bad regime first;
+* cross-check per component and per band, never on the summed light curve. A bright, correct
+  component can mask a 10x-wrong faint one, letting a broken port pass an H/Ks test while g-band is
+  a magnitude off. The blue (short-``t_diff``) component both dominates the blue bands and breaks
+  first.
 
-    Also note ``2comp(p1,p2) != 1comp(p1) + 1comp(p2)`` *in redback*, because its two-component path
-    starts its dense grid at 1e-2 s and its one-component path at 1e-3 s. Do not assert that
-    identity against redback. In this module the two DO agree, which is a property worth testing.
+Note also that ``2comp(p1, p2) != 1comp(p1) + 1comp(p2)`` *in redback*, because its two-component
+path starts its dense grid at 1e-2 s and its one-component path at 1e-3 s. Do not assert that
+identity against redback. Here the two do agree, which is a property worth testing.
 """
 from __future__ import annotations
 
@@ -247,18 +244,19 @@ PARAMETERS_3 = ["mej_blue", "vej_blue", "temperature_floor_blue", "kappa_blue",
 def villar_prior(n_components=2, with_sigma=True):
     """Villar+2017 multi-component kilonova priors, all opacities free.
 
-    THE OPACITY RANGES ARE DISJOINT, AND THAT IS THE WHOLE POINT
-        kappa_blue   U(0.1, 1.0)
-        kappa_purple U(1.0, 5.0)     (three-component only)
-        kappa_red    U(5.0, 30.0)    (U(1.0, 30.0) when there is no purple component)
+    The opacity ranges are disjoint, and that is the point::
 
-        With identical per-component priors the posterior is exactly symmetric under relabelling:
-        every mode has a mirror twin, chains lock into different labellings, r-hat measures which
-        one each chain fell into rather than convergence, and per-parameter medians are medians of a
-        mixture. The usual patch is to sort each draw post hoc. Disjoint opacities remove the
-        problem at the source -- the components are no longer exchangeable, so there is nothing to
-        relabel and the ordering constraint costs no extra machinery. Any sort-by-kappa step applied
-        downstream becomes a no-op, which is harmless.
+        kappa_blue    U(0.1, 1.0)
+        kappa_purple  U(1.0, 5.0)     (three-component only)
+        kappa_red     U(5.0, 30.0)    (U(1.0, 30.0) when there is no purple component)
+
+    With identical per-component priors the posterior is exactly symmetric under relabelling: every
+    mode has a mirror twin, chains lock into different labellings, r-hat measures which one each
+    chain fell into rather than convergence, and per-parameter medians are medians of a mixture. The
+    usual patch is to sort each draw afterwards. Disjoint opacities remove the problem at the
+    source: the components are no longer exchangeable, so there is nothing to relabel, and the
+    ordering constraint costs no extra machinery. A downstream sort-by-kappa becomes a harmless
+    no-op.
 
     WHY THIS REPLACES redback's DEFAULT AS THE DEFAULT HERE
         redback's `two_component_kilonova_model.prior` cannot contain the published AT2017GFO

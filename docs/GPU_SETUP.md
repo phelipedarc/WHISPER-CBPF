@@ -78,12 +78,10 @@ wp.register_supernova("arnett", ["ztfg", "ztfr"], redshift=0.0206, dl_cm=2.8e26)
 inside the engine and raises when it is first traced. A registry that contains
 `tde_gaussianrise_jax` or `arnett_jax` is therefore not evidence that the session can run it.
 
-> This document said until 2026-08-13 that `register_supernova` raises *during* registration and
-> that the model never enters the registry. Measured, in float32 on `phe_sbi_2`: all **12/12**
-> supernovae register successfully and all twelve appear in `list_models()`. `build_sn_grid` — which
-> does carry the check — is only reached at factory time when `times=` is passed, and the default is
-> `times=None`. The claim was also in `models/jax/__init__.py` and `_factories.py`; all three are
-> corrected.
+> Registration itself succeeds: in float32, all **12/12** supernovae register and all twelve appear
+> in `list_models()`. `build_sn_grid` does carry the float64 check, but it is only reached at factory
+> time when `times=` is passed, and the default is `times=None`. So the guard fires at the first
+> `predict`, not at registration.
 
 Two things make this awkward, and neither is hidden from you:
 

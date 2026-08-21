@@ -1,80 +1,19 @@
-"""
-Standalone JAX implementation of redback's `one_component_kilonova_model`.
+"""JAX implementation of redback's ``one_component_kilonova_model``.
 
-Runtime dependencies: jax only. No redback, no sncosmo, no astropy, no scipy.
-(sncosmo is used once, offline, to export filter curves -- see make_filter_set.)
+Depends on jax only; sncosmo is used once, offline, to export filter curves (see
+:func:`make_filter_set`). This module is also the shared substrate for
+:mod:`whisper_cbpf.models.jax.tde` and :mod:`whisper_cbpf.models.jax.supernova`: the Planck
+function, the AB band integral, the filter export, the diffusion quadrature and the interstellar
+extinction laws all live here.
 
-PHYSICS IS UNCHANGED. A handful of expressions are rewritten using exact algebraic
-identities that remove overflow / catastrophic cancellation present in the
-original. Each is a rearrangement, not an approximation:
+The physics is redback's. Eight expressions are rewritten using exact algebraic identities that
+remove overflow or catastrophic cancellation present in the original; five of them are what make
+the float32 path usable at all. They, and the deliberate deviations -- chiefly that the band
+integral is taken against the real bandpass at the observation times rather than splined off a
+dense grid -- are listed in ``docs/PORTING_NOTES.md``.
 
- 1. Heating rate (redback kilonova_models.py:1884)
-        0.5 - arctan((t - t0)/sig)/pi   ==   arctan(sig/(t - t0))/pi   (t > t0)
-    The original subtracts two numbers that agree to ~7 digits by t = 1 d.
-    It loses ~9 of float64's 16 digits and ALL of float32's.
-
- 2. Diffusion integral (redback kilonova_models.py:1885-1889)
-        exp(-t^2/td^2)/td * cumtrapz[f (t'/td) exp(t'^2/td^2)]
-    exp(t'^2/td^2) overflows float64 once t' > 26.6*td, giving inf*0 = NaN.
-    Folding the constant prefactor inside the integral yields
-        1/td * int f(t') (t'/td) exp(-(t^2 - t'^2)/td^2) dt'
-    Expanding cumulative_trapezoid and distributing the prefactor reproduces
-    redback's DISCRETE sum term-by-term, so the quadrature is identical.
-
- 3. Planck denominator: redback's _inverse_expm1 split at argument > 50,
-    reproduced exactly.
-
- 4. Planck prefactor (float32, jit)
-        2 pi h nu^3 / c^2   ==   (2 pi k^3 / (h^2 c^2)) * x^3 * T^3,  x = h nu / (k T)
-    NUSCALE alone does not survive jit here: XLA rewrites (c*nu)**3 -> c**3 * nu**3,
-    so nu^3 = 1.3e44 overflows float32 to +inf while the folded constant underflows
-    to exactly 0, and inf*0 = NaN. Both x and T are O(1), so the rewritten form has
-    nothing left to overflow. jax.lax.optimization_barrier pins the scaling.
-
- 5. Gradient-safe divisors (float32 backward pass)
-        2 kappa m0 / (BETA v0 c)          ==  TDIFF_CONST * kappa * mej / vej
-        (L/(4 pi sigma R^2))^0.25 S^0.25  ==  T_CONST * L^0.25 / sqrt(R)
-        (L/(4 pi sigma Tf^4))^0.5 S^0.5   ==  R_FLOOR_CONST * sqrt(L) / Tf^2
-    JAX differentiates x/y w.r.t. y as -x/(y*y); in float32 that square overflows
-    for |y| > 1.84e19 and silently returns 0. Both original divisors exceed that,
-    and both depend only on vej -- which is exactly why d/dvej was wrong (and
-    sign-flipped) while d/dmej and d/dkappa were correct to six digits.
-
- 6. Diffusion quadrature: s = (t^2 - t'^2)/td^2 on the outer panel and z = log t'
-    on the inner one, replacing the geomspace trapezoid grid. Documented in full at
-    the quadrature constant block below.
-
- 7. Series for log1p(x)/x  (float32 AND float64 backward pass)
-        log1p(x)/x  ==  1 - x/2 + x^2/3 - x^3/4 + ...
-    The naive quotient differentiates to a term in 1/x**2, and x = 2 b t^d reaches
-    1.2e-17 at the inner quadrature's first node. d/dbv and d/ddv then overflow with
-    OPPOSITE signs and -inf + inf = NaN. No floor can fix it; see _log1p_over_x.
-
- 8. AB-zeropoint units for synthetic photometry (float32 backward pass)
-        f_nu / AB_ZEROPOINT  ==  (PLANCK_T3/AB_ZEROPOINT) * x^3 T^3 * ratio / (e^x - 1)
-    d(mag)/d(f_nu) carries 1/(u * norms) and reaches 7.0e38 > FLT_MAX in cgs units
-    once extinction can push a band past AB ~ 43. Measuring the spectrum in AB-zero-
-    point units instead leaves ~19 decades of headroom. See INV_AB_ZEROPOINT.
-
-Identities 1, 4-5, 7 and 8 are what make the float32 path usable; identity 1 was
-previously applied on the wrong side of t0 (see the comment in `bolometric`).
-
-OPTIONAL EXTRAS, all default-off and all costing exactly nothing when unused:
-    * explosion time -- source_time_s()/pre_explosion() map observer days to
-      source-frame seconds since explosion; t_exp is a traced, differentiable scalar.
-    * interstellar extinction -- F99 (default) and CCM89, MW and/or host, with the
-      wavelength shape precomputable at setup. The no-extinction sentinel is None, so
-      the term vanishes at TRACE time and the compiled graph is byte-identical.
-    * exact filter cell integrals in make_filter_set (2.127 -> 0.127 mmag at
-      n_wave = 1000; the default is now 5000).
-
-DELIBERATE DEVIATION FROM REDBACK (selected):
-    Redback evaluates the physics on a dense grid, builds an sncosmo
-    TimeSeriesSource, and splines onto the observation times. This module
-    evaluates the physics directly AT the observation times by making them
-    rows of the diffusion kernel. No spline, no interpolation error, and the
-    kernel is (n_obs, n_grid) instead of (n_grid, n_grid). Expect small
-    differences from redback traceable to the removed spline.
+Optional extras, all default-off and all free when unused: an explosion time, interstellar
+extinction (F99 or CCM89, Milky Way and/or host), and exact filter cell integrals.
 """
 
 import warnings
@@ -672,7 +611,7 @@ def extincted_weights(weights, lam_obs_ang, redshift=0.0, ebv_mw=0.0, ebv_host=0
 
 
 # --- backward compatibility with the retired (grid_s, row) calling convention ---
-# `bolometric`, `flux_density_mjy` and `ab_magnitude` used to take (grid_s, row) and
+# `bolometric`, `flux_density_mjy` and `ab_magnitude` also accept the older (grid_s, row) form and
 # evaluate at grid_s[row]. Since identity 6 that indirection is dead weight (grid_s was
 # never read any other way), and it is also what blocked a fittable t_exp, so the times
 # are now passed directly. The old form still works: the shim below detects it and does
@@ -1084,96 +1023,3 @@ ab_magnitude_jit = jax.jit(ab_magnitude, static_argnames=('law', 'arnett_prefact
 
 
 # --- self-test -------------------------------------------------------------
-
-if __name__ == "__main__":
-    import time
-
-    t_obs = np.geomspace(0.1, 30.0, 60)
-    z, dl = 0.01, 1.34e26                  # ~43 Mpc
-
-    t_src = source_time_s(t_obs, z, t_exp_days=0.0)
-    print(f"t_src {t_src.shape}, kernel {(t_src.size, GL_X.size)} (outer) + "
-          f"{(t_src.size, GL_XI.size)} (inner)")
-
-    lum, temp, rad = bolometric_jit(t_src, 0.01, 0.2, 1.0)
-    print(f"L peak {float(lum.max()) * LSCALE:.3e} erg/s at "
-          f"{float(t_obs[int(jnp.argmax(lum))]):.2f} d")
-    print(f"T range {float(temp.min()):.0f}-{float(temp.max()):.0f} K")
-    print(f"all finite: {bool(jnp.all(jnp.isfinite(lum)))}")
-
-    # Flat top-hat filters stand in for real bandpasses in this self-test.
-    lam = np.geomspace(1000.0, 30000.0, 1000)
-    trans = np.zeros((2, 1000))
-    trans[0][(lam > 4000) & (lam < 5500)] = 1.0
-    trans[1][(lam > 5500) & (lam < 7000)] = 1.0
-    W, N = ab_weights(lam, trans)
-    bidx = jnp.asarray(np.arange(60) % 2)
-
-    mag = ab_magnitude_jit(t_src, bidx, W, N, jnp.asarray(lam),
-                           z, dl, 0.01, 0.2, 1.0)
-    print(f"mag range {float(mag.min()):.2f} - {float(mag.max()):.2f}")
-
-    fd = flux_density_jit(t_src, 5e14, z, dl, 0.01, 0.2, 1.0)
-    print(f"flux density peak {float(fd.max()):.3e} mJy")
-
-    # the retired (grid_s, row) signature must give the identical answer
-    grid, row = build_time_grid(t_obs, z, n_dense=300)
-    mag_old = ab_magnitude_jit(grid, row, bidx, W, N, jnp.asarray(lam),
-                               z, dl, 0.01, 0.2, 1.0)
-    lum_old, _, _ = bolometric_jit(grid, row, 0.01, 0.2, 1.0)
-    print(f"legacy (grid,row) API max |dmag| = "
-          f"{float(jnp.max(jnp.abs(mag_old - mag))):.3e}, max |dL| = "
-          f"{float(jnp.max(jnp.abs(lum_old - lum))):.3e}")
-
-    # t_exp: epochs before the explosion return exactly zero flux
-    te = 5.0
-    t_src_e = source_time_s(t_obs, z, te)
-    fd2 = flux_density_jit(t_src_e, 5e14, z, dl, 0.01, 0.2, 1.0)
-    npre = int(jnp.sum(pre_explosion(t_src_e)))
-    print(f"t_exp={te} d: {npre}/60 epochs pre-explosion, all exactly zero: "
-          f"{bool(jnp.all(fd2[:npre] == 0.0))}")
-
-    # extinction: MW at the observed wavelength, host at the rest wavelength
-    xi_mw = extinction_shape(lam, z, frame='observer')
-    xi_host = extinction_shape(lam, z, frame='rest')
-    mag_ext = ab_magnitude_jit(t_src, bidx, W, N, jnp.asarray(lam), z, dl,
-                               0.01, 0.2, 1.0, 4000.0,
-                               ebv_mw=0.05, ebv_host=0.10,
-                               xi_mw=xi_mw, xi_host=xi_host)
-    print(f"E(B-V) mw=0.05 host=0.10: dmag = "
-          f"{float(mag_ext[0] - mag[0]):.4f} (g), "
-          f"{float(mag_ext[1] - mag[1]):.4f} (r); "
-          f"A/E(B-V) at 5000 A = {float(xi_mw[np.searchsorted(lam, 5000.)]):.3f}")
-
-    g = jax.grad(lambda p: jnp.sum(ab_magnitude(
-        source_time_s(t_obs, z, p[0]), bidx, W, N, jnp.asarray(lam), z, dl,
-        p[1], p[2], p[3], p[4]))
-    )(jnp.array([0.0, 0.01, 0.2, 1.0, 4000.0]))
-    print(f"d(mag)/d[t_exp,mej,vej,kappa,Tf] = {g}, finite: "
-          f"{bool(jnp.all(jnp.isfinite(g)))}")
-
-    ge = jax.grad(lambda p: jnp.sum(ab_magnitude(
-        t_src, bidx, W, N, jnp.asarray(lam), z, dl, 0.01, 0.2, 1.0,
-        ebv_mw=p[0], ebv_host=p[1], r_v_mw=p[2], r_v_host=p[3]))
-    )(jnp.array([0.05, 0.10, 3.1, 3.1]))
-    print(f"d(mag)/d[ebv_mw,ebv_host,rv_mw,rv_host] = {ge}, finite: "
-          f"{bool(jnp.all(jnp.isfinite(ge)))}")
-
-    # extreme parameters: where redback overflows to NaN
-    for mej, vej, kappa in [(0.001, 0.5, 0.5), (0.001, 0.7, 0.1), (0.07, 0.68, 1.5)]:
-        l2, _, _ = bolometric_jit(t_src, mej, vej, kappa)
-        g2 = jax.grad(lambda p: jnp.sum(bolometric(
-            t_src, p[0], p[1], p[2], 500.0)[2]))(jnp.array([mej, vej, kappa]))
-        print(f"mej={mej} vej={vej} kappa={kappa}: finite="
-              f"{bool(jnp.all(jnp.isfinite(l2)))}, Lmax={float(l2.max()):.2e}, "
-              f"grad finite={bool(jnp.all(jnp.isfinite(g2)))}")
-
-    f = jax.jit(lambda p: ab_magnitude(source_time_s(t_obs, z, p[0]), bidx, W, N,
-                                       jnp.asarray(lam), z, dl, p[1], p[2], p[3], p[4]))
-    p = jnp.array([0.0, 0.01, 0.2, 1.0, 4000.0])
-    f(p).block_until_ready()
-    t0 = time.perf_counter()
-    for _ in range(200):
-        out = f(p)
-    out.block_until_ready()
-    print(f"{(time.perf_counter() - t0) / 200 * 1e3:.3f} ms per light curve")

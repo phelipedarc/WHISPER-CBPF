@@ -1,281 +1,24 @@
-"""
-Standalone JAX implementation of redback's self-contained TDE models.
+"""JAX implementation of redback's self-contained TDE models.
 
-Runtime dependencies: jax and numpy only. No redback, no astropy, no scipy.
-(:mod:`whisper_cbpf.models.jax.kilonova` is imported for shared constants and for the
-already-hardened blackbody / AB-photometry machinery -- see "REUSE" below.)
+Depends on jax and numpy only. The blackbody, the AB band integral and the filter export come from
+:mod:`whisper_cbpf.models.jax.kilonova`; nothing is copied.
 
-PHYSICS IS UNCHANGED. Every deviation from redback is one of
-    (a) an exact algebraic identity,
-    (b) a change in how an INVALID region is REPRESENTED (mask instead of slice,
-        guarded value instead of inf/NaN), never a change to values inside the
-        valid region, or
-    (c) a change of DEFAULT that is stated, measured and justified here.
-All three are numbered as CHANGE 1..8 below and referenced at each site.
+Ported: ``_analytic_fallback``, ``_cooling_envelope`` (the Sarin & Metzger envelope ODE),
+``_stream_stream_collision``, ``TemperatureFloor``, ``TDEPhotosphere``, ``CocoonPhotosphere``,
+``Diffusion``, ``AsphericalDiffusion``, ``Viscous``, ``CSMDiffusion``, a photometric layer (flux
+density and AB band magnitude), and the Gaussian-rise stitched light curve.
 
-WHAT IS PORTED, AND WHAT IS NOT
-    ported, validated : _analytic_fallback, _cooling_envelope (the Sarin & Metzger
-                        envelope ODE), _stream_stream_collision, TemperatureFloor,
-                        TDEPhotosphere, CocoonPhotosphere, Diffusion,
-                        AsphericalDiffusion, Viscous, CSMDiffusion, plus a
-                        photometric layer (flux density and AB band magnitude) and
-                        the Gaussian-rise stitched light curve.
-    NOT ported         : DenseCore -- it is broken in redback and unused by any TDE
-                        model. `mask_all = mask_2 & mask_3 & mask_4` ANDs two boolean
-                        arrays of length n with `np.arange(peak_idx, n)`, an INTEGER
-                        index array of length n - peak_idx. For peak_idx > 0 the shapes
-                        do not broadcast and it raises; for peak_idx == 0 numpy's
-                        bitwise `&` yields an integer array whose only values are 0 and
-                        1, which is then used as a fancy index, so it writes to rows 0
-                        and 1 instead of selecting "after peak and optically thick".
-                        Verified against redback/photosphere.py:274-309. Porting it
-                        would mean guessing the intent, which would change the physics.
-    NOT portable       : fitted / fitted_pl_decay / fitted_exp_decay (external compiled
-                        package), _tde_mosfit_engine (ragged dtype=object tables loaded
-                        from disk; only its final scaling and interpolation could move).
+**float64 is required.** The Euler integration accumulates increments ~1e-6 of the state, which
+float32 cannot resolve, so the engine raises rather than returning a plausible wrong answer::
 
-REUSE, NOT COPYING
-    The blackbody, the AB weights and the filter export come from
-    :mod:`whisper_cbpf.models.jax.kilonova`, whose module docstring documents eight numbered
-    algebraic identities removing specific numerical defects. Copying them here would
-    silently reintroduce every one of those defects the next time the original is fixed.
-    The single deliberate exception is the redshift factor -- see CHANGE 7.
+    import jax; jax.config.update("jax_enable_x64", True)   # before the first array exists
 
-    Only one thing is imported for its *physics*: nothing. The kilonova's ejecta model is
-    not involved; what is shared is arithmetic (Planck function, band integral, extinction).
+The defaults that differ from one or other redback release -- ``n_time=5000``, ``dilation=True``,
+and the envelope's own termination criterion -- and every other deviation, with the measurements
+behind them, are in ``docs/PORTING_NOTES.md``.
 
-===============================================================================
-THE CHANGES
-===============================================================================
-
- 1. SEQUENTIAL LOOP -> jax.lax.scan.  `_cooling_envelope` is a forward-Euler
-    integration whose step reads exactly four quantities from the previous step:
-    (Me, Ee40, MdotBH, Edotbh40). Those become the scan carry; Mdotfb is precomputable
-    and is passed as a scan input at both ii and ii-1. Same dt, same arithmetic,
-    term for term. Measured against redback's own function: max relative difference
-    in L is 6e-15 over the whole valid region, and in T and Rv 1e-14 over the first
-    95% of it (see CHANGE 3 for the last 5%).
-
- 2. DATA-DEPENDENT SLICE -> BOOLEAN MASK.  redback returns `Lrad[:constraint]`, whose
-    length depends on the data; under jit an array shape must be known at trace time.
-    The full arrays are returned together with `valid`, and `arr[np.asarray(valid)]`
-    outside jit reproduces redback's slice. This also removes a crash: redback's
-    `constraint` can be 0 -- 0.43% of redback's shipped prior, by Monte Carlo over the
-    grid-independent condition Rv0 < Rcirc/2 -- and redback 1.12.0's
-    `output.time_since_fb = output.time_temp - output.time_temp[0]` then raises IndexError on
-    an empty array. Here it is simply an all-False mask, and the photometry returns exactly
-    zero flux. NOTE that redback 1.15.1 does NOT raise there: it sets `constraint_1 = 5000`
-    and returns a full curve, so this is the single largest divergence from the installed
-    redback (measured: ours 0 vs redback 389 at n=500, ours 0 vs 4817 at n=5000). Ours is the
-    defensible answer -- the envelope starts at 0.75x Rcirc/2, i.e. already inside the
-    circularisation radius -- but it is a behaviour change, not only crash avoidance.
-
- 3. THE LIGHT CURVE STOPS WHERE THE ENVELOPE STOPS, NOT WHERE REDBACK'S ARITHMETIC
-    DIVERGES.  This is the one place the port deliberately does not chase redback, and the
-    reason is measurable rather than aesthetic.
-
-    redback stops at  min( first(Rv < Rcirc/2), first(Me < 0) ), inside a shared try/except
-    so that if EITHER search comes up empty BOTH indices become len(time_temp). But `Me < 0`
-    is only reached one to three steps AFTER Ee crosses zero -- i.e. after Rv has already
-    diverged, at which point Rv oscillates between +1e14 and -1e15 on successive Euler steps
-    (measured: Rv[3434:3442] = 3.2e14, 2.4e14, 4.5e14, 1.9e14, -9.5e15, 2.1e14, 9.6e14,
-    1.8e14). So the index is read off a chaotic trajectory, and it is not reproducible:
-
-        redback's loop vs ITSELF, Rv**2 respelled as Rv*Rv   100.0% identical, max 0 steps
-        redback's loop vs ITSELF, beta nudged by ONE ULP      90.0% identical, max 4 steps
-        a version of this file that carried redback's raw
-        trajectory alongside the guarded one, purely to
-        reproduce that index                                 77.3% identical, max 1793 steps
-
-    The last row is the point: an implementation built specifically to reproduce the index
-    could not, because there is no stable answer to reproduce. What the model actually says
-    is simple -- the envelope is over when it runs out of energy, runs out of mass, or has
-    shrunk to the circularisation radius:
-
-        stop = (Ee <= 0) | (Me <= 0) | (Rv < Rcirc/2)
-
-    Each term is EXACT while the envelope lives, which is the only place any of them needs
-    to be, and none of them reads a diverged quantity. The shared try/except is not part of
-    that statement; it is exception handling, and it is what turned "one of the two searches
-    found nothing" into "return 5000 points of post-mortem".
-
-    DEVIATION, stated plainly, and measured rather than guessed. redback's shared try/except
-    fires when EITHER search comes up empty. Which one? Not the branch you would expect: in
-    3000 draws at n_time=500, `Rv < Rcirc/2` firing while alive with `Me` never going
-    negative occurred ZERO times. What does occur (0.17%) is the mirror image -- `Me < 0`
-    fires and `Rv < Rcirc/2` never does -- because once Me goes negative, Ee and Me flip sign
-    TOGETHER on every step (Ee: -1.85e11, +2.15e13, -2.44e15 ...; Me: -1.76e33, +2.15e35,
-    -2.43e37 ...), so their ratio pins Rv at a constant +1.57e12 cm, permanently above
-    Rcirc/2. redback then returns all 500 points, including 53 with Me < 0 and 53 NaN
-    temperatures. A further 0.30% of draws at n_time=5000 have NEITHER condition firing.
-    This module stops at the death index in both. Elsewhere the two agree within redback's
-    own irreproducibility: restricted to draws where both of redback's conditions do fire,
-    this module is exact on 85.3% (n=500) / 81.9% (n=5000) with a maximum deviation of 5 and
-    14 steps, against redback-vs-itself-under-one-ulp at 93.5%/89.3% and maxima of 6 and 12.
-
-    `meaningful` narrows `valid` by the same discipline -- the model's own domain rather than
-    a percentage of it. The envelope must still be optically thick enough to put its
-    photosphere outside itself, Lamb > 1/e, i.e. Rph > 0; below that redback's Rph goes
-    negative and is then squared into a blackbody, reporting a positive flux from a negative
-    radius (1.77% of prior draws). An earlier version of this file trimmed a measured 15% of
-    the curve instead. A fraction of an index is not a physical statement: it removed good
-    points from short curves and kept bad ones on long.
-
- 4. errstate -> GUARDS ON THE INPUTS, NOT ON THE OUTPUTS.  redback wraps the loop in
-    np.errstate(invalid='ignore', divide='ignore') and slices the resulting inf/NaN away
-    afterwards. JAX cannot do that: `jnp.where(c, f(x), g(x))` evaluates BOTH branches
-    and its VJP multiplies the discarded one by zero, and 0 * inf = NaN, so a NaN that
-    never appears in the forward output still destroys the gradient.
-
-    THIS IS THE ONE THAT MATTERS, and it is the defect the reference port shipped with.
-    Guarding only `log(Lamb)` is not enough. When Ee crosses zero, Rv = 2GM Me/(5 Ee)
-    goes to +-inf and everything downstream of it -- Lamb, Rph, Teff, tacc, MdotBH --
-    inherits inf/NaN. Measured on the reference port at (mbh_6, m*, eta, alpha, beta)
-    = (1, 1, 0.05, 0.1, 1):
-
-        d/d(params) of sum(L)   : finite   <- the only thing that port tested
-        d/d(params) of sum(T)   : NaN
-        d/d(params) of sum(Rph) : NaN
-        d/d(params) of sum(Rv)  : NaN
-        d/d(params) of sum(Me)  : NaN
-
-    L is the exception precisely because it is the one output that never touches Rv:
-    Lrad = Ledd40 + Edotfb, and Edotfb depends on Racc = zeta*Rv[0]*(t/tfb)^(2/3), i.e.
-    on the INITIAL radius only. So the natural smoke test is the one test that cannot
-    see the bug -- and on that same test d/d(eta), d/d(alpha) and d/d(beta) come back
-    EXACTLY 0.0, because Lrad does not depend on them at all. Three zeros and two
-    finite numbers reads like a pass.
-
-    Every photometric use of this model goes through T and Rph. So as shipped, the
-    reference port is unusable with NUTS, HMC, or any gradient-based sampler.
-
-    The fix is the kilonova module's double-where discipline: sanitise the INPUT to
-    the singular operation so neither branch can produce a non-finite value, then
-    select. `alive = (Ee > 0) & (Me > 0)` gates the two divisions; where it holds, the
-    arithmetic is textually identical to redback's and the result is bit-identical.
-    After the fix, AD agrees with central finite differences to 1.1e-4 (T), 9.7e-6
-    (Rph) and 7.2e-7 (L) on an interpolated light curve.
-
-    A GUARD MAY MOVE THE SINGULAR POINT; IT MAY NOT MOVE THE DYNAMICS. An intermediate
-    version of this file violated that and the failure was silent and severe: with
-    `Ee` replaced by a positive sentinel after death, Rv jumped to +1.1e23, tacc ~ Rv^2
-    exploded, MdotBH collapsed to ~0 and the envelope GREW instead of draining, so
-    `Me < 0` never fired and -- through redback's shared try/except -- 6.55% of the prior
-    box never terminated at all. It returned photosphere radii to -5e24 cm and temperatures
-    of 0.06 K inside the region it called valid, with gradients that were finite, smooth,
-    confident and wrong by 3-5 orders of magnitude and in sign. CHANGE 3 is what makes the
-    guard safe: the stopping test no longer reads anything downstream of the guarded
-    division, so guarding it cannot change where the curve ends.
-
- 5. THE ARITHMETIC MUST BE TEXTUALLY IDENTICAL, NOT JUST MATHEMATICALLY.  A forward-Euler
-    recursion amplifies round-off. Writing `Rv * Rv` where redback writes `Rv ** 2`
-    -- the same number, a different XLA op -- changed Rv in the 16th digit at step 4 and
-    Me by 5e-6 RELATIVE by the end of the integration. Every expression below is
-    therefore kept in redback's exact spelling, and the guards are pure `where`
-    selections that do not touch it. Do not "simplify" them.
-
- 6. WHICH REDBACK? THE TWO INSTALLED VERSIONS DISAGREE, AND n_time IS THE REASON.
-    This machine has redback **1.12.0** (the editable clone this project pins, and what
-    `phe_sbi` imports) and redback **1.15.1** (site-packages in `phe_sbi_2`). Their
-    `_cooling_envelope` loop bodies are IDENTICAL -- diffed line by line, only whitespace
-    separates them -- but four things around the loop are not:
-
-        1.12.0                                  1.15.1
-        np.logspace(..., 5000)                  np.logspace(..., 500)      <- 10x coarser
-        no f_debris                             f_debris / calculate_f_debris
-        constraint = min(c1, c2)                if c1 == 0: c1 = 5000
-                                                constraint = max(min(c1, c2), 4)
-        tfb = calc_tfb(bec, mbh_6, m*)          tfb = calc_tfb(bec, mbh_6, m* * f_debris)
-
-    So "agrees with redback" is ambiguous until the version is named, and a test that
-    passes in one container fails in the other. Both are reproducible here:
-    ``REDBACK_PRESETS["1.12"]`` and ``["1.15"]``, or the ``n_time`` argument directly. ``f_debris = 1.0`` (the default, and 1.15.1's own default) makes
-    rows 2 and 4 agree, so only the grid and the termination rule really differ.
-
-    THE GRID IS PART OF THE MODEL, not a tolerance -- this is a first-order ODE solve.
-    Measured against a converged n = 40000 (max relative error over the light curve):
-
-        n_time      500      1000     2500     5000     10000    20000
-        L         1.3e-4   2.5e-5   5.5e-6   1.6e-6   3.3e-7   7.2e-8
-        T         1.7e-2   7.9e-3   3.0e-3   1.4e-3   5.9e-4   2.0e-4
-
-    Error falls as O(1/n), as forward Euler must. **redback 1.15.1's own default is 1.7%
-    wrong in the photosphere temperature** -- a different model, not a cheaper one, and the
-    change from 5000 to 500 does not appear in its changelog.
-
-    AND THE TERMINATION TIME MOVES TOO, which an earlier version of this table denied. The
-    "216, 2413, 19298" index scaling holds for the one parameter set it was measured on.
-    Across 200 prior draws, |t_term(n) - t_term(20000)|/t_term(20000) has median 10.1% at
-    n=500 (98.5% of draws above 1%, 50.3% above 10%), 1.6% at 2500, and 0.60% at 5000. One
-    draw gives constraint = 1 at every n up to 10000 and 19039 at n=20000. The grid decides
-    when the light curve ends, not only how accurate it is while it lasts.
-
-    A SECOND REASON TO PREFER 5000, measured on the light curve rather than the engine:
-    scanning mbh_6 over +-2e-6 relative, the AB magnitude at 99% of the curve spreads by
-    5.86 mag at n=500 and by 3.67e-4 mag at n=5000 -- and that is the FORGIVING measure.
-    Following the epoch as it moves understates the effect; hold the epoch fixed, as an
-    observation does, and the same 1e-6 nudge moves the magnitude by **24.52 mag**, the full
-    `mag_floor` step, on all five engine parameters. The mechanism is direct: the termination
-    index moves +4 to +6 grid steps over +-2e-6 at n=500 and **0 steps** at n=5000. On a
-    property sweep, 7 of 32 live prior draws show the full cliff at the coarse grid.
-    (An earlier version of this block said 0.55 mag / 8.3e-6, measured co-moving on one
-    parameter; the numbers here are the T3 sweep's, 17 slices x 20000 points.)
-    At the coarse grid the model is discontinuous in its own parameters at the 1e-6 scale,
-    which no sampler should be asked to work with.
-
-    DEFAULT HERE: ``n_time = 5000``, i.e. 1.12.0's grid, because it is the version this
-    project pins and the more accurate of the two. Pass ``**REDBACK_PRESETS["1.15"]`` for the
-    other. Row 3 -- the termination guards -- is reproduced by NEITHER default, because both
-    versions of it are artefacts: 1.15.1's exist only to stop ``Lrad[:constraint]`` returning
-    an empty array and crashing on ``time_temp[0]``, which CHANGE 2 removed by returning a
-    mask instead, and its ``constraint_1 = 5000`` sentinel is stale on its own 500-point grid.
-    CHANGE 3 replaces both with the model's own criterion.
-
- 7. THE (1+z) FLUX FACTOR IS ALSO A REDBACK VERSION DIFFERENCE.  Both versions call
-    `sed.blackbody_to_flux_density(temperature, r_photosphere, dl, frequency)` on
-    k-corrected inputs (nu_src = nu_obs (1+z), t_src = t_obs/(1+z)), and that function
-    contains no redshift term in either. But 1.15.1's `cooling_envelope` then returns
-
-        flux_density.to(uu.mJy).value * (1 + redshift)                # 1.15.1 line 44
-
-    where 1.12.0 returns the same expression without the factor, and 1.15.1's spectrum
-    branch likewise routes through a new `blackbody_to_spectrum(..., redshift=...)`.
-    So the TDE flux changed by a uniform 2.5*log10(1+z) magnitudes between the two --
-    0.011 mag at z = 0.01, 0.053 at z = 0.05, 0.43 at z = 0.5. Measured: with
-    `dilation=False` this module sits exactly 4.7619e-2 = 1 - 1/1.05 below redback 1.15.1
-    at z = 0.05, at every epoch and every parameter set tried, and with `dilation=True`
-    it agrees.
-
-    THIS IS A RELATIVITY CORRECTION, NOT A CONVENTION, and that decides the default.
-    Flux density is per unit OBSERVED frequency, and observed frequency intervals are
-    compressed by the expansion: dnu_obs = dnu_src/(1+z). So
-
-        F_nu(nu_obs) = (1 + z) L_nu([1+z] nu_obs) / (4 pi d_L^2)
-
-    with d_L already absorbing the energy redshift and the time dilation. Drop the (1+z)
-    and the model is not using a different convention, it is missing a term. redback 1.15.1
-    added it; `kilonova._flux_nu` has always had it.
-
-    DEFAULT HERE: `dilation=True`. `dilation=False` exists only to reproduce redback 1.12.0
-    bit for bit, and reproducing it means reproducing the missing correction -- worth
-    2.5 log10(1+z) = 0.011 mag at z = 0.01, 0.053 at z = 0.05, 0.43 at z = 0.5. Use it to
-    check a port, not to fit.
-
- 8. FLOAT64 IS REQUIRED.  Not preferred: required. The state variables are Me ~ 2e32 g
-    and Ee ~ 5e13, and each Euler increment is ~1e-6 of the state, which is at the edge
-    of float32's 1.2e-7 epsilon -- the integration is a sum of increments that float32
-    cannot resolve. Measured in float32: `constraint` collapses to 1 and the luminosity
-    is inf for every case tried. There is no rescaling that fixes this, because the
-    problem is the ratio of increment to state, not the magnitude of either. The engine
-    raises if x64 is off, rather than returning a plausible wrong answer. (Contrast the
-    kilonova, which is float32-clean by construction -- it has no accumulator.)
-
-PERFORMANCE, AND WHAT THIS MODEL IS GOOD FOR
-    A 5000-step scan is sequential and launch-bound: 38 ms for ONE light curve on an
-    A6000, which is slow. Batched it is excellent -- 1024 curves in 42.5 ms, i.e.
-    41.6 us each, a 926x speedup. So prefer vmapped/vectorized consumers (ABC, SNPE,
-    `chain_method="vectorized"` NUTS over many chains) over a single sequential chain,
-    where 38 ms per likelihood call will dominate.
+The expressions below keep redback's exact spelling on purpose: a forward-Euler recursion
+amplifies round-off, so respelling ``Rv ** 2`` as ``Rv * Rv`` is not a no-op. Do not simplify them.
 """
 
 import warnings
@@ -350,26 +93,6 @@ REDBACK_PRESETS = {
     "1.15": dict(**REDBACK_ENGINE_PRESETS["1.15"], dilation=True),
 }
 
-#: How much of the surviving light curve to trim as numerically meaningless (CHANGE 3).
-#: MEASURED, not guessed: over 25 prior draws, the index at which this implementation and a
-#: plain NumPy transcription of the same loop first disagree by more than 1e-10 -- i.e.
-#: where a 1-ulp difference has been amplified to something visible -- sits at most
-#:
-#:     23 steps (10.5% of the curve) before termination at n_time = 500
-#:     63 steps ( 2.0% of the curve) before termination at n_time = 5000
-#:
-#: A FRACTION is the right rule and a fixed step count is not: the amplification needs steps
-#: to build up, so short curves (constraint ~20-40) show none at all -- 3.2e-14 at the final
-#: point -- and a 30-step floor would throw away the whole of one. 15% leaves 1.4x margin on
-#: the worst case measured, and the floor below only drops the last few points of a curve too
-#: short for the fraction to bite. Beyond this trim the two implementations differ by O(1) at
-#: the final step -- as do two runs of redback on grids differing in the last bit.
-#: RETIRED. `meaningful` is now defined by the model's own domain (Rph > 0, Ee > 0, Me > 0),
-#: not by a fraction of `constraint`. Kept only so an old call site fails loudly rather than
-#: silently reading a number that no longer controls anything.
-VALIDITY_FRACTION = None
-MIN_TRIM_STEPS = None
-
 # --- guard sentinels (CHANGE 4) ---------------------------------------------------------
 # These are substituted for Ee and Me in the GUARDED half of the step only -- the half that
 # produces every returned VALUE. They never touch the RAW half, which is what decides where
@@ -417,9 +140,7 @@ def _require_x64(what):
             f"or set JAX_ENABLE_X64=1 in the environment.")
 
 
-# =======================================================================================
-# small closed-form pieces
-# =======================================================================================
+# --- small closed-form pieces --------------------------------------------------------------
 #
 # ORIGINAL (redback/utils.py:141):
 #     tfb = 58. * (3600. * 24.) * (mbh_6 ** (0.5)) * (stellar_mass ** (0.2)) \
@@ -442,7 +163,7 @@ def exponential_powerlaw(time, a_1, alpha_1, alpha_2, tpeak):
     return a_1 * (1 - jnp.exp(-time / tpeak)) ** alpha_1 * (time / tpeak) ** -alpha_2
 
 
-# ---------------------------------------------------------------------------------------
+#
 # _analytic_fallback
 #
 # ORIGINAL (redback tde_models.py:15):
@@ -481,9 +202,7 @@ def ryu_f_debris(mbh_6, stellar_mass, beta):
     return jnp.clip((beta * f_mbh * g_mstar) ** 3, 0.0, 1.0)
 
 
-# =======================================================================================
-# _cooling_envelope  (Sarin & Metzger 2024)
-# =======================================================================================
+# --- _cooling_envelope  (Sarin & Metzger 2024) ---------------------------------------------
 #
 # ORIGINAL loop body (redback tde_models.py:123-149, `for ii in range(1, len(time_temp))`):
 #
@@ -718,9 +437,7 @@ def cooling_envelope(mbh_6, stellar_mass, eta, alpha, beta, *,
 cooling_envelope_jit = jax.jit(cooling_envelope, static_argnames=("n_time",))
 
 
-# =======================================================================================
-# _stream_stream_collision
-# =======================================================================================
+# --- _stream_stream_collision --------------------------------------------------------------
 #
 # ORIGINAL (redback tde_models.py:1305, abridged):
 #     kappa = 0.34; rstar = 0.93*mstar**(8/9); mstar_max = 15.0
@@ -789,9 +506,7 @@ def stream_stream_collision(mbh_6, mstar, c1, f, h_r, del_omega,
     return t_output, Lobs, Tobs, t_dyn, t_peak, r_tidal
 
 
-# =======================================================================================
-# photosphere.py
-# =======================================================================================
+# --- photosphere.py ------------------------------------------------------------------------
 #
 # These are classes in redback whose __init__ runs the whole calculation and stores the
 # result on self. Here they are plain functions: there is no state to keep, and a class
@@ -903,9 +618,7 @@ def cocoon_photosphere(time, luminosity, t_thin, vej, nn):
     return temperature, r_photosphere
 
 
-# =======================================================================================
-# interaction_processes.py
-# =======================================================================================
+# --- interaction_processes.py --------------------------------------------------------------
 #
 # Each of these convolves a dense luminosity array with a diffusion / viscous kernel.
 # redback builds, for every unique observation time te, a set of quadrature nodes
@@ -1116,9 +829,7 @@ def csm_diffusion(uniq_times, gather_idx, tb, dense_times, luminosity,
     return uniq_lums[gather_idx]
 
 
-# =======================================================================================
-# photometry
-# =======================================================================================
+# --- photometry ----------------------------------------------------------------------------
 
 def _flux_nu_tde(temperature, r_photosphere, dl_cm, nu_source, redshift,
                  pref_const=PLANCK_T3, dilation=True):
@@ -1286,7 +997,7 @@ def cooling_envelope_ab_magnitude(t_obs_days, band_idx, weights, norms, lam_obs_
                         r_v_mw=r_v_mw, r_v_host=r_v_host, law=law)
 
 
-# ---------------------------------------------------------------------------------------
+#
 # gaussianrise_cooling_envelope
 #
 # ORIGINAL (tde_models.py:298-414): the cooling envelope is only valid AFTER circularisation,
@@ -1471,10 +1182,10 @@ def gaussianrise_cooling_envelope_ab_magnitude(
     return jnp.where(dead, jnp.asarray(mag_floor, out_mag.dtype), out_mag)
 
 
-# =======================================================================================
+#
 # physical validity -- conditions a prior can enforce, so the model is never ASKED for a
 # light curve it cannot produce
-# =======================================================================================
+#
 #
 # Some of this model's degenerate cases are not numerical at all: they are parameter
 # combinations that describe no transient, and the honest place to exclude them is the prior,
@@ -1537,9 +1248,7 @@ def rise_peaks_near_fallback(peak_time, sigma_t, mbh_6, stellar_mass, *, n_sigma
     return (xi * tfb_days - peak_time) <= n_sigma * sigma_t
 
 
-# =======================================================================================
-# parameters and priors
-# =======================================================================================
+# --- parameters and priors -----------------------------------------------------------------
 #: redback's positional order for `cooling_envelope`, minus time/redshift.
 PARAMETERS = ["mbh_6", "stellar_mass", "eta", "alpha", "beta"]
 #: ... and for `gaussianrise_cooling_envelope`.
@@ -1576,6 +1285,8 @@ def redback_prior(model_name, *, drop=("redshift",)):
 
     Raises ImportError if redback is not installed; use :func:`fallback_prior` then.
     """
+    from ..redback_adapter import _import_redback
+    _import_redback()
     from redback.priors import get_priors
 
     from ...priors import LogUniform, Prior, Uniform
@@ -1645,80 +1356,4 @@ def default_prior_gaussianrise():
     return default_prior("gaussianrise_cooling_envelope")
 
 
-# =======================================================================================
-# self-test
-# =======================================================================================
-
-if __name__ == "__main__":
-    import time as _time
-
-    jax.config.update("jax_enable_x64", True)
-
-    p = dict(mbh_6=1.0, stellar_mass=1.0, eta=0.05, alpha=0.1, beta=1.0)
-    out = cooling_envelope_jit(**p)
-    k = int(out["constraint"])
-    print(f"cooling envelope: constraint {k}/{N_TIME}, tfb {float(out['tfb'])/DAY_TO_S:.2f} d, "
-          f"termination {float(out['termination_time'])/DAY_TO_S:.1f} d after fallback")
-    L = np.asarray(out["bolometric_luminosity"])
-    T = np.asarray(out["photosphere_temperature"])
-    print(f"  L {L[0]:.3e} -> {L[k-1]:.3e} erg/s,  T {T[0]:.0f} -> {T[k-1]:.0f} K")
-    print(f"  all finite inside valid: "
-          f"{bool(np.all(np.isfinite(L[:k])) and np.all(np.isfinite(T[:k])))}")
-
-    # gradients through the photosphere -- the thing the guards exist for
-    t_obs = jnp.geomspace(1.0, 100.0, 20)
-
-    def loss(v):
-        o = cooling_envelope(v[0], v[1], v[2], v[3], v[4])
-        temp, rad = _interp_photosphere(o, t_obs * DAY_TO_S)
-        return jnp.sum(temp) + jnp.sum(rad)
-
-    v0 = jnp.array([1.0, 1.0, 0.05, 0.1, 1.0])
-    g = np.asarray(jax.grad(loss)(v0))
-    print(f"d(T+R)/d[mbh_6,mstar,eta,alpha,beta] = {g}")
-    print(f"  finite: {bool(np.all(np.isfinite(g)))}")
-
-    # photometry
-    lam = np.geomspace(1000.0, 30000.0, 1000)
-    trans = np.zeros((2, lam.size))
-    trans[0][(lam > 3000) & (lam < 4000)] = 1.0
-    trans[1][(lam > 5000) & (lam < 6000)] = 1.0
-    W, N = ab_weights(lam, trans)
-    bidx = jnp.asarray(np.arange(20) % 2)
-    z, dl = 0.1, 1.4e27
-    mag = cooling_envelope_ab_magnitude(t_obs, bidx, W, N, jnp.asarray(lam), z, dl, **p)
-    print(f"AB magnitudes {float(jnp.min(mag)):.2f} .. {float(jnp.max(mag)):.2f}")
-    mag2 = gaussianrise_cooling_envelope_ab_magnitude(
-        t_obs, bidx, W, N, jnp.asarray(lam), z, dl, peak_time=20.0, sigma_t=15.0, **p)
-    print(f"with gaussian rise  {float(jnp.min(mag2)):.2f} .. {float(jnp.max(mag2)):.2f}")
-
-    fd = cooling_envelope_flux_density(t_obs, 5e14, z, dl, **p)
-    print(f"flux density peak {float(jnp.max(fd)):.4e} mJy")
-
-    t_ss, L_ss, T_ss, td, tp, rt = stream_stream_collision(1.0, 1.0, 0.1, 0.5, 0.3, 1.0,
-                                                           inc_tcool=1)
-    print(f"stream-stream: L peak {float(L_ss[0]):.3e} erg/s, T {float(T_ss[0]):.0f} K, "
-          f"t_dyn {float(td)/DAY_TO_S:.2f} d")
-
-    lb = analytic_fallback(jnp.geomspace(0.1, 500., 100), 1e50, 10.0)
-    print(f"analytic fallback: L(0.1d) {float(lb[0]):.3e} -> L(500d) {float(lb[-1]):.3e}")
-
-    f = jax.jit(lambda v: cooling_envelope(v[0], v[1], v[2], v[3], v[4])["bolometric_luminosity"])
-    f(v0).block_until_ready()
-    t0 = _time.perf_counter()
-    for _ in range(20):
-        o = f(v0)
-    o.block_until_ready()
-    print(f"{(_time.perf_counter()-t0)/20*1e3:.2f} ms per light curve (n_time={N_TIME})")
-
-    B = 512
-    V = jnp.tile(v0, (B, 1)) * (1.0 + 0.01 * jnp.arange(B)[:, None] / B)
-    fb = jax.jit(jax.vmap(lambda v: cooling_envelope(v[0], v[1], v[2], v[3], v[4])
-                          ["bolometric_luminosity"]))
-    fb(V).block_until_ready()
-    t0 = _time.perf_counter()
-    for _ in range(5):
-        o = fb(V)
-    o.block_until_ready()
-    dt_ = (_time.perf_counter() - t0) / 5
-    print(f"batch {B}: {dt_*1e3:.2f} ms total, {dt_/B*1e6:.1f} us per curve")
+# --- self-test -----------------------------------------------------------------------------

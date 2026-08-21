@@ -1,19 +1,14 @@
 """Posterior and predictive metrics.
 
-Two disjoint sets share this subpackage. They are **not** a numpy/JAX pair and nothing about them
-has been reconciled:
+Two disjoint sets share this subpackage, and they are not a numpy/JAX pair:
 
-* ``_numpy.py`` — WHISPER_AI @ 8ba3843, ``whisper_labia/metrics.py``:
-  ``waic``, ``per_band_metrics``, ``predictive_metrics``.
-* ``_jax.py`` — whisper-GPU @ 10796a0, ``metrics.py``: ``ess_by_parameter``, ``ess_summary``
-  (ArviZ ESS and ESS/sec).
+* ``_numpy.py`` — :func:`waic`, :func:`per_band_metrics`, :func:`predictive_metrics`.
+* ``_jax.py`` — :func:`ess_by_parameter`, :func:`ess_summary` (ArviZ effective sample size, and
+  ESS per second). Despite the file name it imports numpy and, lazily, arviz — no JAX. The name
+  marks it as the GPU-side slot, and it is resolved lazily so that adding a genuinely JAX-backed
+  metric later does not move anything.
 
-The ``_jax`` slot is the brief's naming for "the GPU-side half", not a dependency claim: that module
-imports numpy and lazily arviz, and no JAX at all today. It is still resolved lazily here so the
-slot's contract stays stable as JAX-backed metrics are added.
-
-Neither source package had a metrics *registry* — metrics are called directly, not looked up by
-name — so none is invented here. Adding one would be new behaviour, which this migration does not do.
+Metrics are called directly rather than looked up by name, so there is no registry here.
 """
 from __future__ import annotations
 

@@ -8,7 +8,6 @@ at ordinary budgets, so it is opt-in. See the ``n_jobs`` parameter.
 """
 from __future__ import annotations
 
-import os
 import time
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
@@ -37,6 +36,7 @@ from ..distance import chi2_distance, get_distance
 from ..likelihood import make_likelihood
 from ..models import get_model
 from .base import (
+    aic_bic,
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -257,13 +257,13 @@ class ABCSampler(BaseSampler):
             "likelihood_space": lik.space,
         }
         attach_band_metrics(info, lc, model.name, best, space)
+        aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
             sampler="abc", model=model.name, parameters=names,
             samples=samples, summary=summarize_posterior(samples, names),
             best_params=best, n_data=n, n_params=k, runtime_s=runtime, info=info,
             min_distance=chi2_min, max_log_likelihood=max_log_likelihood,
-            aic=float(-2.0 * max_log_likelihood + 2 * k),
-            bic=float(-2.0 * max_log_likelihood + k * np.log(n)),
+            aic=aic, bic=bic,
         )
         attach_predictive_metrics(result, lc, space)
         return result

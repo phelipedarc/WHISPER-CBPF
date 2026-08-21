@@ -33,7 +33,7 @@ from .photometry import (
 )
 
 #: Allowed values for :attr:`LightCurve.data_mode`.
-VALID_DATA_MODES = ("flux_density", "magnitude", "flux")
+from .units import VALID_DATA_MODES  # noqa: F401  (re-exported by io/__init__)
 
 #: data_mode -> the forward-model comparison space ('magnitude' | 'flux_density'); band-integrated
 #: ``flux`` maps onto ``flux_density``. (Optional physical-model backends such as redback use the same.)
@@ -97,7 +97,7 @@ class LightCurve(Table):
         if self.meta["redshift"] is None and self.meta["redshift_prior"] is None:
             self.meta["redshift_prior"] = dict(DEFAULT_REDSHIFT_PRIOR)
 
-    # ------------------------------------------------------------------ setup helpers
+    # --- setup helpers ---
     def _ensure_meta_defaults(self):
         for key in _SCALAR_META:
             self.meta.setdefault(key, None)
@@ -127,7 +127,7 @@ class LightCurve(Table):
                 "luminosity_distance (Mpc) instead of z=0.")
         self.meta["redshift"] = z
 
-    # ------------------------------------------------------------------ scalar metadata (properties)
+    # --- scalar metadata (properties) ---
     @property
     def name(self):
         return self.meta.get("name")
@@ -162,7 +162,7 @@ class LightCurve(Table):
         """Forward-model comparison space ('magnitude' | 'flux_density'); see :data:`_OUTPUT_FORMAT`."""
         return _OUTPUT_FORMAT[self.data_mode]
 
-    # ------------------------------------------------------------------ per-point columns (attrs)
+    # --- per-point columns (attrs) ---
     def _col(self, name):
         return self[name].data if name in self.colnames else None
 
@@ -194,7 +194,7 @@ class LightCurve(Table):
     zero_point = property(lambda self: self._col("zero_point"),
                           lambda self, v: self._set_col("zero_point", v))
 
-    # ------------------------------------------------------------------ derived info
+    # --- derived info ---
     @property
     def n_points(self):
         return len(self)
@@ -212,7 +212,7 @@ class LightCurve(Table):
             return mag_err_to_snr(self["magnitude_err"].data)
         raise ValueError("Cannot compute SNR: need flux_err or magnitude_err.")
 
-    # ------------------------------------------------------------------ selection
+    # --- selection ---
     def where(self, **constraints):
         """Return the subset matching ``column=value`` constraints (astropy-table-fitting style).
 
@@ -222,22 +222,25 @@ class LightCurve(Table):
         """
         mask = np.ones(len(self), dtype=bool)
         for key, val in constraints.items():
-            if key.endswith("_min"):
-                col = key[:-4]
-                m = self[col].data >= val
-            elif key.endswith("_max"):
-                col = key[:-4]
-                m = self[col].data <= val
-            elif key.endswith("_not"):
-                col = key[:-4]
-                vals = val if isinstance(val, (list, tuple, set, np.ndarray)) else [val]
-                m = ~np.isin(self[col].data, list(vals))
-            else:
-                col = key
-                vals = val if isinstance(val, (list, tuple, set, np.ndarray)) else [val]
-                m = np.isin(self[col].data, list(vals))
+            col, op = key, "in"
+            for suffix in ("_min", "_max", "_not"):
+                if key.endswith(suffix):
+                    col, op = key[:-4], suffix
+                    break
+            # Resolve the column BEFORE dereferencing it, or astropy's own KeyError fires first
+            # and this message never reaches the caller.
             if col not in self.colnames:
                 raise KeyError(f"where(): no column {col!r}; have {self.colnames}")
+            data = self[col].data
+            if op == "_min":
+                m = data >= val
+            elif op == "_max":
+                m = data <= val
+            else:
+                vals = val if isinstance(val, (list, tuple, set, np.ndarray)) else [val]
+                m = np.isin(data, list(vals))
+                if op == "_not":
+                    m = ~m
             mask &= m
         return self[mask]
 
@@ -259,7 +262,7 @@ class LightCurve(Table):
         """Keep points with signal-to-noise ratio >= ``min_snr``."""
         return self[self.snr >= min_snr]
 
-    # ------------------------------------------------------------------ band resolution
+    # --- band resolution ---
     def _resolved_zero_point(self, svo_fallback=False):
         """Per-point zero point (Jy): stored if present, else resolved locally; NaN -> AB 3631."""
         if "zero_point" in self.colnames:
@@ -282,7 +285,7 @@ class LightCurve(Table):
     def _zp_for_conversion(self, zeropoint_jy):
         return AB_ZEROPOINT_JY if zeropoint_jy is None else zeropoint_jy
 
-    # ------------------------------------------------------------------ derived columns
+    # --- derived columns ---
     def add_flux(self, zeropoint_jy=AB_ZEROPOINT_JY):
         """Copy with ``flux`` (+ ``flux_err``) from magnitude (constant AB zero point). No-op if present."""
         if self.data_mode == "flux":
@@ -393,7 +396,7 @@ class LightCurve(Table):
         lam, _, _ = resolve_bands(self["band"].data, svo_fallback=False, warn=False)
         return lam
 
-    # ------------------------------------------------------------------ export
+    # --- export ---
     def to_dataframe(self):
         """Return a :class:`pandas.DataFrame` view (alias for astropy's ``to_pandas``)."""
         return self.to_pandas()

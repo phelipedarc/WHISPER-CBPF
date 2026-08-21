@@ -1,9 +1,7 @@
-"""Regression tests for the audit fixes that need no JAX, so they run on the minimal install.
+"""Edge cases in space resolution, the mixture likelihood, flux-to-magnitude and WAIC.
 
-These cover three defects that were each producing a wrong number with no error:
-the mixture likelihood scoring WAIC under a plain Gaussian, eleven flux->magnitude converters
-disagreeing on their floor, and WAIC reporting a ``p_waic`` far above ``n_data`` in silence.
-The JAX-dependent half lives in ``tests/test_jax_adapters.py``.
+Each of these produced a wrong number with no error at some point, so each has a test that pins
+the correct behaviour. None needs JAX, so they run on the minimal install.
 """
 from __future__ import annotations
 

@@ -58,9 +58,9 @@ Everything outside A-D is a real disagreement and is asserted on.
 
 Run (CPU; float64 is mandatory -- the TDE engine raises without it)::
 
-    docker exec phe_sbi_2 bash -lc 'export JAX_PLATFORMS=cpu; \
+    docker exec a GPU environment bash -lc 'export JAX_PLATFORMS=cpu; \
         cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF && \
-        source scripts/whisper-gpu-env.sh && \
+        source "$(whisper-cbpf-env)" && \
         python -u -m pytest tests/t2_autodiff -v'
 
 ``T2_DUMP=/path.json`` writes every measured table (REPORT.md was built from it); by default

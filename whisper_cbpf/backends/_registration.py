@@ -28,6 +28,8 @@ re-import or ``importlib.reload`` would otherwise explode.
 """
 from __future__ import annotations
 
+from ._env import gpu_extra_error
+
 from ..models import list_models, register_model
 from ..samplers import list_samplers, register_sampler
 
@@ -52,9 +54,7 @@ class _LazySampler:
         try:
             mod = importlib.import_module(f"..samplers.jax.{self.module}", __package__)
         except ImportError as exc:
-            raise ImportError(
-                f"{self.cls_name} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
-            ) from exc
+            raise gpu_extra_error(self.cls_name) from exc
         return getattr(mod, self.cls_name)()
 
     def __repr__(self):
@@ -97,7 +97,7 @@ def _flare_jax_predict_jax(theta, times, band_idx=None):
 #: arguments, because ``get_sampler(name)`` does ``_SAMPLERS[name]()``; all GPU configuration
 #: therefore travels through ``fit(**kwargs)``, never ``__init__``.
 #:
-#: ``snpe_gpu`` IS registered, as of the generalisation of its simulator. It used to be absent, and
+#: ``snpe_gpu`` is registered like the rest: its simulator is generic, so it works for any
 #: the reason was real: ``fit_snpe_gpu`` took a ``model`` argument but always passed
 #: ``flare_jax.predict_torch``, so registering it would have let
 #: ``wp.fit(lc, "kilonova_one_jax", sampler="snpe_gpu")`` return FLARE simulations labelled with a

@@ -11,10 +11,10 @@ gradient, prior/parameterisation mismatch) rather than a merely noisy one.
 
 RUNS ON GPU, with the env sourced and CUDA_VISIBLE_DEVICES set::
 
-    docker exec phe_sbi_2 bash -lc '
+    docker exec a GPU environment bash -lc '
       export CUDA_VISIBLE_DEVICES=0
       cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF
-      source scripts/whisper-gpu-env.sh
+      source "$(whisper-cbpf-env)"
       python -u tests/t3_inference/stage_sbc.py --n-replicates 300'
 
 The script refuses to start on CPU unless ``--allow-cpu`` is passed. **It is, however,
@@ -66,7 +66,7 @@ import numpy as np
 EST_SEC_PER_LEAPFROG = 0.022
 EST_TREE_LEAPFROGS = 32
 EST_COMPILE_S = 60.0
-#: ... and the MEASURED CPU cost model (phe_sbi_2, JAX_PLATFORMS=cpu, n_time=500, 2
+#: ... and the MEASURED CPU cost model (a GPU environment, JAX_PLATFORMS=cpu, n_time=500, 2
 #: vectorized chains): a 500-step lax.scan has no kernel launches to pay for, so the CPU is
 #: only ~4x slower per leapfrog than the A6000 rather than the 100x `require_gpu` warns
 #: about -- and a 96-core host runs ~24 replicates side by side. That is what makes a

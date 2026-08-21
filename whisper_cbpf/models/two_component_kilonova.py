@@ -57,7 +57,7 @@ PRIOR = Prior({
     "redshift": Uniform(0.001, 0.1),
 })
 
-_AB_ZP_JY = 3631.0
+from ..io.photometry import AB_ZEROPOINT_JY as _AB_ZP_JY
 _MIN_TIME_DAY = 1e-3          # redback kilonova flux is undefined at t<=0
 _FAINT_MAG = 99.0             # stand-in for NaN/inf (non-emitting) -> ~0 flux, finite
 # WHISPER effective band -> redback LSST filter (bare optical letters; keeps grizy on one system)
@@ -80,7 +80,8 @@ def _redback_sncosmo_map():
             import os
 
             import pandas as pd
-            import redback
+            from .redback_adapter import _import_redback
+            redback = _import_redback()
             tbl = os.path.join(os.path.dirname(redback.__file__), "tables", "filters.csv")
             d = pd.read_csv(tbl)
             _sncosmo_map = dict(zip(d["bands"].astype(str), d["sncosmo_name"].astype(str)))
@@ -95,6 +96,8 @@ def _get_redback_model():
     if _redback_fn is None:
         try:
             import logging
+            from .redback_adapter import _import_redback
+            _import_redback()
             from redback.model_library import all_models_dict
             # redback/bilby are chatty; quiet them for the per-evaluation fitting loop.
             for name in ("redback", "bilby"):

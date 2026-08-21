@@ -32,6 +32,7 @@ import pandas as pd
 from ..likelihood import _MIN_FLUX_JY
 from ..models import get_model
 from .base import (
+    aic_bic,
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -261,7 +262,7 @@ def _torch_model_in_space(space, zeropoint_jy, torch):
 
     The rule is ``max(_MIN_FLUX_JY, finfo.tiny)``, identical to
     :func:`whisper_cbpf.likelihood._jax.log_likelihood_jax` and
-    :func:`whisper_cbpf.samplers.jax.abc_gpu._model_in_space_jnp`. It used to be a bare
+    :func:`whisper_cbpf.samplers.jax.abc_gpu._model_in_space_jnp`. A bare
     ``finfo.tiny``, which agreed with them in float32 but not in float64 — there ``tiny`` is
     2.2e-308, giving **778.03 mag** where every other backend gives 758.90. A 19.13-magnitude
     backend-dependent floor is exactly the sort of thing that makes a cross-sampler comparison
@@ -954,13 +955,13 @@ class SNPESampler(BaseSampler):
             "seed": int(seed), "num_workers": int(num_workers),
         }
         attach_band_metrics(info, lc, model.name, best_params, space)
+        aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
             sampler="snpe", model=model.name, parameters=list(param_names), samples=samples,
             summary=summarize_posterior(samples, param_names), best_params=best_params,
             n_data=n, n_params=k, runtime_s=runtime, info=info,
             max_log_likelihood=max_log_likelihood,
-            aic=float(-2.0 * max_log_likelihood + 2 * k),
-            bic=float(-2.0 * max_log_likelihood + k * np.log(n)),
+            aic=aic, bic=bic,
         )
         attach_predictive_metrics(result, lc, space)
         # Attach the trained sbi objects for resampling / pairplot (not part of to_json).

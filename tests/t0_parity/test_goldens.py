@@ -245,7 +245,7 @@ def test_tde_flux_density_termination_zone_is_the_documented_deviation(tde_gold,
     """The zone (last 24 steps of the shorter curve) is bounded AS a deviation.
 
     Measured: 2322 zone points; the nonzero ones have median 9.6e-16 and max 1.6e-3 --
-    the prompt-scale 'last-epoch constraint+-1' cases, where the two interpolants read
+    the 'last-epoch constraint+-1' cases, where the two interpolants read
     the ill-conditioned Euler tail through termination indices differing by <= 4 steps.
     203 points (8.7% of the zone) are port-zero-vs-redback-positive: epochs past the
     port's own termination on short curves, i.e. exactly the CHANGE 3 statement that the

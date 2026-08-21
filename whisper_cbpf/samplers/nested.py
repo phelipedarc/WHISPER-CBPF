@@ -47,6 +47,7 @@ import pandas as pd
 from ..likelihood import make_likelihood
 from ..models import get_model
 from .base import (
+    aic_bic,
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -371,6 +372,7 @@ class NestedSampler(BaseSampler):
             "converged": bool(not hit_cap), "seed": int(seed),
         }
         attach_band_metrics(info, lc, model.name, best_params, space)
+        aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
             # "nested" even when reached through the "dynesty" alias -- one label in the comparison
             # table, matching how "npe" reports as "snpe".
@@ -378,8 +380,7 @@ class NestedSampler(BaseSampler):
             summary=summarize_posterior(samples, names), best_params=best_params,
             n_data=n, n_params=k, runtime_s=runtime, info=info,
             max_log_likelihood=max_log_likelihood,
-            aic=float(-2.0 * max_log_likelihood + 2 * k),
-            bic=float(-2.0 * max_log_likelihood + k * np.log(n)),
+            aic=aic, bic=bic,
         )
         result.dynesty_results = res
         attach_predictive_metrics(result, lc, space)

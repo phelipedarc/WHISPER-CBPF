@@ -42,6 +42,7 @@ import pandas as pd
 from ...likelihood import GaussianLikelihood, make_likelihood
 from ...models import get_model
 from ...samplers.base import (
+    aic_bic,
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -71,7 +72,7 @@ from ...distance._jax import jnp_distance
 #: and at a typical n_sim=256000 the choice is 36 s versus 89 s end to end. Hence 16.
 #:
 #: Since the sweep became a single on-device ``lax.scan``, this is now purely a compile-versus-
-#: occupancy trade: the per-block host synchronisation that used to make small chunks expensive is
+#: occupancy trade: the per-block host synchronisation that makes small chunks expensive is
 #: gone, and the measured cost at chunk=16 (0.219 ms/sim) is already below what the same model
 #: benchmarked at standalone (0.272 ms/sim) -- because that figure was itself paying per-call
 #: dispatch. There is no longer a latency reason to raise it.
@@ -81,7 +82,7 @@ from ...distance._jax import jnp_distance
 DEFAULT_CHUNK = 16
 
 _MIN_FLUX_JY = 1e-300          # matches whisper_cbpf.likelihood._MIN_FLUX_JY
-AB_ZEROPOINT_JY = 3631.0
+from ...io.photometry import AB_ZEROPOINT_JY
 
 
 def _model_in_space_jnp(jnp, flux, space, zeropoint_jy):
@@ -302,7 +303,7 @@ class ABCGPUSampler(BaseSampler):
                else make_likelihood(lc, space=space))
         cand = acc_idx if len(acc_idx) else np.array([int(np.argmin(distances))])
         # At least one candidate, always. `max_logl_scan=0` is a reasonable thing for a caller to
-        # pass ("skip the ranking, I only want timings"), and it used to leave `scan` empty, walk
+        # pass ("skip the ranking, I only want timings"), which would leave `scan` empty, walk
         # past the `np.any(np.isfinite(...))` guard with b=0, and die on `scan[0]` with
         # "index 0 is out of bounds for axis 0 with size 0" -- after all the sampling was done.
         scan = cand[:int(max_logl_scan)] if int(max_logl_scan) > 0 else cand[:1]
@@ -352,13 +353,13 @@ class ABCGPUSampler(BaseSampler):
             "seed": int(seed),
         }
         attach_band_metrics(info, lc, model.name, best, space)
+        aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
             sampler="abc_gpu", model=model.name, parameters=names, samples=samples,
             summary=summarize_posterior(samples, names), best_params=best,
             n_data=n, n_params=k, runtime_s=runtime, info=info,
             min_distance=chi2_min, max_log_likelihood=max_log_likelihood,
-            aic=float(-2.0 * max_log_likelihood + 2 * k),
-            bic=float(-2.0 * max_log_likelihood + k * np.log(n)),
+            aic=aic, bic=bic,
         )
         # (n_chains, n_draws, n_params) for the shared ESS helper; ABC draws are independent.
         result.samples_by_chain = samples[names].to_numpy()[None, :, :]

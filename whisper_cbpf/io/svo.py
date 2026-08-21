@@ -35,10 +35,10 @@ class SvoUnavailable(RuntimeError):
     """Raised when SVO cannot resolve a band (astroquery missing, network down, unknown filter)."""
 
 
-# ---------------------------------------------------------------------------
+#
 # Documented default SVO filter IDs for effective bands we may meet outside the
 # local LSST table. Used to disambiguate before falling back to a wavelength search.
-# ---------------------------------------------------------------------------
+#
 DEFAULT_SVO_IDS = {
     "U-band": "SLOAN/SDSS.u", "u-band": "SLOAN/SDSS.u",
     "g-band": "PAN-STARRS/PS1.g", "r-band": "PAN-STARRS/PS1.r",
@@ -55,9 +55,9 @@ _META_CACHE: dict = {}
 _DISK_LOADED = False
 
 
-# ---------------------------------------------------------------------------
+#
 # Disk cache (offline-safe across runs)
-# ---------------------------------------------------------------------------
+#
 def _cache_path() -> Path:
     env = os.environ.get("WHISPER_SVO_CACHE")
     if env:
@@ -113,10 +113,10 @@ def clear_cache(disk=False):
             pass
 
 
-# ---------------------------------------------------------------------------
+#
 # Thin network boundary -- THE ONLY functions that import astroquery / hit SVO.
 # Tests monkeypatch these.
-# ---------------------------------------------------------------------------
+#
 def _svo() :
     """Lazily import ``astroquery.svo_fps.SvoFps`` (raises :class:`SvoUnavailable` if absent)."""
     try:
@@ -189,9 +189,9 @@ def _svo_fetch_transmission(filter_id):
             np.asarray(table["Transmission"], dtype=float))
 
 
-# ---------------------------------------------------------------------------
+#
 # Public, cached, mock-friendly API
-# ---------------------------------------------------------------------------
+#
 def register_manual_band(band, lambda_eff, zero_point):
     """Manually supply ``lambda_eff`` (Angstrom) + ``zero_point`` (Jy) for ``band``.
 

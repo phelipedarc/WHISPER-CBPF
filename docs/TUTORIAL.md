@@ -200,12 +200,12 @@ the curve, e.g. `load_lightcurve(..., redshift=0.0099)`).
 inverted (brighter = up).
 
 ### Any survey format works
-The same one-liner on raw ZTF photometry (`zg`/`zr` → `ztfg`/`ztfr`, with the `catflags` quality flag):
+The same one-liner handles raw ZTF photometry — `zg`/`zr` are recognised as `ztfg`/`ztfr`, and
+`flag_filters` drops rows by any quality column the file carries:
 ```python
-ztf = wp.load_lightcurve("tests/data/ztf18aarlhfw.csv", flag_filters={"catflags": 0})
+ztf = wp.load_lightcurve("my_ztf_photometry.csv", flag_filters={"catflags": 0})
 wp.plot_light_curve(ztf, layout="report")
 ```
-![ztf](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/ztf18aarlhfw_report.png)
 
 ---
 
@@ -292,8 +292,7 @@ wp.fit_ABC_SMC(r, "bazin", prior=prior, n_particles=1000, n_rounds=8, quantile=0
 ```
 
 Worked model comparisons, end to end with a personalised prior, are in
-[`MODEL_COMPARISON_CPU.md`](MODEL_COMPARISON_CPU.md) and
-[`MODEL_COMPARISON_GPU.md`](MODEL_COMPARISON_GPU.md).
+[`MODEL_COMPARISON.md`](MODEL_COMPARISON.md).
 
 ![model comparison](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/at2017gfo_model_comparison.png)
 
@@ -446,7 +445,7 @@ res = wp.fit_SNPE(
   on-device call. The returned flux is mapped into the comparison space **before** the per-point noise
   is added, on-device, so magnitude-space data is supported as well as flux. You rarely need to write
   one: **`sampler="snpe_gpu"` builds it for you** from any model registered through the JAX factories
-  (see [`MODEL_COMPARISON_GPU.md`](MODEL_COMPARISON_GPU.md)).
+  (see [`MODEL_COMPARISON.md`](MODEL_COMPARISON.md)).
 - **`device`** — train on a GPU: `'cpu'` (default), `'cuda'` / `'gpu'` / `'cuda:N'`, or **`'auto'`**
   (CUDA when available, else CPU; a GPU request with no CUDA warns and falls back). With
   `predict_torch` the GPU also runs the simulator; `training_batch_size`/`stop_after_epochs` (passed

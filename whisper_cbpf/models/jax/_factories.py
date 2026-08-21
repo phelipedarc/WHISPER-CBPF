@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import numpy as np
 
-AB_ZEROPOINT_JY = 3631.0
+from ...io.photometry import AB_ZEROPOINT_JY
 
 __all__ = ["flare_model", "kilonova_model", "register_kilonova",
            "kilonova_two_model", "register_kilonova_two",
@@ -86,7 +86,7 @@ class _BandIndex:
 class _PhotometricPredict:
     """A photometric JAX model's ``predict``/``predict_jax``, as a picklable object.
 
-    Every photometric factory below used to build these two entry points as *local closures*.
+    Building these two entry points as *local closures*, which is the obvious way, does not work.
     That made them unpicklable, and so unusable with any multiprocess sampler: ``abc`` and
     ``abc_smc`` at their default ``n_jobs=8`` died with ``AttributeError: Can't pickle local
     object 'kilonova_model.<locals>.predict'`` while the same fit at ``n_jobs=1`` succeeded --
@@ -188,14 +188,14 @@ class _PredictJax:
         return self.ctx.predict_jax(theta, times, band_idx)
 
 
-# --------------------------------------------------------------------------- flare
+# --- flare ---
 def flare_model():
     """The JAX flare as a ``whisper_cbpf.models.Model``. Self-contained, auto-registered."""
     from . import flare
     return flare.get_model()
 
 
-# --------------------------------------------------------------------------- kilonova
+# --- kilonova ---
 class _KilonovaOnePredict(_PhotometricPredict):
     """``predict``/``predict_jax`` for :func:`kilonova_model`. See :class:`_PhotometricPredict`."""
 
@@ -270,7 +270,7 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
     One consequence worth knowing when you COMPARE models: on its own default prior this model
     cannot reach the low-opacity blue regime, so a one-versus-two comparison in which only the
     two-component side is allowed there is not like-for-like. Widen this model's ``kappa`` to span
-    both regimes *for that comparison* (see ``docs/MODEL_COMPARISON_GPU.md``). That is a property of
+    both regimes *for that comparison* (see ``docs/MODEL_COMPARISON.md``). That is a property of
     the comparison, not a defect in this prior.
     filter_set : dict or None
         Pre-built ``make_filter_set`` output. Building it needs sncosmo and is slow, so a fit that
@@ -330,18 +330,26 @@ def kilonova_model(band_names, redshift, dl_cm, *, name="kilonova_one_jax", n_wa
                                "redback beyond t ~ 2.66*t_diff, where redback is under-resolved."))
 
 
-def register_kilonova(band_names, redshift, dl_cm, *, name="kilonova_one_jax", **kwargs):
-    """Build a kilonova ``Model`` for this dataset and register it under ``name``."""
+def _register(m):
+    """Register a freshly built ``Model`` under its own name, replacing any earlier binding.
+
+    ``overwrite=True`` is what makes re-running a factory with a different redshift or band set
+    do the obvious thing rather than raise.
+    """
     from ...models import register_model
 
-    m = kilonova_model(band_names, redshift, dl_cm, name=name, **kwargs)
-    register_model(name, m.predict, m.parameters, prior=m.default_prior,
+    register_model(m.name, m.predict, m.parameters, prior=m.default_prior,
                    description=m.description, overwrite=True,
                    predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
     return m
 
 
-# --------------------------------------------------------------------------- kilonova (2-comp)
+def register_kilonova(band_names, redshift, dl_cm, *, name="kilonova_one_jax", **kwargs):
+    """Build a kilonova ``Model`` for this dataset and register it under ``name``."""
+    return _register(kilonova_model(band_names, redshift, dl_cm, name=name, **kwargs))
+
+
+# --- kilonova (2-comp) ---
 class _KilonovaMultiPredict(_PhotometricPredict):
     """``predict``/``predict_jax`` for the two- and three-component kilonovae.
 
@@ -454,16 +462,10 @@ def kilonova_two_model(band_names, redshift, dl_cm, *, name="kilonova_two_jax", 
 
 def register_kilonova_two(band_names, redshift, dl_cm, *, name="kilonova_two_jax", **kwargs):
     """Build a two-component kilonova ``Model`` for this dataset and register it under ``name``."""
-    from ...models import register_model
-
-    m = kilonova_two_model(band_names, redshift, dl_cm, name=name, **kwargs)
-    register_model(name, m.predict, m.parameters, prior=m.default_prior,
-                   description=m.description, overwrite=True,
-                   predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
-    return m
+    return _register(kilonova_two_model(band_names, redshift, dl_cm, name=name, **kwargs))
 
 
-# ------------------------------------------------------ three-component kilonova
+# --- three-component kilonova ---
 def kilonova_three_model(band_names, redshift, dl_cm, *, name="kilonova_three_jax", n_wave=2000,
                          ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law="f99",
                          mag_floor=40.0, t_exp_days=0.0, filter_set=None, prior=None,
@@ -526,18 +528,13 @@ def kilonova_three_model(band_names, redshift, dl_cm, *, name="kilonova_three_ja
                               "they cannot label-switch."))
 
 
-def register_kilonova_three(band_names, redshift, dl_cm, *, name="kilonova_three_jax", **kwargs):
+def register_kilonova_three(band_names, redshift, dl_cm, *, name="kilonova_three_jax",
+                            **kwargs):
     """Build a three-component kilonova ``Model`` for this dataset and register it under ``name``."""
-    from ...models import register_model
-
-    m = kilonova_three_model(band_names, redshift, dl_cm, name=name, **kwargs)
-    register_model(name, m.predict, m.parameters, prior=m.default_prior,
-                   description=m.description, overwrite=True,
-                   predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
-    return m
+    return _register(kilonova_three_model(band_names, redshift, dl_cm, name=name, **kwargs))
 
 
-# --------------------------------------------------------------------------- TDE
+# --- TDE ---
 class _TDEPredict(_PhotometricPredict):
     """``predict``/``predict_jax`` for :func:`tde_model`. See :class:`_PhotometricPredict`."""
 
@@ -753,16 +750,10 @@ def tde_model(band_names, redshift, dl_cm, *, name=None, rise="gaussian", n_wave
 
 def register_tde(band_names, redshift, dl_cm, *, name=None, **kwargs):
     """Build a TDE ``Model`` for this dataset and register it under ``name``."""
-    from ...models import register_model
-
-    m = tde_model(band_names, redshift, dl_cm, name=name, **kwargs)
-    register_model(m.name, m.predict, m.parameters, prior=m.default_prior,
-                   description=m.description, overwrite=True,
-                   predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
-    return m
+    return _register(tde_model(band_names, redshift, dl_cm, name=name, **kwargs))
 
 
-# --------------------------------------------------------------------------- supernovae
+# --- supernovae ---
 def supernova_models():
     """The names :func:`supernova_model` accepts."""
     from . import supernova as sn
@@ -1045,10 +1036,4 @@ def _source_time(times, redshift, t_exp_days):
 
 def register_supernova(model, band_names, redshift, dl_cm, *, name=None, **kwargs):
     """Build a supernova ``Model`` for this dataset and register it under ``name``."""
-    from ...models import register_model
-
-    m = supernova_model(model, band_names, redshift, dl_cm, name=name, **kwargs)
-    register_model(m.name, m.predict, m.parameters, prior=m.default_prior,
-                   description=m.description, overwrite=True,
-                   predict_jax=m.predict_jax, log_prob_jax=m.log_prob_jax)
-    return m
+    return _register(supernova_model(model, band_names, redshift, dl_cm, name=name, **kwargs))

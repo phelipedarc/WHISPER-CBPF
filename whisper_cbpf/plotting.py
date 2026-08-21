@@ -159,7 +159,7 @@ def plot_light_curve(lc, *, layout="report", quantity="apparent_mag", bands=None
 
 # --- posterior-predictive check --------------------------------------------------------------------
 
-_AB_ZP_JY = 3631.0
+from .io.photometry import AB_ZEROPOINT_JY as _AB_ZP_JY
 
 
 def _flux_to_quantity(flux, quantity):

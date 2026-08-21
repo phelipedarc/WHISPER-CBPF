@@ -12,7 +12,7 @@ Two backends over the same distributions, in the layout ``distance`` and ``metri
   traceable JAX function of a flat theta vector. Resolved lazily on first access, so a CPU-only
   install never imports JAX.
 
-The module used to be a single ``priors.py``; the split adds a backend and changes nothing about
+``_numpy.py`` is the default backend and ``_jax.py`` the lazy JAX half; the split changes nothing about
 the classes, so ``from whisper_cbpf.priors import Prior`` still resolves.
 """
 from __future__ import annotations

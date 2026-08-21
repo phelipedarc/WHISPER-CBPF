@@ -181,7 +181,7 @@ class GaussianLikelihoodWithUpperLimits(GaussianLikelihood):
     ``space='magnitude'`` is **refused**. A non-detection is a statement about FLUX -- "the source
     was fainter than this limiting flux" -- and the magnitude of zero flux is undefined
     (``-2.5 log10(0) = +inf``), so the censoring integral has no magnitude-space counterpart that
-    is a bound on the same quantity. This class used to carry a magnitude branch (a survival term
+    is a bound on the same quantity. A magnitude branch (a survival term
     ``1 - Phi((limit - model) / (POGSON / upper_limit_sigma))`` with a width that came from the
     Pogson constant rather than from the data); it was removed deliberately rather than ported to
     the JAX backend, so the two backends implement one density and not two. Convert with

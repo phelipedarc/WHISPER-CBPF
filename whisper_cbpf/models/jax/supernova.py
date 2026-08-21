@@ -1,241 +1,28 @@
-"""
-Standalone JAX implementation of redback's self-contained SUPERNOVA models.
+"""JAX implementation of redback's self-contained supernova models.
 
-Runtime dependencies: jax and numpy only. No redback, no astropy, no scipy.
-(:mod:`whisper_cbpf.models.jax.kilonova` and :mod:`whisper_cbpf.models.jax.tde` are imported for shared
-constants and for the already-hardened diffusion / photosphere / AB-photometry machinery --
-see "REUSE" below.)
+Depends on jax and numpy only. The diffusion kernel, the photosphere and the AB-photometry layer
+come from :mod:`whisper_cbpf.models.jax.tde` and :mod:`whisper_cbpf.models.jax.kilonova`.
 
-PHYSICS IS UNCHANGED. Every deviation from redback is one of
-    (a) an exact algebraic identity,
-    (b) a change in how an INVALID region is REPRESENTED (mask instead of slice, guarded
-        value instead of inf/NaN), never a change to values inside the valid region, or
-    (c) a change of DEFAULT or of DISCRETISATION that is stated, measured and justified here.
-All three are numbered as CHANGE 1..8 below and referenced at each site.
+Twelve model names over nine engines. Engines: ``_nickelcobalt_engine``, ``basic_magnetar``,
+``magnetar_only``, ``exponential_powerlaw``, ``fallback_lbol``, ``_shock_cooling`` (Piro+ 2021) and
+``_csm_shock_breakout`` (Margalit 2022). Bolometric models: ``arnett``,
+``shock_cooling_and_arnett``, ``basic_magnetar_powered`` (== ``slsn``), ``magnetar_nickel``,
+``csm_shock_and_arnett``, ``exponential_powerlaw``, ``sn_fallback``, ``sn_nickel_fallback``,
+``general_magnetar_slsn``, ``type_1a`` (== ``arnett``) and ``type_1c`` (== ``arnett``). SEDs:
+blackbody, cutoff blackbody, line, synchrotron.
 
-WHAT IS PORTED
-    engines      : _nickelcobalt_engine, basic_magnetar, magnetar_only, exponential_powerlaw,
-                   fallback_lbol, _shock_cooling (Piro+2021), _csm_shock_breakout (Margalit 2022)
-    bolometric   : arnett, shock_cooling_and_arnett, basic_magnetar_powered (== slsn),
-                   magnetar_nickel, csm_shock_and_arnett, exponential_powerlaw, sn_fallback,
-                   sn_nickel_fallback, general_magnetar_slsn, type_1a (== arnett), type_1c (== arnett)
-    SEDs         : Blackbody (via tde.ab_magnitude / tde.flux_density_mjy), CutoffBlackbody,
-                   Line, Synchrotron
-    photometric  : flux density (mJy) and AB band magnitude for all eleven models
-    NOT ported   : the `homologous_expansion` / `thin_shell` / `csm_interaction` (Chatzopoulos)
-                   family, the Morag and Sapir-Waxman shock-cooling variants, and
-                   `general_magnetar_driven_supernova`. Each needs machinery this module does
-                   not: a root-find, a table, or an ODE. They are separate ports, not omissions
-                   of convenience.
+Everything here is vectorised arithmetic -- no ODE, no sequential loop, no root-find -- so the
+family is cheap, batches perfectly, and differentiates end to end.
 
-REUSE, NOT COPYING
-    ``ip.Diffusion`` (:func:`tde.diffusion`), ``photosphere.TemperatureFloor``
-    (:func:`tde.temperature_floor_photosphere`) and the blackbody / AB-band layer
-    (:func:`tde.ab_magnitude`, :func:`tde.flux_density_mjy`, built on
-    :mod:`whisper_cbpf.models.jax.kilonova`) are shared, exactly as redback shares
-    ``interaction_processes.py``, ``photosphere.py`` and ``sed.py`` across model families.
-    Copying them here would silently reintroduce the numerical defects those modules document
-    the next time the original is fixed. Both were validated against redback to ~1e-16.
+**float64 is required**, for a different reason than the TDE's: these are bolometric luminosities
+in cgs, and float32 stops at 3.403e38. :func:`build_sn_grid` raises rather than returning a light
+curve of exactly ``mag_floor``::
 
-WHY THESE PORT EASILY: the engines are pure vectorised arithmetic -- no ODE integration, no
-sequential loop, no root-finding. The only control flow anywhere is two masks (in
-:func:`shock_cooling` and :func:`fallback_lbol`). Compare the TDE cooling envelope, which
-needed ``lax.scan`` over a 5000-step Euler integration. The consequence is that the whole
-family is cheap, batches perfectly, and is differentiable end to end with no guard heroics.
+    import jax; jax.config.update("jax_enable_x64", True)   # before the first array exists
 
-===============================================================================
-THE CHANGES
-===============================================================================
-
- 1. THE DENSE GRID MOVES TO SETUP TIME. Every bolometric model that passes through
-    ``ip.Diffusion`` builds
-
-        dense_times = np.linspace(0, time[-1] + 100, dense_resolution)      # 1000 points
-
-    inside the likelihood. It depends on the observation times, which are DATA, not fitted
-    parameters, so its shape is fixed for a given dataset. :func:`build_sn_grid` builds it
-    once, together with the ``uniq_times`` / ``searchsorted`` bookkeeping ``ip.Diffusion``
-    needs, and the models take that grid as their first argument. Nothing about it varies
-    during sampling; the values are byte-identical to redback's.
-
-    NOTE, because an earlier draft of this port had it wrong: the grid is
-    ``linspace(0, ...)``, NOT ``geomspace(1e-5, ...)``. Verified in BOTH installed redbacks
-    (1.12.0 line 390, 1.15.1 line 251 of supernova_models.py) for arnett, magnetar,
-    magnetar_nickel, exponential_powerlaw and general_magnetar_slsn. It matters twice: the
-    grid is LINEAR, so early times are resolved at ~0.3 d rather than logarithmically, and
-    it starts at exactly 0, which makes redback's ``tb = max(0, min(dense_times))`` equal 0
-    rather than 1e-5. The only geomspace dense grid in the file belongs to
-    ``csm_interaction``, which is not ported here.
-
- 2. MASKED ASSIGNMENT -> ``jnp.where``. ``lbol[time < td] = ...`` is an in-place write into a
-    preallocated array, which JAX arrays do not support. The SELECTION condition is unchanged
-    in every case, so each point takes the same branch redback gives it. Both branches are
-    evaluated before the select, so both must be finite -- see CHANGE 3.
-
- 3. GUARDS ON THE INPUTS, NOT ON THE OUTPUTS. ``jnp.where(c, f(x), g(x))`` evaluates BOTH
-    branches, and its VJP multiplies the discarded one by zero: 0 * inf = NaN, so a NaN that
-    never appears in the forward output still destroys the gradient. Every fractional or
-    negative power in this module therefore has its ARGUMENT floored before the power is
-    taken, never its result repaired afterwards. The floors sit strictly outside the region
-    redback evaluates (at ``t = 0``, or where a base has already gone negative), so no
-    forward value inside the model's domain moves. Each site says which case it is.
-
- 4. THE CSM SHOCK BREAKOUT IS EVALUATED IN CLOSED FORM, NOT INTERPOLATED, and this is the
-    one place the port deliberately does not reproduce redback's arithmetic.
-
-        redback: time_temp = np.linspace(1e-2, 200, 300)          # 0.67 d spacing
-                 func = interp1d(time_temp, lbol, fill_value='extrapolate')
-                 return func(time)
-
-    ``_csm_shock_breakout`` is a closed-form expression -- there is no integration to
-    discretise -- so the 300-node linear interpolation is pure error, and it is not small
-    where the light curve is. MEASURED, over four parameter sets spanning the shipped prior,
-    on 100 epochs from 0.5 to 200 d:
-
-        csm_mass  v_min   beta  R_shell    max |dmag|   median |dmag|
-        1.0       1e4     0.30  1.0         1.150       0.008
-        0.1       5e3     0.45  0.1         (L -> 0)    --
-        3.0       2e4     0.40  5.0         0.075       0.002
-        0.5       1e4     0.45  0.01        1.294       0.005
-
-    The maximum always lands at the FIRST epoch, inside redback's first grid interval, where
-    the breakout luminosity varies by more than a factor of two across 0.67 d. A model that
-    is wrong by 1.3 mag at the epoch a shock-breakout fit exists to constrain is not a
-    cheaper model, it is a different one. Two further consequences of redback's grid that
-    this removes: ``fill_value='extrapolate'`` LINEARLY extrapolates past 200 d (the
-    luminosity there is decaying exponentially, so the extrapolant goes NEGATIVE), and
-    nothing below 0.01 d is defined at all.
-
- 5. THE TWO INSTALLED REDBACKS DISAGREE ABOUT ``basic_magnetar``, AND IT IS WORTH 0.75 MAG.
-    This machine has redback 1.12.0 (the editable clone this project pins) and 1.15.1
-    (site-packages in ``phe_sbi_2``). ``E_rot`` and ``t_p`` are identical in both; the
-    luminosity is not:
-
-        1.12.0   L = E_rot/t_p   / (1 +   t/t_p)**2
-        1.15.1   L = 2 E_rot/t_p / (1 + 2 t/t_p)**2         <- and MOSFiT's magnetar engine
-
-    Both integrate to exactly ``E_rot``, so neither is losing energy; they are the same
-    one-parameter family with the spin-down time redefined by a factor of two. MEASURED over
-    0.1-300 d: the ratio spans 0.514-1.954 at (p0, bp, m_ns, theta) = (2, 1, 1.4, 1.0) and
-    1.362-2.000 at (5, 0.5, 2.0, 0.5), i.e. -0.72 to +0.75 mag, and it is NOT a constant
-    offset -- the two curves cross, so it changes the shape as well as the normalisation.
-
-    DEFAULT HERE: ``magnetar_convention="1.15"``, because it is what MOSFiT's
-    ``modules/engines/magnetar.py`` computes and redback 1.15.1 changed TO it, not away from
-    it. Pass ``"1.12"`` to reproduce the pinned clone. This affects
-    :func:`basic_magnetar_powered_bolometric`, :func:`slsn_bolometric` and
-    :func:`magnetar_nickel_bolometric`; ``general_magnetar_slsn`` uses ``magnetar_only``,
-    which is identical in both.
-
- 6. THE (1+z) FLUX FACTOR IS ALSO A VERSION DIFFERENCE -- the same one documented as CHANGE 7
-    in :mod:`whisper_cbpf.models.jax.tde`. redback 1.15.1's supernova models end their
-    flux-density branch with
-
-        return flux_density.to(uu.mJy).value * (1 + redshift)
-
-    and 1.12.0's return the same expression without the factor. Flux density is per unit
-    OBSERVED frequency and observed frequency intervals are compressed by the expansion, so
-    F_nu(nu_obs) = (1+z) L_nu([1+z] nu_obs)/(4 pi d_L^2): dropping it is a missing term, not
-    a different convention. DEFAULT ``dilation=True``, matching 1.15.1 and the kilonova.
-    ``dilation=False`` reproduces 1.12.0 -- use it to check a port, not to fit. Worth
-    2.5 log10(1+z) = 0.011 mag at z = 0.01, 0.053 at z = 0.05, 0.43 at z = 0.5.
-
- 7. THE BAND INTEGRAL IS THE REAL BANDPASS, NOT AN SNCOSMO SPLINE. redback's magnitude branch
-    evaluates the SED on ``np.geomspace(100, 60000, 100)`` at ``np.geomspace(0.1, 3000, 300)``
-    days, builds an sncosmo ``TimeSeriesSource`` and splines onto the observations. This
-    module integrates the spectrum against the tabulated bandpass directly AT the observation
-    times, which is what :mod:`whisper_cbpf.models.jax.kilonova` documents under "DELIBERATE
-    DEVIATION" and what :mod:`whisper_cbpf.models.jax.tde` already does. Expect small differences
-    from redback's magnitudes traceable to the removed spline; the flux-density path has no
-    such step and is the like-for-like comparison.
-
- 7b. THREE REDBACK MODELS DECLARE ``ip.Diffusion`` AND THEN DO NOT APPLY IT. This is not an
-    inference from reading the source -- it is measured, by sweeping a parameter that ONLY the
-    interaction process consumes and asking whether the light curve moves at all
-    (``_scratch/sn_02_interaction_bug.py``, redback 1.15.1, flux_density branch):
-
-        model                      d/d(kappa)   d/d(kappa_gamma)   d/d(mej)
-        arnett                       9.6e-1        1.7e+0           1.8e+1
-        sn_exponential_powerlaw      9.6e-1        3.1e+0           9.8e-1
-        magnetar_nickel              5.7e-1        1.6e+0           1.3e+0
-        sn_fallback                  0.0           0.0              0.0     <-
-        sn_nickel_fallback           0.0           0.0              1.8e+0  <-
-
-    EXACT zeros. ``sn_fallback`` and ``sn_nickel_fallback`` set
-    ``kwargs["interaction_process"] = ip.Diffusion`` and then never reach the block that would
-    use it: both branches call ``fallback_lbol`` and hand the raw engine straight to the
-    photosphere. So ``kappa`` and ``kappa_gamma`` are DEAD PARAMETERS in redback's fallback
-    fits -- three of ``sn_fallback``'s seven, since ``mej`` is dead too -- sampled from their
-    priors, counted in every AIC/BIC, and constrained by nothing. (``mej`` survives in
-    ``sn_nickel_fallback`` only because it also sets the nickel mass.) ``magnetar_nickel`` has
-    a milder version of the same defect: it diffuses in its ``flux_density`` branch and NOT in
-    its magnitude branch, so the same parameters give two different light curves depending on
-    the requested output format.
-
-    THE SIZE OF THE DIFFERENCE, because it decides whether this can be treated as a detail:
-    applying diffusion to ``fallback_lbol`` moves the light curve by
-
-        logl1=54 tr=1   kappa=0.1 mej=2    ->  -7.65 .. +0.79 mag
-        logl1=52 tr=20  kappa=0.5 mej=10   -> -11.89 .. +0.66 mag
-        logl1=55 tr=0.1 kappa=2.0 mej=50   -> -15.59 .. -2.11 mag
-
-    It is a different model, not a correction. So it is a SWITCH, not a silent choice:
-    ``interaction=True`` (the default) diffuses, matching every sibling model and redback's own
-    declared ``interaction_process``; ``interaction=False`` reproduces redback bit for bit and
-    leaves kappa, kappa_gamma and mej doing nothing. If you are comparing evidences against a
-    published redback fallback fit, pass ``interaction=False`` -- and drop the dead parameters
-    from the count while you are there. ``magnetar_nickel`` here always diffuses, matching
-    redback's flux_density branch.
-
- 8. FLOAT64 IS REQUIRED, for a DIFFERENT reason than the TDE's, and an earlier draft of this
-    docstring claimed the opposite. The TDE needs x64 because its Euler integration
-    accumulates increments ~1e-6 of the state. Nothing here accumulates -- and it does not
-    help, because the problem is plain DYNAMIC RANGE: these engines are bolometric
-    luminosities in cgs, and float32 stops at 3.403e38.
-
-        engine (redback's own prior medians)          value      float32
-        nickelcobalt(f_nickel=0.1, mej=2)            1.58e43       inf
-        nickelcobalt(f_nickel=1e-3, mej=1e-4)        7.90e36       inf   <-
-        basic_magnetar(p0=2, bp=1)                   1.77e46       inf
-        fallback_lbol(logl1=54, tr=1)                5.92e45       inf
-        csm shock breakout e0 = 0.5 M v0^2           9.94e50       inf
-
-    Note the SECOND row. 7.9e36 is comfortably inside float32, and it still overflows,
-    because ``ni56_lum * np.exp(-t/tau)`` = 6.45e43 is formed BEFORE the nickel mass
-    multiplies it and XLA is free to reassociate the product -- the same hazard
-    :mod:`whisper_cbpf.models.jax.kilonova` documents as its identity 4. So there is no corner of
-    the prior where float32 works, and the failure is silent: L becomes inf, then 0 through
-    the guards, and every band comes back at ``mag_floor``. A whole light curve of exactly
-    40.0 mag, with finite gradients.
-
-    The kilonova avoids this by carrying L in units of ``LSCALE = 1e40`` throughout. Doing
-    the same here would mean rescaling the engines, the diffusion kernel and the photosphere,
-    and it would end the property that every expression is textually redback's -- which is
-    what makes this port checkable. The engines are also cheap enough that f64 costs little.
-    So :func:`build_sn_grid` and the shared paths RAISE if x64 is off, rather than returning
-    a plausible wrong answer::
-
-        import jax; jax.config.update("jax_enable_x64", True)   # BEFORE the first array
-
-    What IS float32-clean, and stays that way, is the SED layer, because it never sees a bare
-    luminosity: :func:`cutoff_norm` carries only O(1) quantities and the Line term is grouped
-    through ``LINE_AB_CONST`` so that neither ``4 pi d_L^2`` (1.3e55) nor ``L_bol`` (1e43) is
-    ever formed. That is not currently reachable on its own; it is there so that a future
-    LSCALE refactor has nothing left to fix downstream of it.
-
-PERFORMANCE, AND WHAT THIS FAMILY IS GOOD FOR
-    Measured on an A6000 at float64, 100 observation epochs, 1000 dense grid points:
-    **0.279 ms** for one ``arnett_bolometric`` light curve and **9.78 us** each for a vmapped
-    batch of 1024 (10.0 ms total), i.e. a 29x gain from batching. Contrast the TDE, whose
-    5000-step sequential scan costs 38 ms unbatched: nothing here is sequential, so a single
-    likelihood call is already 136x cheaper and there is far less to win by batching.
-
-    That changes what to reach for. The TDE effectively requires a vectorised consumer; these
-    models are fast enough for a plain sequential NUTS chain, and still batch well enough for
-    ABC, SNPE or ``chain_method="vectorized"`` when you want them. The dominant cost in a real
-    fit is the band integral (n_obs x n_wave), not the engine -- so ``n_wave`` in
-    ``make_filter_set`` is the knob that matters, and the diffusion quadrature's fixed 100
-    nodes are free by comparison.
+``magnetar_convention`` and ``interaction`` select between redback releases that disagree by a
+magnitude or more; ``dilation`` selects the ``(1+z)`` flux factor. Those, the closed-form CSM shock
+breakout, and every other deviation are in ``docs/PORTING_NOTES.md``.
 """
 
 from functools import partial
@@ -381,9 +168,7 @@ def _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej):
                      grid['dense_times'], dense_lbols, kappa, kappa_gamma, mej, vej)
 
 
-# =======================================================================================
-# 1. ARNETT
-# =======================================================================================
+# --- 1. ARNETT -----------------------------------------------------------------------------
 #
 # PHYSICS. 56Ni decays to 56Co (8.8 d) which decays to 56Fe (111.3 d), each with a fixed
 # specific luminosity. That heating is convolved with the Arnett diffusion kernel, which
@@ -440,9 +225,7 @@ type_1a_bolometric = arnett_bolometric
 type_1c_bolometric = arnett_bolometric
 
 
-# =======================================================================================
-# 2. SHOCK COOLING + ARNETT     (Piro+2021)
-# =======================================================================================
+# --- 2. SHOCK COOLING + ARNETT     (Piro+2021) ---------------------------------------------
 #
 # PHYSICS. A low-mass extended envelope around the progenitor is shock-heated at explosion and
 # radiates as it cools, producing an early blue excess on top of the nickel-powered main peak.
@@ -544,9 +327,7 @@ def shock_cooling_and_arnett_bolometric(grid, log10_mass, log10_radius, log10_en
     return lbol_1 + lbol_2
 
 
-# =======================================================================================
-# 3. MAGNETAR-POWERED     and     4. SLSN
-# =======================================================================================
+# --- 3. MAGNETAR-POWERED     and     4. SLSN -----------------------------------------------
 #
 # PHYSICS. A rapidly spinning, highly magnetised neutron star injects its rotational energy
 # E_rot into the ejecta by dipole spin-down on a timescale t_p. The luminosity is flat for
@@ -642,9 +423,7 @@ def magnetar_nickel_bolometric(grid, f_nickel, mej, p0, bp, mass_ns, theta_pb,
     return _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej)
 
 
-# =======================================================================================
-# 5. CSM SHOCK BREAKOUT + ARNETT     (Margalit 2022)
-# =======================================================================================
+# --- 5. CSM SHOCK BREAKOUT + ARNETT     (Margalit 2022) ------------------------------------
 #
 # PHYSICS. The ejecta slam into a dense CSM shell with a hard outer boundary. The shock
 # converts kinetic energy to radiation, which then diffuses out of the shocked shell. term1
@@ -754,9 +533,7 @@ def csm_shock_and_arnett_bolometric(grid, mej, f_nickel, csm_mass, v_min, beta,
     return nickel_lbol + sbo
 
 
-# =======================================================================================
-# 6. EXPONENTIAL POWERLAW
-# =======================================================================================
+# --- 6. EXPONENTIAL POWERLAW ---------------------------------------------------------------
 #
 # PHYSICS. A purely phenomenological light curve: a rising (1 - e^{-t/tpeak}) term times a
 # falling power law. No physical engine -- it is a flexible shape for when you want a fit
@@ -876,9 +653,7 @@ def exponential_powerlaw_bolometric(grid, lbol_0, alpha_1, alpha_2, tpeak_d,
     return _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej)
 
 
-# =======================================================================================
-# 7. SN FALLBACK     and     8. SN NICKEL FALLBACK
-# =======================================================================================
+# --- 7. SN FALLBACK     and     8. SN NICKEL FALLBACK --------------------------------------
 #
 # PHYSICS. Accretion of fallback material onto the compact remnant. The mass fallback rate
 # follows the canonical t^-5/3 of a disrupted envelope and the luminosity tracks it, held flat
@@ -943,9 +718,7 @@ def sn_nickel_fallback_bolometric(grid, mej, f_nickel, logl1, tr, kappa, kappa_g
     return _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej)
 
 
-# =======================================================================================
-# 9. GENERAL MAGNETAR SLSN
-# =======================================================================================
+# --- 9. GENERAL MAGNETAR SLSN --------------------------------------------------------------
 #
 # PHYSICS. Generalised spin-down: instead of assuming a pure dipole (braking index n = 3), the
 # braking index is a free parameter, so the late-time decay goes as t^{(1+n)/(1-n)} rather than
@@ -981,9 +754,7 @@ def general_magnetar_slsn_bolometric(grid, l0, tsd, nn, kappa, kappa_gamma, mej,
     return _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej)
 
 
-# =======================================================================================
-# THE SED LAYER
-# =======================================================================================
+# --- THE SED LAYER -------------------------------------------------------------------------
 #
 # Nine of the eleven models use ``sed.Blackbody``, which is already ported: the photosphere is
 # ``photosphere.TemperatureFloor`` (:func:`tde.temperature_floor_photosphere`) and the band
@@ -991,7 +762,7 @@ def general_magnetar_slsn_bolometric(grid, l0, tsd, nn, kappa, kappa_gamma, mej,
 # ``slsn`` (CutoffBlackbody) and ``type_1a`` (CutoffBlackbody then Line), plus ``type_1c``,
 # which ADDS a Synchrotron component to a plain blackbody. All three are below.
 #
-# ---------------------------------------------------------------------------------------
+#
 # CutoffBlackbody   (slsn, type_1a)
 #
 # ORIGINAL _set_sed (sed.py:356, identical in 1.12.0 and 1.15.1):
@@ -1067,7 +838,7 @@ def cutoff_shape(lam_obs_ang, redshift=0.0, cutoff_wavelength_ang=3000.0):
     return jnp.minimum(lam_src / cutoff_wavelength_ang, 1.0)
 
 
-# ---------------------------------------------------------------------------------------
+#
 # Line   (type_1a)
 #
 # ORIGINAL _set_sed (redback 1.15.1 sed.py; see CHANGE below for 1.12.0):
@@ -1114,7 +885,7 @@ def line_band_term(lam_obs_ang, weights, redshift=0.0, line_wavelength=7.5e3,
     return jnp.sum(jnp.asarray(weights) * (profile * lam_src ** 2)[None, :], axis=1)
 
 
-# ---------------------------------------------------------------------------------------
+#
 # Synchrotron   (type_1c)
 #
 # ORIGINAL (sed.py:484):
@@ -1167,9 +938,7 @@ def synchrotron_f_nu(nu_src_hz, pp, nu_max=1e9, source_radius=1e13, f0=1e-26,
     return sed * (SPEED_OF_LIGHT * 1e8 / nu ** 2) / (4 * jnp.pi * dl_cm ** 2)
 
 
-# =======================================================================================
-# photometry
-# =======================================================================================
+# --- photometry ----------------------------------------------------------------------------
 
 def photosphere(grid, lbol, vej, temperature_floor):
     """``photosphere.TemperatureFloor`` on this module's time grid. Returns ``(T [K], R [cm])``."""
@@ -1295,9 +1064,7 @@ def sn_ab_magnitude(grid, lbol, vej, temperature_floor, band_idx, weights, norms
     return -2.5 * jnp.log10(jnp.maximum(num / den, ratio_floor))
 
 
-# =======================================================================================
-# the family, as a table
-# =======================================================================================
+# --- the family, as a table ----------------------------------------------------------------
 #
 # Eleven models that share nine engines, one interaction process, one photosphere and four
 # SEDs. Spelling that out as a table rather than as eleven near-identical entry points is what
@@ -1464,9 +1231,7 @@ def ab_magnitude_of(model, grid, params, band_idx, weights, norms, lam_obs_ang,
                            sed_kind=spec["sed"], **sed_kw, **kw)
 
 
-# =======================================================================================
-# priors
-# =======================================================================================
+# --- priors --------------------------------------------------------------------------------
 
 def redback_prior(model, *, drop=("redshift",)):
     """redback's OWN prior for ``model``, READ FROM redback rather than transcribed.
@@ -1500,6 +1265,8 @@ def redback_prior(model, *, drop=("redshift",)):
 
     Raises ImportError if redback is not installed; use :func:`fallback_prior` then.
     """
+    from ..redback_adapter import _import_redback
+    _import_redback()
     from redback.priors import get_priors
 
     from ...priors import LogUniform, Prior, Uniform
@@ -1605,68 +1372,4 @@ def default_prior(model):
         return fallback_prior(model)
 
 
-# =======================================================================================
-# self-test
-# =======================================================================================
-
-if __name__ == "__main__":
-    import time as _time
-
-    t_obs = np.geomspace(0.5, 200.0, 100)
-    g = build_sn_grid(t_obs)
-    z, dl = 0.05, 7.0e26
-
-    lam = np.geomspace(1000.0, 30000.0, 2000)
-    trans = np.zeros((2, lam.size))
-    trans[0][(lam > 4000) & (lam < 5500)] = 1.0
-    trans[1][(lam > 5500) & (lam < 7000)] = 1.0
-    W, N = ab_weights(lam, trans)
-    bidx = jnp.asarray(np.arange(t_obs.size) % 2)
-
-    demo = dict(
-        f_nickel=0.1, mej=2.0, vej=1e4, kappa=0.1, kappa_gamma=0.03, temperature_floor=4000.0,
-        log10_mass=-1.0, log10_radius=13.0, log10_energy=47.0, nn=10.0, delta=1.1,
-        p0=2.0, bp=1.0, mass_ns=1.4, theta_pb=1.0,
-        csm_mass=1.0, v_min=1e4, beta=0.45, shell_radius=1.0, shell_width_ratio=0.1,
-        lbol_0=1e43, alpha_1=2.0, alpha_2=1.0, tpeak_d=10.0,
-        logl1=54.0, tr=1.0, l0=1e45, tsd=20.0, pp=3.0,
-        line_wavelength=7.5e3, line_width=500.0, line_time=50.0, line_duration=25.0,
-        line_amplitude=0.3, cutoff_wavelength=3000.0)
-
-    print(f"{'model':<26} {'L_peak [erg/s]':>14}  {'AB range':>16}  {'grad':>6}")
-    print("-" * 70)
-    for name in model_names():
-        p = {k: demo[k] for k in PARAMETERS[name]}
-        lb = bolometric(name, g, p)
-        mag = ab_magnitude_of(name, g, p, bidx, W, N, jnp.asarray(lam), z, dl)
-        free = [k for k in PARAMETERS[name]]
-        gr = jax.grad(lambda v: jnp.sum(ab_magnitude_of(
-            name, g, dict(zip(free, v)), bidx, W, N, jnp.asarray(lam), z, dl)))(
-            jnp.array([float(demo[k]) for k in free]))
-        print(f"{name:<26} {float(jnp.max(lb)):>14.4e}  "
-              f"{float(jnp.min(mag)):>7.2f}..{float(jnp.max(mag)):<7.2f}  "
-              f"{str(bool(jnp.all(jnp.isfinite(gr)))):>6}")
-
-    fd = flux_density("arnett", g, {k: demo[k] for k in PARAMETERS["arnett"]},
-                      5e14, z, dl)
-    print(f"\narnett flux density peak {float(jnp.max(fd)):.4e} mJy")
-
-    f = jax.jit(lambda v: arnett_bolometric(g, v[0], v[1], v[2], v[3], v[4]))
-    v0 = jnp.array([0.1, 2.0, 0.1, 0.03, 1e4])
-    f(v0).block_until_ready()
-    t0 = _time.perf_counter()
-    for _ in range(200):
-        o = f(v0)
-    o.block_until_ready()
-    print(f"arnett_bolometric: {(_time.perf_counter() - t0) / 200 * 1e3:.3f} ms per light curve")
-
-    B = 1024
-    V = jnp.tile(v0, (B, 1)) * (1.0 + 0.01 * jnp.arange(B)[:, None] / B)
-    fb = jax.jit(jax.vmap(lambda v: arnett_bolometric(g, v[0], v[1], v[2], v[3], v[4])))
-    fb(V).block_until_ready()
-    t0 = _time.perf_counter()
-    for _ in range(20):
-        o = fb(V)
-    o.block_until_ready()
-    dt_ = (_time.perf_counter() - t0) / 20
-    print(f"batch {B}: {dt_ * 1e3:.2f} ms total, {dt_ / B * 1e6:.2f} us per curve")
+# --- self-test -----------------------------------------------------------------------------

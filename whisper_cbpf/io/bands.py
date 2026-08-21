@@ -78,7 +78,7 @@ FILTER_LOOKUP = {
 }
 
 
-# ---------------------------------------------------------------------------
+#
 # Effective-wavelength + zero-point table for each FILTER_LOOKUP group.
 #
 # Per the spec, the OPTICAL effective bands are anchored to the LSST ugrizy filters (zero point in
@@ -86,8 +86,8 @@ FILTER_LOOKUP = {
 # The NIR groups (J/H/K) and the JWST sim bands have no LSST equivalent, so they carry documented
 # 2MASS / JWST effective wavelengths -- still on the AB zero point Whisper uses internally. ``source``
 # records the provenance so callers can tell an LSST anchor from a documented NIR value.
-# ---------------------------------------------------------------------------
-_AB_ZP_JY = 3631.0  # AB zero point (== whisper_cbpf.io.photometry.AB_ZEROPOINT_JY)
+#
+from .photometry import AB_ZEROPOINT_JY as _AB_ZP_JY
 
 LSST_BAND_INFO = {
     # optical -- LSST ugrizy anchors (lambda_eff in Angstrom)

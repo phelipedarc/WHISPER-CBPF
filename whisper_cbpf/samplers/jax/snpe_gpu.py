@@ -28,7 +28,7 @@ What this module adds
    This replaces a Python ``for`` loop that called the model's numpy ``predict`` one parameter set
    at a time on the CPU.
 2. **Registration.** ``snpe_gpu`` is a real sampler: ``wp.fit(lc, model, sampler="snpe_gpu")`` works
-   like every other one. It used to be hard-wired to the flare and unregistered, because a
+   like every other one. Hard-wiring it to the flare would mean a
    ``predict_torch`` hook with no ``bands`` argument cannot express a photometric model. It can now.
 3. **An optional context embedding.** :class:`ContextEmbedding` injects per-point sigma and a band
    one-hot as extra channels *inside* the embedding — i.e. AFTER sbi's standardizing layer, where a
@@ -383,7 +383,7 @@ def fit_snpe_gpu(lc, model, *, prior=None, num_rounds=1, num_simulations=10000,
 
     Kept as a direct entry point because it predates registration; ``wp.fit(lc, model,
     sampler="snpe_gpu", ...)`` is the same call. It is **no longer flare-only** — the ``bands``
-    argument the ``predict_torch`` hook was missing is what used to make that restriction
+    argument the ``predict_torch`` hook needs is what would otherwise make that restriction
     unavoidable.
     """
     return SNPEGPUSampler().fit(

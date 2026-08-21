@@ -13,10 +13,10 @@ of the prior the fit loses).
 
 RUNS ON GPU, with the env sourced and CUDA_VISIBLE_DEVICES set::
 
-    docker exec phe_sbi_2 bash -lc '
+    docker exec a GPU environment bash -lc '
       export CUDA_VISIBLE_DEVICES=0
       cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF
-      source scripts/whisper-gpu-env.sh
+      source "$(whisper-cbpf-env)"
       python -u tests/t3_inference/stage_injection_recovery.py --n-injections 100'
 
 The script refuses to start on CPU unless ``--allow-cpu`` is passed; see stage_sbc.py's

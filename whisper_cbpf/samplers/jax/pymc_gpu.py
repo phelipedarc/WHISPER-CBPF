@@ -1,37 +1,34 @@
 """NUTS through PyMC's model API, executed by NumPyro on the GPU.
 
-ONE KERNEL, TWO KNOBS
-    PyMC's JAX path does not implement its own sampler: ``pymc.sampling.jax.sample_numpyro_nuts``
-    lowers the PyTensor graph to JAX and hands it to **NumPyro's NUTS** -- the same kernel
-    ``nuts_gpu`` calls directly. So these samplers are not a competing algorithm. What they vary is
-    the *frontend* (PyMC's model API instead of a hand-written log-density) and the *chain execution
-    strategy*:
+PyMC's JAX path does not implement its own sampler: ``pymc.sampling.jax.sample_numpyro_nuts``
+lowers the PyTensor graph to JAX and hands it to **NumPyro's NUTS** -- the same kernel ``nuts_gpu``
+calls directly. These are therefore not a competing algorithm. What they vary is the frontend
+(PyMC's model API instead of a hand-written log-density) and the chain execution strategy:
 
-    ``pymc_jax_gpu_vectorized``   ``chain_method="vectorized"`` -- chains vmapped on ONE device.
-                                  Same kernel and same strategy as ``nuts_gpu``, so it must
-                                  reproduce that posterior to sampling noise. That makes it a free
-                                  regression test on this whole PyTensor-to-JAX bridge rather than
-                                  merely a new feature.
-    ``pymc_jax_gpu_parallelized`` ``chain_method="parallel"`` -- chains ``pmap``ed ACROSS devices.
-                                  This is the multi-GPU path. It needs more than one visible device
-                                  to mean anything; with one it silently degenerates to sequential
-                                  chains, so ``fit`` warns rather than reporting a fake result.
+``pymc_jax_gpu_vectorized``
+    ``chain_method="vectorized"`` -- chains vmapped on one device. Same kernel and same strategy as
+    ``nuts_gpu``, so it must reproduce that posterior to sampling noise, which makes it a free
+    regression test on the whole PyTensor-to-JAX bridge.
 
-WHY A CUSTOM PyTensor Op IS UNAVOIDABLE
-    The kilonova forward model is JAX. PyMC builds PyTensor graphs. Bridging them needs an ``Op``
-    that PyTensor can place in a graph and that the JAX backend knows how to lower, which is what
-    ``jax_funcify`` registration provides.
+``pymc_jax_gpu_parallelized``
+    ``chain_method="parallel"`` -- chains ``pmap``-ed across devices. This is the multi-GPU path,
+    and it needs more than one visible device to mean anything; with one it degenerates to
+    sequential chains, so ``fit`` warns rather than reporting a fake result.
 
-    The subtle half is the GRADIENT. PyTensor differentiates symbolically at the graph level and
-    *then* lowers, so it cannot see inside a JAX callable -- an Op with no ``grad`` leaves NUTS with
-    nothing to differentiate, and the failure is a confusing PyTensor error far from the cause. So
-    the value Op declares its gradient to be a second Op wrapping ``jax.grad`` of the same function,
-    and both are registered with the JAX backend. The chain is then: PyMC graph -> PyTensor grad ->
-    JAX lowering -> one fused XLA program per chain.
+**Why a custom PyTensor Op is unavoidable.** The forward models are JAX and PyMC builds PyTensor
+graphs, so bridging them needs an ``Op`` that PyTensor can place in a graph and that the JAX backend
+knows how to lower -- which is what ``jax_funcify`` registration provides.
 
-    The log-density itself is passed in, not rebuilt. ``nuts_gpu``, ``emcee_jax`` and these samplers
-    are meant to receive the *same object*, so a disagreement between them is the sampler and never
-    the likelihood.
+The subtle half is the gradient. PyTensor differentiates symbolically at the graph level and *then*
+lowers, so it cannot see inside a JAX callable: an Op with no ``grad`` leaves NUTS with nothing to
+differentiate, and the failure surfaces as a PyTensor error far from its cause. So the value Op
+declares its gradient to be a second Op wrapping ``jax.grad`` of the same function, and both are
+registered with the JAX backend. The chain is PyMC graph -> PyTensor grad -> JAX lowering -> one
+fused XLA program per chain.
+
+The log-density itself is passed in, not rebuilt. ``nuts_gpu``, ``emcee_jax`` and these samplers are
+meant to receive the *same object*, so a disagreement between them is the sampler and never the
+likelihood.
 """
 from __future__ import annotations
 
@@ -333,7 +330,7 @@ class _PyMCJAXBase(BaseSampler):
             summary=summarize_posterior(samples, names), best_params=best, n_data=n,
             n_params=k, runtime_s=runtime, info=info,
             max_log_likelihood=max_log_likelihood, aic=aic, bic=bic)
-        # min_distance is LEFT AT ITS DEFAULT NaN, not set to None. It used to be None here, and
+        # min_distance is left at its default NaN rather than set to None, because
         # `SamplerResult.to_dict` does `float(self.min_distance)` -- so `result.to_json()`, the
         # documented way to save a fit, raised TypeError for these two samplers and no other.
         # NaN is the field's declared "this sampler has no distance" value; nuts_gpu, mcmc and

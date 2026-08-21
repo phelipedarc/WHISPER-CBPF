@@ -14,7 +14,6 @@ whisper_cbpf sampler uses, so all four arms of the benchmark share one output sc
 """
 from __future__ import annotations
 
-import os
 import sys
 import time
 
@@ -28,10 +27,12 @@ import pandas as pd
 
 from ...models import get_model  # noqa: E402
 from ...samplers.base import (  # noqa: E402
+    aic_bic,
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
     attach_predictive_metrics,
+    check_burnin,
     summarize_posterior,
 )
 
@@ -39,7 +40,7 @@ from ...samplers.base import (  # noqa: E402
 #:
 #: Mirrors ``abc_gpu.DEFAULT_CHUNK`` and for the same reason: the extent of a vmap must never be a
 #: user-scaled count on a model with a wavelength axis, because XLA's compile time — not memory —
-#: is what gives out. ``None`` restores the single wide vmap this sampler used to do
+#: is what gives out. ``None`` uses a single wide vmap over every walker
 #: unconditionally, which is fine for an analytic density.
 DEFAULT_WALKER_CHUNK = 16
 
@@ -105,13 +106,13 @@ def _finish(sampler_name, lc, model, names, flat, ll_flat, runtime, info, space,
 
     info["compile_time_s"] = float(compile_time_s)
     attach_band_metrics(info, lc, model.name, best_params, space)
+    aic, bic = aic_bic(max_log_likelihood, k, n)
     result = SamplerResult(
         sampler=sampler_name, model=model.name, parameters=list(names), samples=samples,
         summary=summarize_posterior(samples, names), best_params=best_params,
         n_data=n, n_params=k, runtime_s=float(runtime), info=info,
         max_log_likelihood=max_log_likelihood,
-        aic=float(-2.0 * max_log_likelihood + 2 * k),
-        bic=float(-2.0 * max_log_likelihood + k * np.log(n)),
+        aic=aic, bic=bic,
     )
     attach_predictive_metrics(result, lc, space)
     return result
@@ -138,7 +139,7 @@ def fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nstep
     it samples whatever density it is given, so its stationary distribution is exactly
     ``exp(log_prob_fn)``. ``nuts_gpu`` and ``pymc_gpu`` add the prior through their own sample
     sites and therefore want a pure log-*likelihood*. Handing the same object to both — which this
-    module's docstring used to recommend, and which ``fit_emcee_jax`` used to assume with the
+    module's docstring recommends, and which ``fit_emcee_jax`` assumes with the
     comment "flat prior => log-posterior == log-likelihood + const" — is correct **only if every
     prior is Uniform**. It is not: ``kilonova_model`` gives ``temperature_floor`` a
     ``LogUniform(100, 6000)``, whose median is 775 K against a uniform's 3050 K. So the auto-built
@@ -154,6 +155,8 @@ def fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nstep
     ``scatter_param`` column (default ``"sigma"``) becomes a sampled walker dimension routed to the
     likelihood instead of to ``model.predict``. The resolved class lands in ``info["likelihood"]``.
     """
+    check_burnin(burnin, nsteps)
+
     import jax
     import jax.numpy as jnp
 
@@ -261,6 +264,8 @@ def fit_emcee_numpy(lc, model, times, values, sigmas, *, prior=None, nwalkers=32
     dispatches this arm as its own subprocess. Running it inside a JAX process may appear to
     work and then hang unpredictably, which is worse than failing outright.
     """
+    check_burnin(burnin, nsteps)
+
     import multiprocessing
 
     if "jax" in sys.modules:
@@ -327,7 +332,7 @@ class EmceeJAXSampler(BaseSampler):
 
     Registered because this sampler is genuinely model-agnostic -- it consumes a ``log_prob_fn`` and
     never touches a specific forward model. ``fit_emcee_numpy`` in this same module is NOT
-    registered for the opposite reason: it hard-wires the flare spec. (``snpe_gpu`` used to be the
+    registered for the opposite reason: it hard-wires the flare spec. (``snpe_gpu`` was once the
     other example here; it became model-agnostic and is now registered too.)
     """
 

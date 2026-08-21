@@ -1,20 +1,20 @@
-"""Distance metrics for ABC (and pseudo-likelihoods for model selection).
+"""Distance metrics for ABC, and pseudo-likelihoods for model selection.
 
-A distance has the signature ``f(obs_flux, obs_flux_err, sim_flux, bands) -> float`` and is treated
-as a black box by the sampler -- plug in any custom metric.
+A distance has the signature ``f(obs_flux, obs_flux_err, sim_flux, bands) -> float`` and is
+treated as a black box by the sampler, so any custom metric plugs in.
 
-**numpy is the default backend.** ``from whisper_cbpf.distance import mse_distance`` gives the numpy
-one, and nothing in this subpackage imports JAX at module level. The jnp versions are reached by the
-``_jax`` suffix (``get_distance("mse_jax")``), which imports :mod:`._jax` lazily -- so a CPU-only
-install can import this package, list every distance, and only meets JAX if it asks for one.
+**numpy is the default backend.** ``from whisper_cbpf.distance import mse_distance`` gives the
+numpy one, and nothing in this subpackage imports JAX at module level. The jnp versions are
+reached by the ``_jax`` suffix (``get_distance("mse_jax")``), which imports :mod:`._jax` lazily —
+so a CPU-only install can import the package, list every distance, and only meets JAX if it asks
+for one.
 
-Adding a distance later means: one function in ``_numpy.py``, optionally one in ``_jax.py``, one
+Adding a distance means one function in ``_numpy.py``, optionally one in ``_jax.py``, and one
 entry in ``_DISTANCES``.
-
-Registry contract (unchanged from the legacy ``whisper_labia.distance``): ``register_distance`` /
-``get_distance`` / ``list_distances``.
 """
 from __future__ import annotations
+
+from ..backends import gpu_extra_error
 
 from ._numpy import (NUMPY_DISTANCES, chi2_distance, mae_distance, mse_distance,  # noqa: F401
                      rmse_distance, wmae_distance, wmse_distance)
@@ -23,11 +23,9 @@ __all__ = ["chi2_distance", "mse_distance", "rmse_distance", "mae_distance",
            "wmse_distance", "wmae_distance", "NUMPY_DISTANCES",
            "register_distance", "get_distance", "list_distances"]
 
-# --- registry (so distances are discoverable / usable by name, like models/samplers/likelihoods) ---
-# Seeded with every numpy metric. In the legacy split, whisper shipped `chi2` alone and whisper-GPU
-# pushed the other five in on import via `register_into_whisper()`; here they are core and register
-# normally. The CPU ABC keeps them, which is what makes a CPU/GPU comparison at a fixed distance
-# possible -- do not narrow this back to chi2.
+# Registry, so distances are usable by name like models, samplers and likelihoods. Seeded with
+# every numpy metric: the CPU ABC keeps all six, which is what makes a CPU/GPU comparison at a
+# fixed distance possible. Do not narrow this to chi2.
 _DISTANCES = dict(NUMPY_DISTANCES)
 _DISTANCES["chi_square"] = chi2_distance
 
@@ -64,9 +62,7 @@ def get_distance(distance):
         try:
             return jnp_distance(key[: -len("_jax")])
         except ImportError as exc:  # pragma: no cover - depends on the install
-            raise ImportError(
-                f"{key} requires the [gpu] extra: pip install whisper-cbpf[gpu]"
-            ) from exc
+            raise gpu_extra_error(key) from exc
     raise KeyError(f"Unknown distance {distance!r}. Available: {list_distances()}")
 
 

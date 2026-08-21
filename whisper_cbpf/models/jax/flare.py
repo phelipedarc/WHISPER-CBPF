@@ -147,9 +147,6 @@ def get_model():
     It satisfies the same ``.name``/``.predict``/``.parameters``/``.default_prior`` contract every
     whisper_cbpf model does.
     """
-    import os
-    import sys
-
     from ...models import Model
 
     return Model(
@@ -160,30 +157,3 @@ def get_model():
         description="JAX Gaussian-rise/exponential-decay flare, log-space parameters "
                      "(JAX/GPU; registered by whisper_cbpf as 'flare_jax').",
     )
-
-
-def _grad_finiteness_self_test():
-    """All 4 params must have finite gradients, including at the dt==0 boundary
-    and for times far on both sides of t0 (where a naive single np.where would
-    overflow the unselected branch)."""
-    t0 = 10.0
-    times = jnp.array([-50.0, -5.0, 0.0, 10.0, 10.0 + 1e-6, 25.0, 200.0], dtype=jnp.float32)
-    # times include t == t0 exactly (dt=0, boundary) and points far in each
-    # direction (dt=-60 relative to t0 on the rise side; dt=190 on the decay
-    # side) to exercise the overflow-prone branch on both sides.
-    params = {
-        "log_amp": jnp.array(1.0), "log_sigma": jnp.array(0.5),
-        "log_tau": jnp.array(1.0), "t0": jnp.array(t0),
-    }
-
-    def loss(p):
-        return jnp.sum(predict_jax(p, times))
-
-    grads = jax.grad(loss)(params)
-    bad = {k: float(v) for k, v in grads.items() if not jnp.isfinite(v)}
-    assert not bad, f"non-finite gradient(s): {bad}"
-    print("grad-finiteness self-test passed:", {k: float(v) for k, v in grads.items()})
-
-
-if __name__ == "__main__":
-    _grad_finiteness_self_test()

@@ -5,35 +5,29 @@ axes (models, samplers, likelihoods, distances) with the ABC / ABC-SMC / MCMC / 
 and the JAX/GPU half (NUTS, GPU ABC/ABC-SMC, emcee-over-JAX, PyMC frontends, and the JAX kilonova,
 TDE and supernova families) in [§10](#10-the-jaxgpu-half).
 
-- **Environments:** `phe_sbi` (CPU, Python 3.11) and `phe_sbi_2` (GPU/JAX, needs
-  `source "$(whisper-cbpf-env)"` before Python starts — see [`GPU_SETUP.md`](GPU_SETUP.md)).
-- **Run the CPU tests:** `python -m pytest -q -m "not slow"` → **239 passed, 36 skipped,
-  6 deselected** (measured 2026-08-13 in `phe_sbi`, ~77 s). §8 has the caveat about `--collect-only`.
-- **Run the GPU tests:** in `phe_sbi_2`, with the env sourced, using the interpreter its banner names.
 - **Install:** `pip install whisper-cbpf` is CPU-complete; `[gpu]` adds the JAX half. Every GPU entry
   is listed by `list_models()` / `list_samplers()` / `list_distances()` even without the extra.
+- **Run the tests:** `python -m pytest -q`. The JAX tiers need the `[gpu]` extra and
+  `source "$(whisper-cbpf-env)"` before Python starts — see [`GPU_SETUP.md`](GPU_SETUP.md).
 
 ## Package map
 
 ```
 whisper_cbpf/
-  __init__.py          # public API exports
+  __init__.py          # the public API
   plotting.py          # plot_light_curve, plot_ppc, plot_calibration, plot_corner
-  metrics.py           # waic, per_band_metrics, predictive_metrics (RMSE/LPD/ELPD-LOO/coverage)
   validation.py        # recovery_metrics, posterior_predictive_check, sbc_rank, sbc_ranks
-  priors/              # Uniform, LogUniform, Prior; _numpy.py (default) + _jax.py (lazy: log_prob_jax)
-  distance.py          # chi2_distance + the distance registry
   embeddings.py        # MLPEmbedding, TCNEmbedding, build_embedding (SNPE conditioning nets)
-  likelihood/          # GaussianLikelihood, ...WithUpperLimits, Mixture..., make_likelihood;
-                       #   _numpy.py (default) + _jax.py (lazy: log_likelihood_jax)
-  models/              # Model + register/get/list + built-ins flare/bazin/gaussian_rise + physical mck19 + redback two_component_kilonova
-  samplers/            # BaseSampler, SamplerResult, ABCSampler, ABCSMCSampler, MCMCSampler, SNPESampler, fit_ABC(_SMC)/fit_MCMC/fit_SNPE, fit
   io/                  # LightCurve, load_lightcurve, bands, photometry, units, svo
-  distance/            # registry; _numpy.py (default) + _jax.py (lazy)
-  metrics/             # _numpy.py (waic, per-band, predictive) + _jax.py (ArviZ ESS)
-  models/jax/          # kilonova, kilonova_two, tde, supernova, flare + binding factories
+  priors/              # Uniform, LogUniform, Prior       (_numpy.py + lazy _jax.py)
+  likelihood/          # the four likelihood classes + make_likelihood   (_numpy.py + lazy _jax.py)
+  distance/            # chi2_distance + the distance registry           (_numpy.py + lazy _jax.py)
+  metrics/             # waic, per_band_metrics, predictive_metrics; ArviZ ESS in _jax.py
+  models/              # Model + register/get/list, the CPU built-ins, and the redback adapter
+  models/jax/          # kilonova (1/2/3-component), tde, supernova, flare + binding factories
+  samplers/            # BaseSampler, SamplerResult, and the five CPU samplers
   samplers/jax/        # nuts_gpu, abc_gpu, abc_smc_gpu, emcee_jax, pymc_gpu, snpe_gpu
-  backends/            # check_gpu, require_jax, gpu_list, device policy
+  backends/            # check_gpu, require_jax, gpu_list, device policy, env.sh
 ```
 
 Top-level (`import whisper_cbpf as wp`): `LightCurve`, `load_lightcurve`, `plot_light_curve`,
@@ -699,51 +693,6 @@ Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`
 [`dev/phase0_smoke.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/phase0_smoke.py),
 [`dev/demo_abc_at2017gfo.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_abc_at2017gfo.py),
 [`dev/demo_ingestion.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_ingestion.py).
-
-## 8. Test coverage
-
-> **239 passed, 36 skipped, 6 deselected** on a base + `[dev]` install (`phe_sbi`, `-m "not slow"`,
-> measured 2026-08-13, ~77 s). Note `--collect-only` reports **260**, not 270: ten test modules
-> `importorskip("jax")` at *module* scope, so they are never collected yet each still reports one
-> skip. The per-file table below has drifted and is not re-measured here; treat the totals above as
-> the source of truth. Regenerate with
-> `docker exec phe_sbi bash -lc 'cd <repo> && python -m pytest tests --collect-only -q | tail -1'`
-> after adding tests, and update this section — three rows had silently drifted before this check.
-
-| File | Tests | Focus |
-|---|---|---|
-| `test_photometry.py` | 5 | AB zeropoint, mag↔flux, error propagation, SNR. |
-| `test_bands.py` | 13 | Aliases (incl. ZTF `ZTF_g`-style, case-insensitive), case-sensitivity, `group_bands`/`FILTER_LOOKUP` (ZTF resolution + finite λ_eff/ZP), `unmapped_bands`. |
-| `test_schema.py` | 11 | Validation, subsetting, `add_*`, `snr`/`select_snr`, `set_explosion_date`, upper limits. |
-| `test_loader.py` | 12 | AT2017GFO load, window/subset, grouping, `min_snr`, `explosion_date`, upper limits. |
-| `test_plotting.py` | 11 | report/grid layouts, flux/absolute-mag, redshift guard, upper-limit markers; `plot_corner` overlay/legend, common-params + log axes + array/empty errors; `plot_ppc` single/multi × flux/magnitude × panel-by band/method; `plot_calibration` multi + per-band. |
-| `test_metrics.py` | 25 | WAIC keys + finite + better-fit-lower ordering, `fixed=`/subsampling, pointwise log-lik summing to the total; **WAIC pinned to a closed-form value** (two-point Gaussian posterior, derivation in the docstring) both through `_loo_waic` and end-to-end through `wp.waic`, and cross-checked against `arviz.waic` on the same matrix (exact up to arviz's ddof=0); **`wp.waic(res, lc)` == `res.waic` on a scatter fit**; the `waic`/`waic_reliable`/`elpd_loo`/`rmse` properties returning `None` instead of raising on a failed block; arviz-failing distinguished from arviz-absent; `per_band_metrics` zero-at-truth / offset / JSON, **and on a censored light curve** — it builds no likelihood (so NaN `flux_err` on a non-detection is fine), scores detections only with `n_upper_limits_excluded` reporting the rest, keeps an all-censored band at `n = 0`, and `flux_to_space` matching the bound `model_in_space`; `predictive_metrics` RMSE/LPD/ELPD-LOO/WAIC/AIC-BIC/coverage block + auto-attach, coverage-calibration for a good fit, scatter-aware WAIC/coverage vs mis-specified, **and its censoring split** — `rmse`/`coverage` reproducing the limits-dropped-up-front curve exactly while `lpd`/`waic` keep every row, the uncensored path bit-identical with the column absent vs present-and-all-False, and an all-censored band held at NaN. |
-| `test_validation.py` | 4 | recovery z-score + coverage signs, PPC (reduced χ²≈1, predictive coverage, p≈0.5), SBC rank uniformity (calibrated vs edge-biased), `sbc_rank` bounds. |
-| `test_embeddings.py` | 6 | MLP/TCN embedding shapes + finite output, TCN receptive field covers the input, `build_embedding` dispatch + unknown-name error, `x_format` validation, ABC `simulate_noise` (n_jobs-reproducible, optional, noisy-vs-noiseless distance floor). |
-| `test_scatter.py` | 4 | Villar+17 scatter likelihood (formula vs hand calc, σ=0 reduces to Gaussian, pointwise sums, registry), MCMC recovers injected extra scatter (σ counted in AIC), ABC scatter validation + posterior column, ABC magnitude-space acceptance. |
-| `test_review_fixes.py` | 6 | scientific-review fixes: ABC exact-likelihood AIC, ABC-SMC importance weighting, WAIC drops draws not data points, mck19 π factor, CCM89 out-of-range clamp, non-positive-flux→mag guard. |
-| `test_priors.py` | 6 | Uniform/LogUniform/Prior sampling, log_prob, rescale, picklability. |
-| `test_models.py` | 8 | flare/bazin/gaussian_rise (incl. flare pre-explosion=0, bazin tail→0), custom model, errors. |
-| `test_distance.py` | 2 | chi² zero/known value. |
-| `test_abc.py` | 6 | parameter recovery, serial+parallel, acceptance count, JSON, dispatch, custom model. |
-| `test_abc_smc.py` | 9 | SMC registration, recovery, epsilon tightening, explicit schedule, dispatch, model-agnostic, and the `min_epsilon` floor (broadens the posterior; `"auto"` runs). |
-| `test_likelihood.py` | 15 | Gaussian flux/mag, space-auto, upper-limit CDF (incl. the tail that used to flatten at the `_MIN_PROB` clip), mixture, make_likelihood, picklable; and the refusals — magnitude-space upper limits, censored rows under a likelihood that ignores them, free scatter + upper limits, non-finite error bars. |
-| `test_units.py` | 12 | F_ν/F_λ→Jy, per-point λ, NaN-λ error, mag rejects flux unit, no-unit default, flux dimensionality. |
-| `test_svo.py` | 15 | FILTER_LOOKUP→SVO, mocked metadata/index, cache hit + disk cache, corrupt-cache (×4 params), graceful degrade, manual override (no spurious warn), transmission, ambiguity. |
-| `test_ingestion.py` | 25 | data_mode/output_format, `__call__`, redshift (arg/column/unknown/0/neg/NaN/all-NaN), units, band-info, subset preservation, backward-compat ZP, flux-mode. |
-| `test_snpe.py` | 11 | registry/alias + proposal-mode validation (no sbi), torch-prior adapter — including the **bounded `LogUniform` support** regression (`support.check` and `log_prob` must agree, and out-of-prior draws must be rejected) — density-estimator dispatch; SNPE fit end-to-end / multi-round / embedding-net + custom estimator (`slow`; need `[sbi]`). |
-| `test_table_lc.py` | 7 | LightCurve as astropy.Table: column ops + native methods, property setters, slicing keeps subclass/meta, `where()`, rest-frame `calc_phase`, `calc_absmag` (distance modulus + CCM89/explicit extinction). |
-| `test_registries.py` | 4 | likelihood + distance registries (`register_*`/`list_*`/`get_distance`, distance-by-name in `fit`), manual-band register/unregister/clear. |
-| `test_mcmc.py` | 4 | MCMC recovery + reproducibility, data-mode-consistent likelihood space, and ABC↔MCMC posterior agreement. |
-| `test_mck19.py` | 7 | `mck19` AGN-disk BBH flare: registration, finite/positive flux, band-dependence, peak at `t_ram`, redshift dimming, no-bands warning, and end-to-end MCMC recovery in magnitude space (`slow`). |
-| `test_two_component_kilonova.py` | 9 | redback kilonova: registry/prior + band-mapping + no-bands error (no redback needed); flux finite/positive, band-dependence, machine-precision redback round-trip, mixed-band predict, and SNPE recovery (`slow`) — all guarded by `importorskip("redback")`. |
-| `test_benchmark_kilonova.py` | 3, **none collected here** | flux-vs-magnitude benchmark: `setup` (data + prior) and the magnitude-space χ² distance (no redback), plus a `slow` end-to-end fit→publication-report render. It loads `sanity_check/benchmark_kilonova_modes.py` by path, and `sanity_check/` is not part of this package, so `conftest.py` excludes the file from collection; run it against [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/tests/test_benchmark_kilonova.py) instead. |
-
-Fixtures: `tests/data/at2017gfo.csv`, `tests/data/ztf18aarlhfw.csv`. The figures + ABC JSON that
-`test_benchmark_kilonova.py`'s render produced live in
-[`sanity_check/figures/`](https://github.com/phelipedarc/WHISPER_AI/tree/8ba3843/sanity_check/figures)
-(WHISPER_AI, not in this package — see the row above).
-All SVO/network calls are **mocked** — no live network in CI.
 
 ## 9. End-to-end example
 

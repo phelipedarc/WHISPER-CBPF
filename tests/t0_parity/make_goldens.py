@@ -1,8 +1,8 @@
 """T0 golden-file generator. Run ONCE, inside the reference container, then commit the npz.
 
-    docker exec phe_sbi_2 bash -lc 'export JAX_PLATFORMS=cpu; \
+    docker exec a GPU environment bash -lc 'export JAX_PLATFORMS=cpu; \
         cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF && \
-        source scripts/whisper-gpu-env.sh && \
+        source "$(whisper-cbpf-env)" && \
         python -u tests/t0_parity/make_goldens.py'
 
 Everything asserted by ``test_goldens.py`` is computed here FROM REDBACK ONLY -- numpy in,

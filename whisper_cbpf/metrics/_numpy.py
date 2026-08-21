@@ -412,7 +412,7 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     #     the deeper (more constraining) the limit the worse it makes a correct fit look. Coverage
     #     asks whether the observation falls inside the central predictive interval, which is not a
     #     calibration question when the "observation" is a bound rather than a draw from that
-    #     interval. Both used to run over every row and silently reported inflated error and
+    #     interval. Running both over every row silently reports inflated error and
     #     collapsed calibration on any censored fit.
     #
     # `n_upper_limits_excluded` (top level of the returned dict) reports the rows this dropped.
@@ -481,7 +481,7 @@ def _loo_waic(ll):
     with its ``k`` diagnostic when installed; without arviz, ``elpd_loo`` is ``None`` and
     ``loo_error`` is ``None`` too (PSIS smoothing is not reimplemented here).
 
-    **arviz ABSENT and arviz FAILING are different things.** This used to be one bare
+    **arviz ABSENT and arviz FAILING are different things.** Collapsing them into one bare
     ``except Exception: pass``, so a genuine arviz error — a version whose ``loo`` signature moved, a
     matrix it rejects — was indistinguishable from the documented no-arviz degradation: both gave a
     silent ``elpd_loo = None``. The import is now caught on its own, and a failure of ``az.loo``

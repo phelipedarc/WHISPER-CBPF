@@ -8,12 +8,12 @@ FLOAT64 FIRST. The TDE engine refuses float32 (CHANGE 8 in whisper_cbpf/models/t
 the config flag only affects arrays created AFTER it is set -- so this module flips it at
 import time, before any jnp array exists. Import this before anything that touches jax.
 
-Container: these tests are written for the ``phe_sbi_2`` layout, i.e. run from the WHISPER-CBPF
+Container: these tests are written for the ``a GPU environment`` layout, i.e. run from the WHISPER-CBPF
 repo root, with the bootstrap sourced so ``whisper_cbpf`` and jax are both importable::
 
-    docker exec phe_sbi_2 bash -lc 'export JAX_PLATFORMS=cpu; \
+    docker exec a GPU environment bash -lc 'export JAX_PLATFORMS=cpu; \
       cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF && \
-      source scripts/whisper-gpu-env.sh && \
+      source "$(whisper-cbpf-env)" && \
       python -u tests/t3_inference/test_prior_predictive.py'
 """
 from __future__ import annotations

@@ -1,119 +1,29 @@
-"""``redback_adapter`` -- bind **any** redback model to WHISPER's ``Model`` contract, on the CPU.
+"""Bind **any** redback model to WHISPER's ``Model`` contract, on the CPU.
 
-One module for every redback-implemented transient. There is no ``tde_redback.py``, no
-``supernova_redback.py``, and there is no reason for one: redback already ships the physics for 347
-models behind a single calling convention, so a *single* adapter that looks a name up in
-``redback.model_library.all_models_dict`` covers all of them::
+redback ships the physics for 347 models behind a single calling convention, so one adapter that
+looks a name up in ``redback.model_library.all_models_dict`` covers all of them::
 
-    from whisper_cbpf.models.redback_adapter import register_redback
+    from whisper_cbpf import register_redback
 
     register_redback("arnett", redshift=0.0098)             # -> model "arnett_redback"
     register_redback("cooling_envelope", redshift=0.05)     # -> model "cooling_envelope_redback"
-    register_redback("basic_magnetar_powered", redshift=0.1)
 
-A dedicated per-model file is reserved for the **JAX ports** (``models/jax/supernova.py``,
-``models/jax/tde.py``, ...), which are re-implementations and therefore have per-model code to hold.
-A redback binding has none: the only per-model facts are the parameter names and the prior, and
-redback ships both. :func:`redback_parameters` reads the first from the function signature plus the
-prior file, and :func:`redback_prior` reads the second from redback's own ``.prior`` file -- so
-nothing here is transcribed, and nothing here can drift from redback.
+The only per-model facts are the parameter names and the prior, and redback ships both:
+:func:`redback_parameters` reads the first from the function signature plus the prior file, and
+:func:`redback_prior` reads the second from redback's own ``.prior`` file. Nothing is transcribed
+here, so nothing can drift. A per-model file is reserved for the JAX *ports*
+(``models/jax/tde.py``, ``models/jax/supernova.py``), which have per-model code to hold.
 
-WHY THE MODULE IS NOT CALLED ``redback.py``
--------------------------------------------
-It imports the third-party ``redback``. Python 3's absolute imports would make
-``whisper_cbpf/models/redback.py`` work, but every reader (and every traceback) would then have two
-things called ``redback`` in scope, one of which shadows the other on any relative import. The name
-here says what it is: an adapter.
+The module is not called ``redback.py`` because it imports the third-party ``redback``: two things
+of that name in scope, one shadowing the other on any relative import, helps nobody.
 
-WHAT THIS MODULE DOES, AND THE FIVE THINGS IT MUST NOT GET WRONG
----------------------------------------------------------------
-It maps WHISPER's ``predict(parameters, times, bands) -> flux [Jy]`` onto redback's
-``fn(time, output_format="flux_density", frequency=..., **params) -> mJy``. That is all. Each of the
-following was measured on a version that got it wrong, and each has a test:
+``predict`` maps WHISPER's ``(parameters, times, bands) -> flux [Jy]`` onto redback's
+``fn(time, output_format="flux_density", frequency=..., **params) -> mJy``. The unit factor, the
+one-call-per-light-curve rule, the out-of-domain handling, the band pass-through and the memoised
+band table each have a test, and are explained in ``docs/PORTING_NOTES.md`` together with the
+conventions this adapter inherits from redback rather than choosing.
 
-1. **mJy -> Jy is 1e-3** (:data:`MJY_TO_JY`). redback's ``flux_density`` branch ends in
-   ``.to(uu.mJy).value``. A 1000x error here reads as a plausible offset on a log-flux plot and
-   lands entirely on the fitted masses, so the factor is one named constant, used once, and pinned
-   by a test against redback's own return value on the identical call.
-
-2. **ONE redback call for the whole light curve, with a per-point ``frequency`` array -- never a
-   per-band loop.** ``arnett_bolometric`` builds its diffusion grid as
-   ``linspace(0, time[-1] + 100, 1000)``: it depends on the time array it is handed. Splitting the
-   curve by band would hand each band a *different* dense grid and silently change the physics.
-   ``test_one_call_not_a_per_band_loop`` detects a regression by checking that a point's flux
-   depends on the *other* bands' epochs, which it must.
-
-3. **Out-of-domain EPOCHS return zero flux; the rest of the band does not.** redback interpolates
-   its solution with ``scipy.interp1d`` and no ``fill_value``, so one epoch past the model's own
-   termination makes the *whole* call raise ``ValueError`` (redback 1.12.0's TDE path also raises
-   ``IndexError`` when the solution is empty). A version that zeroed everything on any exception
-   blanked an otherwise-real light curve on **9.83% of ``cooling_envelope`` prior draws** over
-   AT2017GFO's 212-epoch grid, where the JAX twin returned a real curve -- a forward-model
-   difference that would have surfaced later as a posterior difference. So
-   :func:`_accepted_span` recovers the epochs redback *will* answer for, by bisection over
-   **redback's own accept/reject**, and only the rest becomes zero. Generic: it asks redback where
-   its domain ends instead of knowing anything about a particular model's internals.
-
-4. **Bare ``g``/``r``/``i`` pass through to redback unremapped.** redback's ``tables/filters.csv``
-   defines the bare letters with **SDSS** wavelengths (4702.5 / 6175.6 / 7490.0 A). Pass-through is
-   therefore redback's own answer for the band; remapping to LSST (which
-   :mod:`whisper_cbpf.models.two_component_kilonova` deliberately does, because it needs an
-   *sncosmo bandpass* and picks one system) would substitute our number for redback's -- the one
-   thing a redback adapter must not do.
-
-5. **The band table is memoised.** ``redback.utils.bands_to_frequency`` re-reads a 264-row CSV on
-   every call. Inside a likelihood that is pure overhead, so the table is read once per process.
-
-CONVENTIONS THAT ARE redback's, NOT OURS
-----------------------------------------
-* **Monochromatic, not band-integrated.** ``output_format="flux_density"`` evaluates the SED *at*
-  each band's reference frequency; it does not integrate the bandpass. That is the branch on which
-  a redback model and its JAX port are computing the same number (redback's ``magnitude`` branch
-  splines an sncosmo ``TimeSeriesSource`` off a coarse time grid, so a magnitude comparison would be
-  dominated by the spline). Against a band-integrated JAX factory the difference is real and
-  measured -- see ``test_monochromatic_costs_more_than_the_port_does`` in
-  ``tests/test_redback_adapter.py``.
-* **Distance is redback's cosmology.** redback models take ``redshift`` and derive
-  ``dl = cosmology.luminosity_distance(redshift).cgs.value`` from their own default (Planck18);
-  there is no ``dl_cm`` argument. A JAX twin takes one explicitly, so a comparison must be handed
-  redback's: :func:`redback_luminosity_distance_cm`. At z = 0.0098 that is 1.34991e26 cm, against
-  the 1.23e26 cm ``_local/scripts/compare_at2017gfo.py`` assumes -- 9.8% in distance, 20% in flux,
-  0.20 mag, all of it landing on ``mej``.
-* **The ``(1 + z)`` flux dilation is a live version difference.** redback 1.15.1's ``flux_density``
-  branch ends with ``* (1 + redshift)`` and 1.12.0's does not (0.0106 mag at z = 0.0098).
-  :func:`redback_applies_dilation` reports which you have by **reading the model's source**, not by
-  comparing version numbers -- ``redback.__version__`` is ``"unknown"`` in this project's GPU
-  container.
-
-PRIORS COME FROM redback's ``.prior`` FILE
------------------------------------------
-:func:`redback_prior` translates ``redback.priors.get_priors(model)``:
-
-* bilby ``Uniform`` / ``LogUniform`` -> WHISPER :class:`~whisper_cbpf.priors.Uniform` /
-  :class:`~whisper_cbpf.priors.LogUniform`;
-* bilby ``DeltaFunction`` -> a **pinned** parameter (:func:`redback_pinned`), which is what a delta
-  prior means: redback fixed it. e.g. ``cooling_envelope.prior`` pins ``mbh_6 = 1``, ``eta = 0.1``,
-  ``alpha = 0.1``, ``beta = 0.9`` and leaves ``stellar_mass`` as the only free physics parameter.
-  Pass ``prior={"mbh_6": LogUniform(0.1, 20), ...}`` to unpin one with bounds you can defend;
-* bilby ``Constraint`` -> dropped. It is not a parameter (``slsn.prior`` carries
-  ``e_rot_constraint`` and ``t_nebula_min``), and passing it to the model would be wrong;
-* anything else (``Sine``, ``Gaussian``, ...) has no WHISPER equivalent, so it is left out and
-  :func:`redback_model` raises naming the parameter and the bilby type. Supply your own with
-  ``prior=`` or fix it with ``pin=``.
-
-Nothing about a specific model is written down here. That is the point.
-
-PICKLABILITY
-------------
-``predict`` is :class:`_RedbackPredict`, a **module-level callable class** whose whole state is
-plain data (a model name, a list of names, a dict of floats). Not a closure, and not a
-``functools.partial`` over a per-model function: closures made the JAX photometric models fail
-under ``abc``/``abc_smc`` at ``n_jobs > 1`` while the same fit at ``n_jobs=1`` succeeded (see
-:class:`whisper_cbpf.models.jax._factories._PhotometricPredict`). The caches -- redback's function
-object and the band table -- are **module-level**, so an instance carries nothing unpicklable and
-needs no ``__getstate__``; each worker process fills its own on first call.
-
-redback is imported lazily (inside the functions), so ``import whisper_cbpf`` works without the
+redback is imported lazily, inside the functions, so ``import whisper_cbpf`` works without the
 ``[models]`` extra and only calling ``predict`` needs it.
 """
 from __future__ import annotations
@@ -152,6 +62,27 @@ _PRIOR_CACHE: dict = {}          # redback model name -> (dists, pinned, unsuppo
 
 # --- redback resolution (all lazy) ---------------------------------------------------------------
 
+def _import_redback():
+    """Import redback without letting it reconfigure this process's matplotlib.
+
+    Importing redback sets ``matplotlib.rcParams["text.usetex"] = True`` globally. On a machine
+    with no LaTeX installation every subsequent plot then raises
+    ``RuntimeError: Failed to process string with tex because latex could not be found`` -- including
+    plots that have nothing to do with redback. Binding a model must not change how the rest of the
+    session draws, so the setting is restored afterwards. Set it yourself if you want it.
+    """
+    import matplotlib
+
+    keys = ("text.usetex", "font.family", "text.latex.preamble")
+    before = {k: matplotlib.rcParams[k] for k in keys if k in matplotlib.rcParams}
+    try:
+        import redback
+        return redback
+    finally:
+        for k, v in before.items():
+            matplotlib.rcParams[k] = v
+
+
 def _model_fn(model):
     """redback's own function for ``model``, memoised. Clear error if the extra is missing."""
     fn = _MODEL_CACHE.get(model)
@@ -159,6 +90,7 @@ def _model_fn(model):
         try:
             import logging
 
+            _import_redback()
             from redback.model_library import all_models_dict
             # redback/bilby are chatty; quiet them for the per-evaluation fitting loop.
             for name in ("redback", "bilby"):
@@ -193,7 +125,7 @@ def _freq_table():
             import os
 
             import pandas as pd
-            import redback
+            redback = _import_redback()
             tbl = os.path.join(os.path.dirname(redback.__file__), "tables", "filters.csv")
             d = pd.read_csv(tbl)
             _FREQ_TABLE = {str(b): float(f) for b, f in zip(d["bands"], d["wavelength [Hz]"])}
@@ -251,6 +183,7 @@ def _frequencies_hz(bands):
 
 def _bilby_priors(model):
     """``redback.priors.get_priors(model)``, or ``{}`` when redback ships no prior file for it."""
+    _import_redback()
     from redback.priors import get_priors
     try:
         return dict(get_priors(model=model))

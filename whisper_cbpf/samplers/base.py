@@ -27,8 +27,28 @@ def summarize_posterior(samples, parameters):
     return summary
 
 
+def aic_bic(max_log_likelihood, n_params, n_data):
+    """``(AIC, BIC)`` from the maximum log-likelihood, both on the deviance scale."""
+    k, n = int(n_params), int(n_data)
+    return (float(-2.0 * max_log_likelihood + 2 * k),
+            float(-2.0 * max_log_likelihood + k * np.log(n)))
+
+
+def check_burnin(burnin, nsteps):
+    """Refuse a burn-in that would discard the whole chain.
+
+    ``get_chain(discard=burnin)`` returns zero rows when ``burnin >= nsteps``, and the AIC/BIC
+    step that follows it calls ``np.nanargmax`` on that empty array. Raising here names the two
+    numbers, and does it before the sampling rather than after.
+    """
+    if int(burnin) >= int(nsteps):
+        raise ValueError(
+            f"burnin={int(burnin)} discards the whole chain of nsteps={int(nsteps)}. "
+            f"The burn-in must be shorter than the chain; raise nsteps or lower burnin.")
+
+
 #: ``type(likelihood).__name__`` (what samplers record in ``info["likelihood"]``) -> registry key.
-#: Anything unrecognised falls back to ``"auto"``, which is the pre-existing behaviour.
+#: Anything unrecognised falls back to ``"auto"``.
 _LIKELIHOOD_KINDS = {
     "GaussianLikelihood": "gaussian",
     "GaussianLikelihoodWithUpperLimits": "gaussian_upper_limits",
@@ -40,12 +60,10 @@ _LIKELIHOOD_KINDS = {
 def _warn_without_raising(message):
     """Emit a UserWarning that cannot abort the caller, even under warnings-as-errors.
 
-    Both `attach_*` helpers report their failure by warning from inside an `except` block. Under
-    `-W error` / `simplefilter("error")` / a pytest `filterwarnings = error` that warning is itself
-    an exception, so it escapes the handler and kills a fit that had ALREADY SUCCEEDED -- measured:
-    on HEAD `simplefilter("error")` + `wp.fit_ABC(...)` raised out of `attach_predictive_metrics`
-    where the pre-audit tree returned a result. A diagnostic that destroys the thing it is
-    diagnosing is worse than the silence it replaced, so the filter is forced locally.
+    Both ``attach_*`` helpers warn from inside an ``except`` block. Under ``-W error`` the warning
+    is itself an exception, so it would escape that handler and kill a fit that had already
+    succeeded. A diagnostic must not destroy the thing it is diagnosing, so the filter is forced
+    locally.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("always")
@@ -55,10 +73,9 @@ def _warn_without_raising(message):
 def attach_band_metrics(info, lc, model, best_params, space):
     """Populate ``info['band_metrics']`` with per-band MSE/MAE at the best fit (best-effort).
 
-    Shared by every sampler so the per-band goodness-of-fit lands in ``SamplerResult.to_json``.
-    Wrapped in a broad guard — a metric failure (e.g. a slow/failing forward model) must never
-    break an otherwise-successful fit — but the failure is **reported**, not swallowed. See
-    :func:`attach_predictive_metrics` for why.
+    Shared by every sampler, so per-band goodness-of-fit lands in ``SamplerResult.to_json``. The
+    broad guard is deliberate: a metric failure must not break an otherwise-successful fit. The
+    failure is reported rather than swallowed, in ``info['band_metrics_error']`` and in a warning.
     """
     try:
         from ..metrics import per_band_metrics
@@ -76,21 +93,15 @@ def attach_predictive_metrics(result, lc, space, n_draws=200):
     see :func:`whisper_cbpf.metrics.predictive_metrics`. Called after the result is built (it reuses
     the fit's ``aic`` / ``bic``); ``n_draws`` bounds the extra forward-model evaluations.
 
-    Best-effort: a failure (slow/failing model, no likelihood) leaves the fit untouched. It does
-    **not** leave the user uninformed, which it used to — this was a bare ``except Exception:
-    pass``, so a model whose ``predict`` raised produced a fit with no WAIC, no message, and no way
-    to tell that from a model for which WAIC is simply undefined. Since WAIC is one of the three
-    numbers this package exists to put side by side, "absent" and "absent because your bands did not
-    resolve" have to be distinguishable. The reason now lands in
-    ``info['predictive_metrics_error']`` and in a warning.
+    Best-effort: a failure (slow or failing model, no likelihood) leaves the fit untouched but not
+    the user uninformed. WAIC is one of the three numbers this package exists to put side by side,
+    so "absent" and "absent because your bands did not resolve" have to be distinguishable: the
+    reason lands in ``info['predictive_metrics_error']`` and in a warning.
     """
-    # Score under the density the fit was ACTUALLY run with. `predictive_metrics` defaults to
-    # kind="auto", i.e. a plain Gaussian, so a `likelihood="mixture"` fit was being rescored under
-    # a different density -- which then made the new p_waic flag blame the model. Measured on 40
-    # points with one 30-sigma outlier: converged=True and medians within 2% of truth, yet
-    # p_waic = 324.11 and "unreliable"; rescored under the mixture it was fitted with,
-    # p_waic = 2.35 and reliable. `_LIKELIHOOD_KINDS` maps the class name samplers record in
-    # info["likelihood"] back to a registry key.
+    # Score under the density the fit was run with. `predictive_metrics` defaults to kind="auto",
+    # a plain Gaussian, which would rescore a `likelihood="mixture"` fit under a different density
+    # and then blame the model for the resulting p_waic: on 40 points with one 30-sigma outlier
+    # that reads as p_waic = 324.11 and "unreliable" against 2.35 and reliable under the mixture.
     kind = _LIKELIHOOD_KINDS.get(str(result.info.get("likelihood", "")), "auto")
     try:
         from ..metrics import predictive_metrics
@@ -142,11 +153,9 @@ class SamplerResult:
         """Read one number out of ``info['predictive_metrics']``; ``None`` if it is not there.
 
         The block is best-effort (see :func:`attach_predictive_metrics`): when it fails the key is
-        absent entirely and the reason is parked in ``info['predictive_metrics_error']``. So the
-        four-hop ``result.info["predictive_metrics"]["waic"]["waic"]`` that users were writing
-        raises ``KeyError`` on exactly the fits where something already went wrong. This walk
-        returns ``None`` instead, at every level -- including the documented ``elpd_loo is None``
-        when arviz is absent.
+        absent and the reason is parked in ``info['predictive_metrics_error']``. Walking the path
+        returns ``None`` at every level rather than raising ``KeyError`` on exactly the fits where
+        something has already gone wrong -- including ``elpd_loo is None`` when arviz is absent.
         """
         node = self.info.get("predictive_metrics") if isinstance(self.info, dict) else None
         for key in path:
@@ -194,10 +203,9 @@ class SamplerResult:
         return self._metric("rmse", "overall")
 
     def to_dict(self):
-        # waic/elpd_loo/rmse are deliberately NOT added here: they are views on
-        # info["predictive_metrics"], which this dict already carries in full, so promoting them
-        # would duplicate the same numbers under new top-level keys and change the JSON shape that
-        # existing readers (and tests/goldens) parse.
+        # waic/elpd_loo/rmse are views on info["predictive_metrics"], which this dict already
+        # carries in full. Promoting them would duplicate the same numbers under new top-level
+        # keys and change the JSON shape that existing readers parse.
         return {
             "sampler": self.sampler,
             "model": self.model,

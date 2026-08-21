@@ -37,18 +37,6 @@ def test_reimport_is_idempotent():
     assert "nuts_gpu" in list_samplers()
 
 
-@pytest.mark.skip(reason="The whisper-version guard it asserts on cannot exist after the merge: "
-                         "it verified an EXTERNAL whisper_labia checkout was importable and new "
-                         "enough, and the CPU core is now this same package, so the skew it "
-                         "guarded against is not expressible. Kept, not deleted, so the decision "
-                         "stays visible and reversible.")
-def test_version_guard_names_the_symbols_it_needs():
-    # the guard must enumerate what it requires, so a stale whisper gives an actionable error
-    required = whisper_cbpf._REQUIRED_WHISPER_SYMBOLS
-    assert "attach_predictive_metrics" in required["whisper_cbpf.samplers.base"]
-    assert "attach_band_metrics" in required["whisper_cbpf.samplers.base"]
-
-
 def test_flare_model_satisfies_the_predict_contract():
     pytest.importorskip("jax")   # flare_jax's deferred predict resolves the JAX module
     m = wp.get_model("flare_jax")
@@ -214,18 +202,11 @@ def test_env_helpers_never_import_jax_at_module_scope():
 
 
 def test_env_script_names_the_file_that_actually_exists():
-    """The path in every "you are on CPU, here is the fix" message has to be real AND installed.
+    """The path in every "you are on CPU, here is the fix" message must be real AND installed.
 
-    Two rounds of this bug. First ``env_script`` returned ``<package>/backends/env.sh`` long after
-    the merge renamed the script to ``scripts/whisper-gpu-env.sh``, so the one instruction that
-    escapes the silent CPU fallback named a file that was not there. That was fixed by pointing at
-    ``scripts/`` -- which was still wrong for the case that matters most, because ``packages.find``
-    ships only ``whisper_cbpf*`` and a pip-installed user therefore had no ``scripts/`` directory at
-    all. The script now lives INSIDE the package and is listed in ``package-data``.
-
-    So this asserts the stronger property: the path exists, and it is under the package directory,
-    which is what makes it survive ``pip install``. A future refactor that moves it back out of
-    ``whisper_cbpf/`` reintroduces a failure with no symptom -- JAX quietly on the CPU at ~50x.
+    ``packages.find`` ships only ``whisper_cbpf*``, so a bootstrap living anywhere else is absent
+    from a pip install -- and its absence has no symptom, just JAX quietly on the CPU at ~50x. So
+    the assertion is the strong one: the file exists, and it is inside the package directory.
     """
     import os
 
@@ -241,28 +222,3 @@ def test_env_script_names_the_file_that_actually_exists():
         f"{path} is outside the package, so `pip install` will not ship it")
     assert _env.env_script_hint() == f"source {path}"
     assert _env.env_report()["env_script_exists"] is True
-
-
-def test_the_scripts_shim_redirects_rather_than_duplicating():
-    """``scripts/whisper-gpu-env.sh`` must SOURCE the packaged script, never copy it.
-
-    The path is in the published README and in every run recipe written before the move, so it has
-    to keep working in a checkout. But two copies is the worse outcome: two sets of exports drift,
-    and the one that drifts is the one nobody is testing.
-    """
-    import os
-
-    from whisper_cbpf.backends import _env
-
-    # <repo>/whisper_cbpf/backends/_env.py -> up three, not two: backends -> whisper_cbpf -> repo.
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_env.__file__))))
-    shim = os.path.join(repo_root, "scripts", "whisper-gpu-env.sh")
-    if not os.path.exists(shim):
-        import pytest
-        pytest.skip("no scripts/ directory -- this is a wheel install, where the shim is absent")
-
-    text = open(shim).read()
-    assert "whisper_cbpf/backends/env.sh" in text, "the shim does not point at the packaged script"
-    # A copy would carry the actual exports; a redirect must not.
-    assert "XLA_PYTHON_CLIENT_MEM_FRACTION=" not in text, (
-        "scripts/whisper-gpu-env.sh looks like a COPY of the bootstrap, not a redirect to it")

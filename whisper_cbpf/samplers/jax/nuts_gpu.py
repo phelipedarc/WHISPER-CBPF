@@ -12,8 +12,6 @@ Python object for the fairness comparison, instead of just "the same code writte
 """
 from __future__ import annotations
 
-import os
-import sys
 import time
 
 import jax
@@ -30,6 +28,7 @@ from numpyro.infer import MCMC, NUTS
 
 from ...models import get_model  # noqa: E402
 from ...samplers.base import (  # noqa: E402
+    aic_bic,
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
@@ -47,7 +46,7 @@ def _numpyro_priors(prior, names):
     in that order. ``to_linear`` is ``None`` when the site *is* the model parameter, and a callable
     when the site is a reparameterisation that has to be pushed back to the parameter's own units.
 
-    This used to read ``.bounds`` for every parameter and build a single vectorised
+    Reading ``.bounds`` for every parameter and building a single vectorised
     ``dist.Uniform(lows, highs)``. That silently substituted a uniform density for any parameter
     whose prior was not uniform -- a ``LogUniform(100, 6000)`` temperature floor became
     ``Uniform(100, 6000)``, which is a *different posterior*, not a different parameterisation:
@@ -223,7 +222,7 @@ class NUTSGPUSampler(BaseSampler):
         space : {"auto", "flux", "magnitude"}
             **Live on the auto-built path**, where it selects the likelihood: ``"auto"`` follows
             ``lc.data_mode``, the same rule ``abc``/``abc_smc``/``mcmc`` use, so magnitude data is
-            fitted in magnitude space. It used to default to ``"flux"`` and be recorded but never
+            fitted in magnitude space. Defaulting to ``"flux"`` and recording it but never
             used, which meant a magnitude light curve was silently scored in flux by every
             predictive metric.
 
@@ -238,10 +237,8 @@ class NUTSGPUSampler(BaseSampler):
             per-parameter r-hat (via arviz). The raw NumPyro ``MCMC`` object is attached as
             ``result.numpyro_mcmc``.
         """
-        # Resolve a NAME through the registry, but pass any Model-LIKE object straight through:
-        # the pre-audit docstring advertised "Needs .name and .parameters", and get_model() on a
-        # duck-typed object raises KeyError (or TypeError if it is unhashable). Only strings need
-        # looking up.
+        # Only a string needs looking up. Any Model-like object passes straight through:
+        # get_model() on a duck-typed object raises KeyError, or TypeError if it is unhashable.
         model = get_model(model) if isinstance(model, str) else model
         prior = prior if prior is not None else model.default_prior
         if prior is None:
@@ -345,10 +342,8 @@ class NUTSGPUSampler(BaseSampler):
         max_log_likelihood = float(ll_flat[best_idx])
 
         max_rhat = max(rhat_by_param.values()) if rhat_by_param else float("nan")
-        # FAIL CLOSED. This used to read `not np.isfinite(max_rhat) or max_rhat < 1.01`, so a run
-        # where arviz was missing or r-hat could not be computed (max_rhat = NaN) was reported as
-        # CONVERGED on the strength of zero divergences alone. A convergence flag that defaults to
-        # True when the evidence is unavailable is worse than no flag: unknown is not converged.
+        # Fail closed: unknown is not converged. A NaN r-hat -- arviz missing, or too few draws
+        # to compute one -- must not be reported as convergence on zero divergences alone.
         converged = (n_divergences == 0) and np.isfinite(max_rhat) and max_rhat < 1.01
 
         info = {
@@ -378,16 +373,13 @@ class NUTSGPUSampler(BaseSampler):
             "converged": bool(converged),
         }
         attach_band_metrics(info, lc, model.name, best_params, space)
+        aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
             sampler="nuts_gpu", model=model.name, parameters=names, samples=samples,
             summary=summarize_posterior(samples, names), best_params=best_params,
             n_data=n, n_params=k, runtime_s=runtime, info=info,
             max_log_likelihood=max_log_likelihood,
-            aic=float(-2.0 * max_log_likelihood + 2 * k),
-            # max(n, 1) matches pymc_gpu. Unguarded, an empty light curve gives np.log(0) = -inf
-            # (with a RuntimeWarning that nothing reads), so BIC came back -inf -- which compares
-            # as the BEST possible model in any argmin over BIC, rather than as the error it is.
-            bic=float(-2.0 * max_log_likelihood + k * np.log(max(n, 1))),
+            aic=aic, bic=bic,
         )
         result.numpyro_mcmc = mcmc
         result.samples_by_chain = np.asarray(samples_by_chain)   # (chains, draws, k) -- for ESS/sec

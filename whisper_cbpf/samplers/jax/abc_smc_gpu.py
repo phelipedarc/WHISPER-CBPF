@@ -1,45 +1,40 @@
-"""Importance-weighted ABC-SMC on the GPU -- a JAX port of ``whisper_cbpf.samplers.abc_smc``.
+"""Importance-weighted ABC-SMC on the GPU -- a JAX port of :mod:`whisper_cbpf.samplers.abc_smc`.
 
-WHAT IS PORTED, AND WHAT IS DELIBERATELY NOT
-    Only the propose -> simulate -> distance step runs on the device. That step is essentially all
-    of the cost: it evaluates the forward model once per attempt, and a round needs thousands of
-    attempts. The importance-weight recursion is O(M*N*D) -- at 500 particles and 8 parameters that
-    is two million flops, microseconds on a CPU -- so it is not ported at all. This module imports
-    ``_kernel_std`` and ``_importance_log_weights`` from whisper and calls them unchanged.
+Only the propose -> simulate -> distance step runs on the device, because that step is essentially
+all of the cost: it evaluates the forward model once per attempt, and a round needs thousands of
+attempts. The importance-weight recursion is O(M*N*D) -- two million flops at 500 particles and 8
+parameters, microseconds on a CPU -- so ``_kernel_std`` and ``_importance_log_weights`` are
+imported from the CPU module and called unchanged. That recursion is also the part of the algorithm
+easiest to get subtly wrong: drop it and the population converges to a distorted distribution that
+still looks like a posterior. The expensive part is on the GPU; the delicate part is shared.
 
-    That is not laziness. The SMC weight recursion is the part of this algorithm that is easy to get
-    subtly wrong (drop it and the population converges to a distorted distribution that still *looks*
-    like a posterior), and reimplementing it in jnp would buy nothing measurable while creating a
-    second copy to keep in step with whisper. The expensive part is GPU'd; the delicate part is
-    shared.
+Semantics match ``abc_smc.py``:
 
-SEMANTICS MATCHED TO abc_smc.py, IN DETAIL
-    * **Acceptance is STRICT** (``d < epsilon``). Rejection ABC uses ``d <= epsilon``; ABC-SMC does
-      not. The difference is invisible until a distance lands exactly on the threshold, which is
-      exactly what happens when a schedule sets epsilon to a previous round's accepted distance.
-    * Round 0 draws the prior with uniform weights; later rounds resample a parent from the
-      **weighted** population and perturb it with a diagonal Gaussian whose std is
-      ``sqrt(2 * weighted population variance)`` (Toni 2009), in NATIVE parameter space.
-    * A perturbed particle outside the prior's support is rejected. JAX has no ``continue``, so the
-      attempt is still evaluated and its distance forced to ``+inf`` -- same outcome (it can never
-      beat a finite epsilon), same attempt count, and the attempt indexing stays dense so the
-      population remains independent of blocking.
-    * The adaptive schedule sets the next epsilon to the ``quantile`` of this round's accepted
-      distances; ``min_epsilon="auto"`` floors it at ``best + 2*(k+2)``. Driving epsilon to the
-      minimum distance collapses the posterior onto the MLE, which is why the floor exists.
-    * The final weighted population is resampled to EQUAL weights, so downstream code never handles
-      weights.
+* **Acceptance is strict** (``d < epsilon``). Rejection ABC uses ``d <= epsilon``; ABC-SMC does
+  not. The difference shows only when a distance lands exactly on the threshold -- which is exactly
+  what a schedule setting epsilon to a previous round's accepted distance produces.
+* Round 0 draws the prior with uniform weights. Later rounds resample a parent from the *weighted*
+  population and perturb it with a diagonal Gaussian of std ``sqrt(2 * weighted variance)``
+  (Toni 2009), in native parameter space.
+* A perturbed particle outside the prior's support is rejected. JAX has no ``continue``, so the
+  attempt is still evaluated and its distance forced to ``+inf``: same outcome, since it can never
+  beat a finite epsilon, and the attempt indexing stays dense so the population is independent of
+  blocking.
+* The adaptive schedule sets the next epsilon to the ``quantile`` of this round's accepted
+  distances; ``min_epsilon="auto"`` floors it at ``best + 2*(k+2)``, because driving epsilon to the
+  minimum distance collapses the posterior onto the MLE.
+* The final weighted population is resampled to equal weights, so downstream code never sees
+  weights.
 
-    Not matched, and it cannot be: numpy's Philox and JAX's threefry are different bit generators,
-    so the same seed gives different draws. Agreement with the CPU sampler is statistical.
+One thing cannot match: numpy's Philox and JAX's threefry are different bit generators, so the same
+seed gives different draws. Agreement with the CPU sampler is statistical.
 
-WHY WAVES RATHER THAN ONE SCAN PER ROUND
-    A round runs until ``n_particles`` are accepted, so its length is data-dependent and cannot be a
-    fixed-trip-count scan. Attempts are therefore issued in WAVES: each wave is one ``lax.scan`` over
-    ``wave // chunk`` vmapped blocks, evaluated entirely on device, with a single host transfer at
-    the end. A round typically needs one or two waves, so the whole fit synchronises of order ten
-    times rather than once per block -- the trap that cost ``abc_gpu`` 53% of its runtime before it
-    was fused.
+**Attempts are issued in waves, not one scan per round.** A round runs until ``n_particles`` are
+accepted, so its length is data-dependent and cannot be a fixed-trip-count scan. Each wave is one
+``lax.scan`` over ``wave // chunk`` vmapped blocks, evaluated entirely on device, with a single host
+transfer at the end. A round typically needs one or two waves, so a fit synchronises of order ten
+times rather than once per block -- the trap that cost ``abc_gpu`` 53% of its runtime before it was
+fused.
 """
 from __future__ import annotations
 
