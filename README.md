@@ -146,7 +146,7 @@ wp.list_models()
 | Model | Kind | Needs |
 |---|---|---|
 | `bazin`, `gaussian_rise`, `flare` | empirical rise/fall shapes | — |
-| `mck19` | analytic kilonova | — |
+| `mck19` | analytic Dark Flare (BBH counterpart) | — |
 | `two_component_kilonova` | blue + red kilonova (redback, CPU) | `[models]` |
 | `flare_jax` | JAX flare | `[gpu]` |
 | `arnett`, `magnetar`, `csm_shock_arnett`, `shock_cooling_arnett`, `tde` | supernova and TDE families, bound to your light curve by `wp.compare` | `[gpu]` |
