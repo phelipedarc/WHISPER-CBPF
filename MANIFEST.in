@@ -1,0 +1,17 @@
+# What the sdist carries beyond the package itself. setuptools' defaults ship only whisper_cbpf/
+# and a few top-level files, so up to 0.1.0 an unpacked sdist had no tests/t0_parity, t2_autodiff,
+# t3_inference, no tests/data or tests/goldens, and no docs, notebooks or examples: its test suite
+# could not run. With this file `python -m pytest` works from an unpacked sdist.
+include README.md INSTALL.md CHANGELOG.md LICENSE CITATION.cff conftest.py
+graft tests
+graft docs
+graft notebooks
+graft examples
+
+# Run output the stage scripts and test_continuity.py recreate on demand (git-ignored too).
+prune tests/t3_inference/sbc_results
+prune tests/t3_inference/injection_results
+prune tests/t3_inference/figures
+# sbi's training logs, written next to whatever ran an SNPE fit (git-ignored too).
+prune */sbi-logs
+global-exclude *.py[cod] *.log filters_*.npz

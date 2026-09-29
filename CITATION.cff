@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use WHISPER-CBPF in your research, please cite it."
+title: "WHISPER-CBPF: Bayesian model comparison of transient light curves"
+abstract: >-
+  WHISPER-CBPF is an open-source, extensible Python toolkit for Bayesian model comparison of
+  astronomical transient light curves: load photometry or LSST and ZTF alerts, fit candidate
+  models with pluggable samplers (ABC, ABC-SMC, MCMC, nested sampling, NUTS and SNPE, on CPU or
+  GPU), and obtain posteriors, model-selection metrics (AIC, BIC, WAIC, PSIS-LOO, ln Z) and a
+  ranked, checked comparison of the models.
+type: software
+authors:
+  - family-names: Darc
+    given-names: Phelipe
+    email: phelipedarc@gmail.com
+version: 0.2.0
+date-released: 2026-09-28
+license: GPL-3.0-or-later
+repository-code: "https://github.com/phelipedarc/WHISPER-CBPF"
+url: "https://github.com/phelipedarc/WHISPER-CBPF"
+keywords:
+  - astronomy
+  - transients
+  - supernovae
+  - kilonovae
+  - tidal-disruption-events
+  - bayesian-inference
+  - simulation-based-inference
+  - light-curves

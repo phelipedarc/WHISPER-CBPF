@@ -1,0 +1,156 @@
+{
+ "diaObject": {
+  "diaObjectId": 3068394823507361793
+ },
+ "diaSource": {
+  "diaSourceId": 1011,
+  "diaObjectId": 3068394823507361793,
+  "visit": 700011,
+  "midpointMjdTai": 61030.0,
+  "band": "i",
+  "psfFlux": 22604.585,
+  "psfFluxErr": 470.068,
+  "isNegative": false
+ },
+ "prvDiaSources": [
+  {
+   "diaSourceId": 1000,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700000,
+   "midpointMjdTai": 61002.5,
+   "band": "g",
+   "psfFlux": 927.701,
+   "psfFluxErr": 116.747,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1001,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700001,
+   "midpointMjdTai": 61005.0,
+   "band": "r",
+   "psfFlux": 3461.723,
+   "psfFluxErr": 135.339,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1002,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700002,
+   "midpointMjdTai": 61007.5,
+   "band": "i",
+   "psfFlux": 6932.835,
+   "psfFluxErr": 176.474,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1003,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700003,
+   "midpointMjdTai": 61010.0,
+   "band": "g",
+   "psfFlux": 9650.154,
+   "psfFluxErr": 227.918,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1004,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700004,
+   "midpointMjdTai": 61012.5,
+   "band": "r",
+   "psfFlux": 14442.177,
+   "psfFluxErr": 314.624,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1005,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700005,
+   "midpointMjdTai": 61015.0,
+   "band": "i",
+   "psfFlux": 18414.45,
+   "psfFluxErr": 377.454,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1006,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700006,
+   "midpointMjdTai": 61017.5,
+   "band": "g",
+   "psfFlux": 15598.519,
+   "psfFluxErr": 336.465,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1007,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700007,
+   "midpointMjdTai": 61020.0,
+   "band": "r",
+   "psfFlux": 20729.301,
+   "psfFluxErr": 441.265,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1008,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700008,
+   "midpointMjdTai": 61022.5,
+   "band": "i",
+   "psfFlux": 24256.119,
+   "psfFluxErr": 493.66,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1009,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700009,
+   "midpointMjdTai": 61025.0,
+   "band": "g",
+   "psfFlux": 13930.412,
+   "psfFluxErr": 301.531,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 1010,
+   "diaObjectId": 3068394823507361793,
+   "visit": 700010,
+   "midpointMjdTai": 61027.5,
+   "band": "r",
+   "psfFlux": 19792.712,
+   "psfFluxErr": 412.578,
+   "isNegative": false
+  }
+ ],
+ "prvDiaForcedSources": [
+  {
+   "diaForcedSourceId": 5000,
+   "diaObjectId": 3068394823507361793,
+   "visit": 690000,
+   "midpointMjdTai": 60991.0,
+   "band": "g",
+   "psfFlux": -113.034,
+   "psfFluxErr": 115.088
+  },
+  {
+   "diaForcedSourceId": 5001,
+   "diaObjectId": 3068394823507361793,
+   "visit": 690001,
+   "midpointMjdTai": 60994.0,
+   "band": "r",
+   "psfFlux": -222.539,
+   "psfFluxErr": 115.088
+  },
+  {
+   "diaForcedSourceId": 5002,
+   "diaObjectId": 3068394823507361793,
+   "visit": 690002,
+   "midpointMjdTai": 60997.0,
+   "band": "i",
+   "psfFlux": 130.427,
+   "psfFluxErr": 115.088
+  }
+ ]
+}

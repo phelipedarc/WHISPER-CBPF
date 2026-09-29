@@ -1,0 +1,113 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whisper-cbpf"
+dynamic = ["version"]                      # single-sourced from whisper_cbpf.__version__
+description = "WHISPER-CBPF: easy, extensible Bayesian model comparison of astronomical transient light curves, on CPU or GPU."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Phelipe Darc", email = "phelipedarc@gmail.com" }]
+keywords = ["astronomy", "transients", "bayesian", "mcmc", "nested-sampling", "supernova", "kilonova", "tde", "jax", "gpu"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Typing :: Typed",
+    "Development Status :: 3 - Alpha",
+]
+
+# Data ingestion, plotting and the CPU samplers. All pure-Python or wheels, with permissive bounds
+# so installing never forces a numpy/scipy downgrade. This alone is a working package: it imports
+# with no jax, no CUDA, no torch and no redback, and the GPU entries still appear in the registries
+# as available-requiring-an-extra.
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "pandas>=1.5",
+    "matplotlib>=3.5",
+    "astropy>=5.0",
+    "emcee>=3.1",
+    "dynesty>=2.0",
+    "corner>=2.2",
+]
+
+[project.optional-dependencies]
+# Four user-facing extras: [gpu], [models], [sbi], [analysis].
+
+# The JAX/GPU half: every JAX model, the samplers nuts_gpu / abc_gpu / abc_smc_gpu / emcee_jax /
+# pymc_jax_gpu_*, and the *_jax distances. CUDA 12 is pinned because that is the platform this
+# package is validated on; installing plain `jax` instead lands you on the CPU build silently,
+# at roughly 50x slower with no error.
+#
+# arviz (ESS, PSIS-LOO) is not listed: it is not GPU-specific, so it lives in [analysis], and pymc
+# requires it, so this extra still installs it and every GPU sampler's diagnostics still work.
+#
+# Installing this extra is not sufficient on its own -- run `source "$(whisper-cbpf-env)"` before
+# starting Python, or JAX will not see the GPU. See docs/GPU_SETUP.md.
+gpu = [
+    "jax[cuda12]>=0.4.30",
+    "numpyro>=0.15",
+    "pymc>=5.16",
+]
+
+# Physical models and their priors, via redback (which also pulls bilby, sncosmo, afterglowpy).
+# Needed for `two_component_kilonova` on CPU and for the TDE / supernova priors, read from
+# redback's own .prior files at runtime. redback pins numpy==1.26 / scipy<1.14.
+# pyphot is the SVO Filter Profile Service client (io.svo): filter metadata and transmission curves
+# for a band given by SVO ID. astroquery still works as the fallback if installed.
+models = ["redback>=1.12", "pyphot>=2.1"]
+
+# The SNPE / NPE simulation-based sampler (whisper_cbpf.samplers.snpe).
+sbi = ["sbi", "torch"]
+
+# CPU-usable analysis tools, neither GPU-specific (both sat in [gpu] up to 0.1.0): arviz for the
+# ESS and PSIS-LOO of predictive_metrics on any sampler (without it LOO is None, not an error), and
+# astroquery for SVO filters by wavelength search and as the fallback when pyphot is absent.
+analysis = ["arviz>=0.15", "astroquery>=0.4.6"]
+
+# Contributors only -- not a science extra, and not part of the four above.
+dev = ["pytest", "pytest-cov", "build", "astroquery>=0.4.6"]
+
+[project.urls]
+Homepage = "https://github.com/phelipedarc/WHISPER-CBPF"
+Repository = "https://github.com/phelipedarc/WHISPER-CBPF"
+Documentation = "https://github.com/phelipedarc/WHISPER-CBPF/tree/main/docs"
+Issues = "https://github.com/phelipedarc/WHISPER-CBPF/issues"
+
+[project.scripts]
+# Prints the bootstrap's path from a wheel as well as a checkout, so one command works everywhere:
+#     source "$(whisper-cbpf-env)"
+whisper-cbpf-env = "whisper_cbpf.backends._env:_print_env_script"
+
+[tool.setuptools.dynamic]
+version = { attr = "whisper_cbpf.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["whisper_cbpf*"]
+
+[tool.setuptools.package-data]
+whisper_cbpf = [
+    "py.typed",           # the typing marker, so type hints reach consumers
+    "backends/env.sh",    # the GPU bootstrap; without it JAX falls back to CPU silently
+    "synphot/data/*.npz", # the shipped LSST/ZTF/SDSS FilterSets; without them mck19 needs sncosmo
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: slow tests (e.g. SNPE neural-net training); deselect with -m 'not slow'",
+    "science: science-validation suite (tests/science, tests/test_acceptance.py; docs/VALIDATION.md); select with -m science",
+]
+
+[tool.coverage.run]
+source = ["whisper_cbpf"]
+omit = ["*/tests/*"]

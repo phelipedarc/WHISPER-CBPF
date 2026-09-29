@@ -1,0 +1,84 @@
+name: tests
+
+# What this can and cannot check
+# ------------------------------
+# GitHub's runners have no GPU, so this covers the CPU half only: the package's core promise that
+# `pip install whisper-cbpf` gives a working install with NO jax, NO CUDA, NO torch and NO redback,
+# and that every GPU sampler and model still appears in list_samplers() / list_models() as
+# available-requiring-an-extra. The GPU tiers (tests/t0_parity, t2_autodiff, t3_inference and the
+# *_vs_redback comparisons) need a CUDA device and `source "$(whisper-cbpf-env)"`; they stay a
+# manual run on a GPU machine and are NOT gated here. See docs/GPU_SETUP.md.
+#
+# The environment is deliberately minimal -- core + [dev] only, no redback, no arviz, no jax. That is
+# the configuration most likely to be broken by accident, because nobody develops in it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor and ceiling of requires-python = ">=3.10", plus the version the project is
+        # developed on. Verified locally on 3.11 against numpy 2.4, pandas 3.0, scipy 1.17,
+        # astropy 8.0 -- i.e. the current majors, not the container's pinned older set.
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Every Python file compiles
+        # pytest never collects the staged GPU jobs in tests/t3_inference/ or their helpers, so a
+        # syntax error there is invisible to the Test step below.
+        run: python -m compileall -q whisper_cbpf tests
+
+      - name: Import with no optional dependency present
+        # Run from a directory that is NOT the checkout, so this imports the INSTALLED package
+        # rather than the source tree next to it. The registries must still list the GPU entries.
+        run: |
+          cd "$RUNNER_TEMP"
+          python -c "
+          import sys, whisper_cbpf as wp
+          assert 'site-packages' in wp.__file__, wp.__file__
+          for m in ('jax', 'torch', 'redback', 'numpyro', 'pymc', 'sbi'):
+              assert m not in sys.modules, m
+          assert 'nuts_gpu' in wp.list_samplers(), wp.list_samplers()
+          assert 'flare_jax' in wp.list_models(), wp.list_models()
+          print(wp.__version__, len(wp.list_models()), 'models,', len(wp.list_samplers()), 'samplers')
+          "
+
+      - name: Test
+        run: pytest tests -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

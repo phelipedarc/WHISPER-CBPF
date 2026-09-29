@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+.venv/
+*.log
+
+# sbi writes a timestamped run directory per SNPE training; the SNPE tests create many
+sbi-logs/
+
+# test-run output. The stage scripts in tests/t3_inference/ recreate these on demand.
+tests/t3_inference/sbc_results/
+tests/t3_inference/injection_results/
+# diagnostic PNGs test_continuity.py writes to FIGDIR on every run (18 of them, ~750K).
+tests/t3_inference/figures/
+
+# cached filter exports (rebuildable with make_filter_set, but slow)
+filters_*.npz
+
+# local scratch
+_scratch/
+scratch/
+trash/
+
+# Internal working documents: audit reports, inventories, provenance and benchmark dumps.
+# Kept on the local machine, deliberately NOT published -- the public repo carries only what a
+# user needs to install and use the package.
+_local/
+
+# Standalone analysis runs. They are large and do not belong in the
+# published tree; listed here so `git add -A` cannot sweep them in.
+analysis_170826/
+
+# Working notes on bugs found while writing the tutorials. Local only.
+bugs.md
