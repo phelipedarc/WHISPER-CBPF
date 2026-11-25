@@ -40,16 +40,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Three user-facing extras: [gpu], [models], [sbi].
+# Five user-facing extras: [gpu], [models], [sbi], [analysis], [ode].
 
 # The JAX/GPU half: every JAX model, the samplers nuts_gpu / abc_gpu / abc_smc_gpu / emcee_jax /
 # pymc_jax_gpu_*, and the *_jax distances. CUDA 12 is pinned because that is the platform this
 # package is validated on; installing plain `jax` instead lands you on the CPU build silently,
 # at roughly 50x slower with no error.
 #
-# arviz (ESS, PSIS-LOO) and astroquery (the SVO filter-service fallback) are folded in here to keep
-# the extra list short, but neither is GPU-specific: a CPU-only user who wants them can install
-# them directly. Without arviz, predictive_metrics returns None for LOO rather than failing.
+# arviz (ESS, PSIS-LOO) is not listed: it is not GPU-specific, so it lives in [analysis], and pymc
+# requires it, so this extra still installs it and every GPU sampler's diagnostics still work.
 #
 # Installing this extra is not sufficient on its own -- run `source "$(whisper-cbpf-env)"` before
 # starting Python, or JAX will not see the GPU. See docs/GPU_SETUP.md.
@@ -57,20 +56,32 @@ gpu = [
     "jax[cuda12]>=0.4.30",
     "numpyro>=0.15",
     "pymc>=5.16",
-    "arviz>=0.15",
-    "astroquery>=0.4.6",
 ]
 
 # Physical models and their priors, via redback (which also pulls bilby, sncosmo, afterglowpy).
 # Needed for `two_component_kilonova` on CPU and for the TDE / supernova priors, read from
 # redback's own .prior files at runtime. redback pins numpy==1.26 / scipy<1.14.
-models = ["redback>=1.12"]
+# pyphot is the SVO Filter Profile Service client (io.svo): filter metadata and transmission curves
+# for a band given by SVO ID. astroquery still works as the fallback if installed.
+models = ["redback>=1.12", "pyphot>=2.1"]
 
 # The SNPE / NPE simulation-based sampler (whisper_cbpf.samplers.snpe).
 sbi = ["sbi", "torch"]
 
-# Contributors only -- not a science extra, and not part of the three above.
-dev = ["pytest", "pytest-cov", "build", "astroquery>=0.4.6"]
+# CPU-usable analysis tools, neither GPU-specific (both sat in [gpu] up to 0.1.0): arviz for the
+# ESS and PSIS-LOO of predictive_metrics on any sampler (without it LOO is None, not an error), and
+# astroquery for SVO filters by wavelength search and as the fallback when pyphot is absent.
+analysis = ["arviz>=0.15", "astroquery>=0.4.6"]
+
+# The ODE solver behind the relativistic magnetar-driven supernova (`general_magnetar_driven`). The
+# model also runs without it, on a fixed-step solver built into the package; with it the solution
+# is adaptive and more accurate. Imported lazily, so the core install does not need it.
+ode = ["diffrax>=0.7"]
+
+# Contributors only -- not a science extra, and not part of the five above. The test suite's
+# redback comparisons (tests/science, the redback adapter tests) are validated against redback
+# 1.20, so the version is pinned here; the [models] extra keeps its wider bound for users.
+dev = ["pytest", "pytest-cov", "build", "astroquery>=0.4.6", "redback>=1.20,<1.21"]
 
 [project.urls]
 Homepage = "https://github.com/phelipedarc/WHISPER-CBPF"
@@ -94,12 +105,16 @@ include = ["whisper_cbpf*"]
 whisper_cbpf = [
     "py.typed",           # the typing marker, so type hints reach consumers
     "backends/env.sh",    # the GPU bootstrap; without it JAX falls back to CPU silently
+    "synphot/data/*.npz", # the shipped LSST/ZTF/SDSS FilterSets; without them mck19 needs sncosmo
+    "data/*.npz",         # the TDE fallback tables; the model cannot be built without them
+    "data/*.txt",         # the CSM-interaction table (csm_interaction)
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
     "slow: slow tests (e.g. SNPE neural-net training); deselect with -m 'not slow'",
+    "science: science-validation suite (tests/science, tests/test_acceptance.py; docs/VALIDATION.md); select with -m science",
 ]
 
 [tool.coverage.run]

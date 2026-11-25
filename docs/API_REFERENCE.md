@@ -1,9 +1,14 @@
 # WHISPER-CBPF (`whisper_cbpf`) — API Reference
 
-Generated for **v0.1.0**. Covers data ingestion + plotting and the inference layer — four pluggable
-axes (models, samplers, likelihoods, distances) with the ABC / ABC-SMC / MCMC / SNPE samplers on CPU,
-and the JAX/GPU half (NUTS, GPU ABC/ABC-SMC, emcee-over-JAX, PyMC frontends, and the JAX kilonova,
-TDE and supernova families) in [§10](#10-the-jaxgpu-half).
+Generated for **v0.2.0**. Every signature here was checked against the installed package.
+
+- **[Part A](#part-a--by-task)** is organised by what you want to do: load alert photometry, fit,
+  find the likelihood peak, check a fit, compare models, save and resume, forecast, plot, explain,
+  and scale to many alerts. The alert workflow end to end, with measured costs, is in
+  [`LSST_ALERTS.md`](LSST_ALERTS.md).
+- **[Part B](#part-b--by-subsystem)** is the reference by subsystem: the light curve, bands,
+  photometry, priors, models, distances, samplers, likelihoods, metrics, validation, and the JAX/GPU
+  half.
 
 - **Install:** `pip install whisper-cbpf` is CPU-complete; `[gpu]` adds the JAX half. Every GPU entry
   is listed by `list_models()` / `list_samplers()` / `list_distances()` even without the extra.
@@ -15,29 +20,1016 @@ TDE and supernova families) in [§10](#10-the-jaxgpu-half).
 ```
 whisper_cbpf/
   __init__.py          # the public API
-  plotting.py          # plot_light_curve, plot_ppc, plot_calibration, plot_corner
-  validation.py        # recovery_metrics, posterior_predictive_check, sbc_rank, sbc_ranks
+  compare.py           # compare, Comparison: fit, optimise the likelihood, check, rank, weigh, grade
+  likelihood_max_opt.py
+                       # likelihood_max_opt, LikelihoodMaxOptResult: the likelihood peak behind AIC/BIC
+  results.py           # save / load_result / fit_cached, DiagnosticsReport, provenance
+  forecast.py          # forecast, discriminate
+  facts.py             # result_facts, comparison_facts, write_facts
+  report.py            # report: one self-contained HTML page
+  profile.py           # profile, capacity
+  parallel.py          # run_jobs, Job
+  plotting.py          # plot_light_curve, plot_ppc, plot_calibration, plot_corner, and the plot kit
+  validation.py        # recovery_metrics, posterior_predictive_check, sbc_rank(s), check_parity
   embeddings.py        # MLPEmbedding, TCNEmbedding, build_embedding (SNPE conditioning nets)
-  io/                  # LightCurve, load_lightcurve, bands, photometry, units, svo
-  priors/              # Uniform, LogUniform, Prior       (_numpy.py + lazy _jax.py)
+  io/                  # LightCurve, load_lightcurve, survey presets, bands, photometry, units, svo
+  synphot/             # the band integral for every model: FilterSet, gauss_rule, resolve_filter
+  priors/              # Uniform, LogUniform, Normal, TruncatedNormal, Fixed, Prior (_numpy + lazy _jax)
   likelihood/          # the four likelihood classes + make_likelihood   (_numpy.py + lazy _jax.py)
-  distance/            # chi2_distance + the distance registry           (_numpy.py + lazy _jax.py)
+  distance/            # chi2, max_abs_z + the distance registry         (_numpy.py + lazy _jax.py)
   metrics/             # waic, per_band_metrics, predictive_metrics; ArviZ ESS in _jax.py
-  models/              # Model + register/get/list, the CPU built-ins, and the redback adapter
+  models/              # Model + register/get/list, the CPU built-ins, the redback adapter,
+                       # constraints, cosmology (luminosity_distance_cm)
   models/jax/          # kilonova (1/2/3-component), tde, supernova, flare + binding factories
-  samplers/            # BaseSampler, SamplerResult, and the five CPU samplers
-  samplers/jax/        # nuts_gpu, abc_gpu, abc_smc_gpu, emcee_jax, pymc_gpu, snpe_gpu
+  samplers/            # BaseSampler, SamplerResult, fit, prepare_lc, and the CPU samplers
+  samplers/jax/        # nuts_gpu, abc_gpu, abc_smc_gpu, emcee_jax, pymc_gpu, snpe_gpu,
+                       # log_density (_adapters), fit_batch (batch)
   backends/            # check_gpu, require_jax, gpu_list, device policy, env.sh
 ```
 
-Top-level (`import whisper_cbpf as wp`): `LightCurve`, `load_lightcurve`, `plot_light_curve`,
-`plot_ppc`, `plot_calibration`, `plot_corner`, `CORNER_PALETTE`, `waic`, `per_band_metrics`, `predictive_metrics`, `recovery_metrics`, `posterior_predictive_check`, `sbc_rank`,
-`sbc_ranks`, `group_bands`, `FILTER_LOOKUP`, `resolve_band`, `resolve_bands`, `LSST_BAND_INFO`, `SvoUnavailable`,
-`register_manual_band`, `unregister_manual_band`, `clear_manual_bands`, `Prior`, `Uniform`, `LogUniform`,
-`Model`, `register_model`, `get_model`, `list_models`, `chi2_distance`, `register_distance`,
-`get_distance`, `list_distances`, `GaussianLikelihood`, `GaussianLikelihoodWithUpperLimits`,
-`MixtureGaussianLikelihood`, `make_likelihood`, `register_likelihood`, `list_likelihoods`, `fit_ABC`,
-`fit_ABC_SMC`, `fit_MCMC`, `fit_SNPE`, `fit`, `SamplerResult`, `register_sampler`, `list_samplers`.
+## Top-level names
+
+`import whisper_cbpf as wp` exposes 122 names (`wp.__all__`), grouped here by task. `import
+whisper_cbpf` works with no jax, torch, sbi or redback installed; a name whose module cannot be
+imported raises an ImportError naming the module and the cause when it is called.
+
+| task | names |
+|---|---|
+| light curves and bands | `LightCurve`, `load_lightcurve`, `group_bands`, `FILTER_LOOKUP`, `resolve_band`, `resolve_bands`, `LSST_BAND_INFO`, `SvoUnavailable`, `register_manual_band`, `unregister_manual_band`, `clear_manual_bands`, `resolve_filter`, `set_default_band_system`, `default_band_system` |
+| priors | `Prior`, `Uniform`, `LogUniform`, `Normal`, `TruncatedNormal`, `Fixed` |
+| models | `Model`, `register_model`, `get_model`, `list_models`, `redback_model`, `register_redback`, `luminosity_distance_cm` |
+| JAX models | `kilonova_model`, `kilonova_two_model`, `kilonova_three_model`, `tde_model`, `supernova_model`, `supernova_models`, `flare_model`, `register_kilonova`, `register_kilonova_two`, `register_kilonova_three`, `register_tde`, `register_supernova`, `tde_fallback_model`, `register_tde_fallback`, `tde_mosfit_model`, `register_tde_mosfit`, `tde_analytical_model`, `register_tde_analytical`, `tde_stream_stream_model`, `register_tde_stream_stream`, `metzger_kilonova_model`, `register_metzger_kilonova`, `magnetar_boosted_kilonova_model`, `register_magnetar_boosted_kilonova`, `phenomenological_models`, `phenomenological_model`, `register_phenomenological` |
+| CPU models | `tide_model`, `register_tide` |
+| distances and likelihoods | `chi2_distance`, `max_abs_z_distance`, `register_distance`, `get_distance`, `list_distances`, `GaussianLikelihood`, `GaussianLikelihoodWithScatter`, `GaussianLikelihoodWithUpperLimits`, `MixtureGaussianLikelihood`, `make_likelihood`, `register_likelihood`, `list_likelihoods` |
+| fitting | `fit`, `fit_ABC`, `fit_ABC_SMC`, `fit_MCMC`, `fit_nested`, `fit_SNPE`, `SamplerResult`, `register_sampler`, `list_samplers` |
+| the likelihood peak | `likelihood_max_opt`, `LikelihoodMaxOptResult` |
+| saving and checking fits | `load_result`, `fit_cached`, `DiagnosticsReport`, `check_parity` |
+| comparing models | `compare`, `Comparison` |
+| forecasts | `forecast`, `discriminate` |
+| plots | `plot_light_curve`, `plot_ppc`, `plot_calibration`, `plot_corner`, `CORNER_PALETTE`, `plot_forecast`, `plot_models`, `plot_model_comparison`, `plot_widths` |
+| facts and report | `result_facts`, `comparison_facts`, `write_facts`, `report` |
+| metrics and validation | `waic`, `per_band_metrics`, `predictive_metrics`, `recovery_metrics`, `posterior_predictive_check`, `sbc_rank`, `sbc_ranks` |
+| many alerts and speed | `log_density`, `fit_batch`, `profile`, `capacity`, `Job`, `run_jobs`, `check_device_transfers` |
+| GPU environment | `check_gpu`, `require_jax`, `x64_enabled`, `gpu_list`, `n_jobs`, `env_script`, `env_report` |
+| version | `__version__` |
+
+`compare`, `forecast`, `report`, `profile` and `likelihood_max_opt` are both functions and module names:
+`wp.compare` is the function (and so is `import whisper_cbpf.compare as C`). Reach a module's other
+names with `from whisper_cbpf.likelihood_max_opt import STD_SPAN`.
+
+---
+
+# Part A — by task
+
+## A1. Load alert photometry: survey presets
+
+`load_lightcurve(path, *, survey=None, limits=None, name=None, redshift=None, luminosity_distance=None, data_mode=None, flux_unit=None, magnitude_unit=None, column_map=None, band_aliases=None, band_lookup=None, normalize=True, default_band=None, quality_cuts=True, drop_nonfinite=True, flag_filters=None, time_min=None, time_max=None, bands=None, min_snr=None, explosion_date=None, delimiter=None, resolve_band_info=True, svo_fallback=True)` → `LightCurve`
+(`io.loader`, `io.surveys`)
+
+With `survey="ztf"` or `"lsst"` it reads alert photometry in the brokers' own fields and returns a
+magnitude-mode `LightCurve`, sorted by time. The input `path` can be:
+- a path (`.csv`, or `.json` with `survey=`), an open file, a DataFrame, one record, or a list of records;
+- a ZTF alert packet (`candidate` + `prv_candidates`);
+- a Rubin alert packet (`diaSource` + `prvDiaSources` + `prvDiaForcedSources`);
+- ALeRCE's `{"detections": [...], "non_detections": [...]}`.
+
+Field names match case-insensitively, with Fink's prefixes (`i:`, `d:`, `r:`) removed. A table
+already in whisper's columns (`time, band, magnitude, magnitude_err, upper_limit`) is read as it is,
+with its bands mapped to the survey labels.
+
+| | `survey="ztf"` | `survey="lsst"` |
+|---|---|---|
+| Detections | `magpsf` / `sigmapsf` where `isdiffpos` is positive (`t`, `1`) | diaSource `psfFlux` / `psfFluxErr` [nJy]: `m = 31.4 - 2.5 log10 f`, `sigma_m = (2.5/ln 10) err/f` |
+| Never used | `magpsf_corr` (raises if it is the only magnitude) | `scienceFlux` (raises if it is the only flux) |
+| Upper limits (5 sigma) | `diffmaglim` of rows without `magpsf` | `limits=` forced photometry (e.g. Fink `/fp`) or the packet's forced sources, at epochs with no diaSource: `31.4 - 2.5 log10(5 psfFluxErr)` |
+| Dropped and counted in `lc.meta["n_dropped"]` | negative subtraction (`isdiffpos` `f`/`0`/`-1`), Fink `tag == "badquality"` | `isNegative` or `psfFlux <= 0`, `psfFlux_flag`, `timeWithdrawnMjdTai` set |
+| Time | `mjd`, or `jd - 2400000.5` (UTC) | `midpointMjdTai` (TAI) |
+| Bands | `fid` 1/2/3 or a band field → `ztfg ztfr ztfi` | `band` → `lsstu lsstg lsstr lssti lsstz lssty` |
+
+Both presets also drop and count repeats of one exposure (same time, band and kind), an upper limit
+at a detection's epoch (same visit, or within 1e-4 d), and detections below `min_snr` (`low_snr`).
+A warning is raised when negative fluxes were dropped. Band labels are always survey-prefixed, never
+bare letters; `whisper_cbpf.io.SURVEY_BANDS` lists them.
+
+Selections run on the input's MJD clock, in this order: `bands=` (with `survey=`, `"g"` means the
+survey's g); `time_min` / `time_max`; `min_snr` (with `survey=` it cuts detections only); then
+`explosion_date`, which shifts the clock last.
+
+A preset records in `lc.meta`: `survey`, `photometry`, `time_system`, `upper_limit_sigma` (5.0),
+`n_dropped` and `first_detection_mjd` (the MJD of the first detection left after the cuts; use it as
+day 0 with `lc.set_time_reference(lc.meta["first_detection_mjd"], "first detection")`).
+
+**Raises `ValueError`** when no detection is left ("not enough data: no detection is left ...",
+with the counts); the survey, a band or a ZTF `fid` is unknown; `magpsf_corr` or `scienceFlux` is
+present without the difference-image field; forced photometry is passed as the detections, or
+`limits=` lacks `psfFluxErr`; an argument the preset fixes itself is passed (`column_map`,
+`band_aliases`, `band_lookup`, `default_band`, `flux_unit`, `magnitude_unit`, `flag_filters`,
+`normalize=False`, a non-magnitude `data_mode`); `limits=` is given without `survey=`.
+
+A preset light curve fits with no argument: its upper limits use the censored flux likelihood at
+`lc.meta["upper_limit_sigma"]` ([A2](#a2-fit-one-model)).
+
+```python
+lc = wp.load_lightcurve("sources.json", survey="lsst", limits="fp.json", redshift=0.35)
+lc = wp.load_lightcurve(alerce_response, survey="ztf", redshift=0.05, bands=["g", "r"], min_snr=3)
+```
+
+`whisper_cbpf.io.surveys`: `survey_table(x, survey, *, limits=None, delimiter=None)` returns
+`(table, info)`, the engine behind the preset, with the drop counts; `survey_band(label, survey)`
+maps a label (`"g"` → `"lsstg"`, `"zg"` → `"ztfg"`) and raises outside the survey;
+`check_survey(survey)` validates the name. Constants: `SURVEYS`, `LSST_ZP_NJY = 31.4`,
+`LIMIT_SIGMA = 5.0`, `SAME_EPOCH_DAYS = 1e-4`, `DROP_REASONS`.
+
+Without `survey=`, `load_lightcurve(bands=...)` reads the names through the same alias map and
+grouping as the band column (`bands=["zg"]` finds `ztfg`), raises when nothing matches, and `path`
+may be a DataFrame or a list of records.
+
+## A2. Fit one model
+
+### What every fit does
+
+`fit(lc, model, sampler="auto", *, likelihood_max_opt=False, check_convergence=True, ABC_time_prior=False, ABC_time_prior_kwargs=None, **kwargs)` → `SamplerResult` dispatches to any
+registered sampler ([§6.4](#64-samplers--whisper_cbpfsamplers)). `sampler="auto"` (`fit`'s own
+rule; `compare`'s `"auto"` is nested sampling, [A5](#a5-compare-models)) is `emcee_jax` for a model
+with `predict_jax` when JAX sees a GPU, CPU `mcmc` otherwise; both fit upper limits, so a survey
+alert needs only the data and the model. Every
+sampler, whichever way it is called, applies three rules before it fits.
+
+**Pre-event data are never fitted.** Rows at or before the event are left out of the likelihood
+and of the model evaluation; they can only define a prior.
+
+| light curve / model | event | rows left out |
+|---|---|---|
+| model with a free `t_exp` (`free=["t_exp"]`) | first detection | the non-detections before it; they set the `t_exp` prior |
+| model with `t_exp` = `Fixed(v)` | `v` | `time <= v` |
+| explosion or merger declared: `lc.set_explosion_date(mjd)`, `set_time_reference(mjd, "explosion"/"merger")`, or `lc.meta["merger_mjd"]` (an MJD) | the event on the curve's clock | `time <=` event |
+| other reference (`set_time_reference(mjd, "first detection"/"peak"/...)`), model without an epoch parameter | 0 | `time <= 0` |
+| the same, but the model fits its own epoch (`t0`/`tpeak`/`t_peak`: `bazin`, `gaussian_rise`, `flare_jax`) | none | nothing (`info["pre_event"]["reason"]`) |
+| raw MJD clock, no declared event | none | nothing |
+
+Every fit records `info["excluded_pre_event"]` (the count), `info["pre_event"]` (`rule`,
+`reference`, `inclusive`, `label`, `reference_mjd`, `n_excluded`, `n_detections`,
+`n_upper_limits`) and, for a model with a `t_exp`, `info["t_exp_prior"]`. One UserWarning says what
+was left out. It raises "not enough data" when no row, or no detection, is left after the event, and
+refuses a likelihood object built on the full light curve (build it on `prepare_lc(lc, model)`).
+
+**The explosion-time prior comes from the data** when the prior given to the fit does not name
+`t_exp`: `wp.default_t_exp_prior(lc, window=None)` returns `Uniform(anchor - window, first
+detection)` on the curve's own clock (observer frame), named `"t_exp"`. The upper bound is the first
+detection (any band). The anchor is the last upper limit before the first detection when there is
+one (any band), otherwise the first detection; `window` defaults to
+`whisper_cbpf.io.schema.T_EXP_WINDOW_DAYS = 30` days, read at call time (set the constant to change
+every later fit's default, or pass `prior=Prior({"t_exp": wp.default_t_exp_prior(lc, window=60)})`
+to one fit). A model with no `t_exp` prior takes this window; a model's `Uniform` `t_exp` prior is
+cut to it on both sides, never widened (no overlap raises); a `Normal`, `TruncatedNormal` or
+`Fixed` model prior is kept; a prior passed to `fit` wins, as given. `info["t_exp_prior"]` records
+`type`, `low`, `high`, `repr`, `source` (`"default window"`, `"model prior, cut to the default
+window"`, `"model prior"` or `"passed to fit"`), `first_detection`, `last_non_detection`, `anchor`,
+`window_days` and `model_prior`. The window allows an explosion up to 30 days before the last
+non-detection because a limit shallower than the source does not rule out an earlier explosion; a
+posterior piled against the lower edge means the rise was not observed: pass a wider prior.
+
+**`ABC_time_prior=True` narrows that window first** (`wp.fit(..., ABC_time_prior=True)`,
+`wp.compare(..., ABC_time_prior=True)`, or `wp.abc_time_prior(lc, model)` on its own). Whisper's
+rejection ABC on the GPU (`abc_gpu`) draws every parameter from its prior and `t_exp` from the
+default window, simulates each draw without noise with the model's JAX version on every detection
+(all bands), and accepts it when the RMS of `data - model` in flux is at most 3 times the mean flux
+error of the detections (`distance="rmse"`, `space="flux"`, `simulate_noise=False`). The fit then
+uses `Uniform(lowest accepted - margin, highest accepted + margin)`, the margin being
+`max(1 d, 10 % of the accepted range)`, cut to the default window: never wider, and never after the
+first detection. With fewer than 50 accepted draws (`min_accepted`) it warns, e.g.
+`ABC_time_prior: only 12 of 1,000,000 draws fit within 3 x the mean error (RMS needs <= 4.1 uJy, ...);
+using the default t_exp window [59970, 60000].`, and keeps the default window. The data are used
+twice: the window is chosen from the light curve the fit then uses, so its intervals and evidence
+are mildly data-dependent. A `t_exp` prior passed together with it is a `ValueError`, and so is a
+model without `t_exp` or without a JAX version in `fit`; `compare` keeps the default window for a
+CPU-only model (TiDE) and warns once. `ABC_time_prior_kwargs` sets the budget: `n_simulations`
+(1000000), `seed` (the fit's), `min_accepted` (50), `chunk` and `precision` (`abc_gpu`'s). The record
+is `info["abc_time_prior"]`: `window`, `default_window`, `accepted_range`, `margin_days`,
+`n_simulations`, `n_accepted`, `min_accepted`, `threshold` (Jy), `n_sigma`, `mean_flux_err`,
+`min_rms`, `n_detections`, `runtime_s`, `fell_back`, `seed`, `device`, `precision`, `sampler`,
+`distance`, `warnings` (the ABC fit's own, first lines); `info["t_exp_prior"]["source"]` is then
+`"ABC_time_prior"`. In `compare` the step runs in the calling process, one model after the other,
+before the fits start (also with `parallel=True`), and the fits, likelihood maxima and evidence
+check all use the window. The step's time is not part of a sampler's `max_time_s`: at the default
+budget it takes about 10-45 s per model on one GPU, and on a CPU minutes per model (about an hour
+for five models in `compare` without a GPU).
+`LightCurve.explosion_time_prior(*, fallback_days=30.0)` is the narrow window the data alone allow,
+`Uniform(last non-detection before the first detection, first detection)`, or
+`Uniform(first - fallback_days, first)` with no earlier non-detection
+(`whisper_cbpf.io.schema.EXPLOSION_FALLBACK_DAYS = 30`); it is no longer a fit's default (up to this
+release it was): pass `prior=Prior({"t_exp": lc.explosion_time_prior()})` for it. `whisper_cbpf.io.schema.explosion_window(time, upper_limit=None)` returns the numbers behind
+it (`first_detection`, `last_non_detection`, `n_before`).
+
+**Upper limits are fitted by default.** `space="auto"` resolves to flux for a light curve that
+carries upper limits after the event (`likelihood.resolve_space(lc, space)`), so `make_likelihood`
+and `likelihood="auto"` use the censored `GaussianLikelihoodWithUpperLimits`: detections are scored
+on flux (`sigma_F = 0.921 F sigma_m`), limits by the probability that the flux was below them. The
+limits' significance, `GaussianLikelihoodWithUpperLimits(lc, space="auto", upper_limit_sigma=None,
+zeropoint_jy=3631.0)`, reads `lc.meta["upper_limit_sigma"]` (5 for both presets), else
+`likelihood.DEFAULT_UPPER_LIMIT_SIGMA = 5`. An explicit `space="magnitude"` is refused.
+`lc.where(upper_limit=False)` keeps a magnitude fit of the detections. ABC, ABC-SMC, `abc_gpu`,
+`abc_smc_gpu`, SNPE and `snpe_gpu` compare values point by point and refuse limits after the event,
+by name, before any simulation (`whisper_cbpf.samplers.base.NO_UPPER_LIMIT_SAMPLERS`).
+
+**A first detection consistent with zero flux is flagged, not changed.** For a model with an
+explosion time (free or fixed `t_exp`) or a light curve with a declared explosion date, the fit
+issues one `whisper_cbpf.samplers.ZeroFluxWarning` before it starts when the earliest detection(s)
+it uses (after the pre-event rule) have S/N below `ZERO_FLUX_SNR` = 3 (S/N = `|flux| / flux_err`,
+or `(2.5 / ln 10) / magnitude_err` for a magnitude-only row). A model that switches on as a step
+(`tde_stream_stream`) cannot fit such a point after `t_exp` and settles far from the truth; if the
+point is a non-detection, mark it `upper_limit=True`. The warning is given once per fit on every
+path, once for a whole `wp.compare` (with `parallel=True` the subprocess fits also log it in their
+own job logs) and once for a `fit_batch`, naming the light curves by index.
+`zero_flux_first_detections(lc, threshold=3.0)` returns the flagged rows (`time`, `mjd`, `band`,
+`snr`). Silence it with `warnings.filterwarnings("ignore", category=ZeroFluxWarning)`.
+
+`likelihood_max_opt=True` also climbs to the likelihood peak behind the fit's best draw and keeps it in
+`result.info["likelihood_max_opt"]` ([A3](#a3-find-the-likelihood-peak)). If the optimisation
+fails, the fit is still returned, with `info["likelihood_max_opt_error"]` and a warning.
+
+**An MCMC fit says whether it converged** (`check_convergence=True`, the default). After `mcmc`,
+`emcee_jax`, `nuts_gpu` or `pymc_jax_gpu_*`, `fit` runs `result.diagnostics()` ([A4](#a4-check-a-fit))
+and, when a check fails, issues one `UserWarning` at the caller's line: a first line
+`Not converged:`, then one plain sentence per failed check naming the metric, the parameter, the
+value, the threshold and what to do, for example
+
+```text
+Not converged:
+The 4 ensembles disagree on mstar (R-hat 1.18, needs < 1.01). Run longer (max_steps=10000) or check for a second mode.
+```
+
+The "Run longer" hint names the keyword of the sampler that ran (`max_steps=` for `emcee_jax`
+with `until_converged=True`, `until_converged=True, or nsteps=` without it, `nsteps=` for `mcmc`,
+`num_samples=` for NUTS) with a target. When only posterior checks fail (draws piled at a prior
+bound, too few data points), which a longer run does not change, the first line is
+`Check the posterior:` instead. A converged fit is silent. The verdict is kept in
+`info["convergence_verdict"]` (`passed`, `failed_checks`, `message`; `error` when the report itself
+could not run, in which case the fit is kept). It replaces the sampler's own not-converged warning
+inside `fit`; direct calls such as `fit_MCMC` or `fit_emcee_jax` still warn as before.
+`check_convergence=False` silences both and records no verdict. `compare`, `run_jobs` and
+`fit_cached` go through `fit`, so their fits carry the verdict too.
+
+| helper | signature | returns |
+|---|---|---|
+| `whisper_cbpf.samplers.prepare_lc` | `(lc, model=None, *, prior=None)` | the rows of `lc` a fit of `model` uses (`lc` itself when nothing is left out) |
+| `SamplerResult.fitted_lc` | `(lc)` | the rows of `lc` the fit used (its recorded cut re-applied); pass it to `wp.waic`, `predictive_metrics` and your own checks |
+| `whisper_cbpf.samplers.base.fitted_model` | `(result, model=None)` | the `Model` behind a fit: `model` when given (a name or an object), else the Model object the fit ran with (kept on every result in this session, so a factory-built model is found although it is not registered), else the registered model `result.model` names; `KeyError` for a loaded result of an unregistered model (pass `model=`) |
+| `wp.default_t_exp_prior` | `(lc, window=None)` | the fit's default `Uniform` above; raises "not enough data" with no detection, `ValueError` for a window that is not finite and > 0 |
+| `wp.abc_time_prior` | `(lc, model, prior=None, *, n_simulations=1000000, seed=0, min_accepted=50, chunk=None, precision=None)` | `(Uniform, record)`: the `ABC_time_prior` window above and its record; `ValueError` for a model without `t_exp` or a JAX version, or a `prior` naming `t_exp` |
+| `LightCurve.explosion_time_prior` | `(*, fallback_days=30.0)` | the narrow data window above; raises "not enough data" with no detection |
+
+```python
+from whisper_cbpf.samplers import prepare_lc
+rows = prepare_lc(lc.set_explosion_date(60000.0), "flare")     # the rows a fit would use
+res = wp.fit(lc, "flare", sampler="mcmc", likelihood_max_opt=True)
+res.info["excluded_pre_event"], res.info["likelihood_max_opt"]["max_log_likelihood"]
+```
+
+### Where the chains start: `init=`
+
+`mcmc`, `emcee_jax`, `nuts_gpu`, `pymc_jax_gpu_vectorized` and `pymc_jax_gpu_parallelized` take
+`init=`, through `wp.fit(lc, model, sampler=..., init=...)` or each sampler's own `fit`
+(`MCMCSampler.fit(..., init="prior_scan", initial_guess=None, ...)`, `fit_emcee_jax(...,
+init="prior_scan")`, `NUTSGPUSampler.fit(..., init=None, init_strategy="prior_scan", ...)`).
+
+| `init=` | where the chains / walkers start | `info["init"]` |
+|---|---|---|
+| `"prior_scan"` (default) | Score max(1000, 4 n) prior draws in each prior's own coordinate and climb the best (by gradient for the JAX samplers, derivative-free for CPU `mcmc`). Start ~2 posterior sd around the climbed points that reach the best basin, farthest-first. | `"prior_scan"` |
+| `"prior"` | Independent prior draws, each redrawn while its density is -inf. For CPU `mcmc` these are the pre-0.2.0 draws for the same seed. | `"prior"` |
+| `{name: value}` or a `(k,)` array | A ball of 1e-3 of each prior's width (`DEFAULT_BALL_SCALE`), in its own coordinate. | `"ball"` |
+| `(point, scale)` | The same ball, `scale` times the width. | `"ball"` |
+| `(n, k)` array | One start per chain or walker, as given, in the sampled parameters' order. | `"per_chain"` / `"per_walker"` |
+| a `SamplerResult` (ABC, a continuation, an alert's earlier cut) | With at least n usable draws (finite, strictly inside the box, finite density here): a random distinct subset. Otherwise a ball around its optimised likelihood maximum (`info["likelihood_max_opt"]`) or `best_params`, sized by the sd of its draws in each prior's own coordinate. | `"result"` |
+
+Every start is checked against the box, the constraint wall and a finite density (CPU `mcmc` also
+checks the model predicts some flux): a random start is redrawn, a given one is refused with the
+reason. A ball start more than max(10, 2k) nats below its centre is pulled halfway back, up to 6
+times. `info["init_detail"]` describes the start. The NUTS samplers keep `init_strategy=` (NumPyro's
+`"uniform"`, `"median"`, ..., PyMC's `"jitter"`), and passing both raises; `emcee_jax` keeps
+`init="box"`; CPU `mcmc` keeps `initial_guess=` / `initial_scatter=`, and combining it with `init=`
+raises. `init=` to `abc`, `abc_smc`, `nested` or `snpe` raises: they draw from the prior.
+
+The `"prior_scan"` spread tries each start again when its move is refused (more than max(10, 2k)
+nats down, or behind a constraint wall): a fresh direction and its mirror image, at half the length,
+for up to 20 rounds (`_diagnostics.SPREAD_ROUNDS`); a coordinate whose curvature cannot be read
+across a wall gets a short step. An ensemble start (`emcee_jax`, `mcmc`, `fit_batch`) that still
+does not span every parameter (walkers on one point, or on a few collinear ones) is refused with
+the way out (`init="prior"`), before emcee's own "Initial state has a large condition number".
+
+**Where the walkers move: `walker_coordinates=`** (`emcee_jax`, `mcmc`, `fit_batch`).
+`"own"` (default) moves each walker in each prior's own coordinate: the natural log of a
+`LogUniform` parameter, the parameter itself otherwise, with the log-Jacobian added, so the
+posterior is the same. `"linear"` moves them in the parameters themselves (whisper 0.1.x). The
+stretch move is affine-invariant only in the coordinates it moves in: in linear ones a parameter
+spanning decades is explored slowly, and the supernova and TDE posteriors came out too narrow
+([`VALIDATION.md`](VALIDATION.md) section 4). `info["walker_coordinates"]` records
+`{"coordinates", "log"}` (the log columns). The draws, the summary and `samples_by_chain` are in
+parameter units; `result.emcee_sampler`'s chain is in walker coordinates. The stuck-walker check
+compares the walkers' log posterior in walker coordinates, where a flat `LogUniform` direction is
+flat.
+
+```python
+abc  = wp.fit(lc, "flare", sampler="abc", n_simulations=5000, quantile=0.01)
+post = wp.fit(lc, "flare", sampler="mcmc", init=abc)          # the ABC -> MCMC handoff
+post.info["init"], post.info["init_detail"]["mode"]           # ('result', 'draws')
+later = wp.fit(lc_more_data, "flare", sampler="mcmc", init=post)   # an alert's next cut
+```
+
+### Priors beyond boxes: `Normal`, `TruncatedNormal`, `Fixed`
+
+`Normal(mu, sigma, name=None)`, `TruncatedNormal(mu, sigma, low, high, name=None)` (`low` or `high`
+may be infinite; exact density with its truncation normalisation, inverse-CDF draws in either tail)
+and `Fixed(value, name=None)` (a pinned parameter), beside `Uniform` and `LogUniform`. Each has
+`sample(rng)`, `log_prob(x)`, `rescale(u)` and `bounds`; the Normal pair also `cdf`, `ppf` and
+`std`. `Prior.fixed` returns `{name: value}`. `priors.log_prob_jax(prior, names=None)` takes all
+five families, and `priors.ppf_jax(dist)` is the traceable inverse CDF.
+
+| sampler | Normal / TruncatedNormal | Fixed |
+|---|---|---|
+| `mcmc`, `emcee_jax` | exact density | held at its value |
+| `nuts_gpu`, `pymc_jax_gpu_*` | Normal as a Normal site; TruncatedNormal as a Uniform site on its CDF (`cdf_<name>`) through the exact inverse CDF | held at its value |
+| `nested` | inverse CDF (`rescale`) | not a dimension of the unit cube |
+| `abc` | drawn from the prior | drawn as its value |
+| `abc_smc` | drawn from the prior; perturbed particles tested against it | never perturbed; left out of the kernel and the weights |
+| `abc_gpu`, `abc_smc_gpu` | on the device through `priors.ppf_jax` | its exact value (`abc_smc_gpu`: kernel width 0) |
+| `snpe`, `snpe_gpu` | torch Normal, or an exact torch TruncatedNormal | outside the torch prior and the network |
+
+A `Fixed` parameter is not counted in AIC/BIC (`result.n_params` counts the free parameters only)
+and stays a constant column of `result.samples`, in `result.best_params` and in `info["fixed"]`. A
+prior where every parameter is Fixed raises.
+
+```python
+prior = wp.Prior({"mej": wp.LogUniform(1e-3, 1.0), "t_exp": wp.Normal(-3.0, 1.0),
+                  "kappa": wp.TruncatedNormal(0.1, 0.05, 0.0, 1.0), "redshift": wp.Fixed(0.051)})
+r = wp.fit(lc, model, sampler="nuts_gpu", prior=prior)
+r.info["fixed"], r.n_params                                    # ({'redshift': 0.051}, 3)
+```
+
+### Free explosion time and redshift (JAX factories)
+
+`supernova_model(model, band_names, redshift=None, dl_cm=None, *, ..., free=None,
+redshift_prior=None, diffusion_grid=None, max_phase_days=None, epochs_per_decade=None,
+engine_options=None)`,
+`tde_model(band_names, redshift=None, dl_cm=None, *, ..., free=None, redshift_prior=None,
+**engine_kwargs)`, `kilonova_model(band_names, redshift=None, dl_cm=None, *, ..., time_grid="auto",
+free=None, prior=None, redshift_prior=None)`, and `kilonova_two_model` / `kilonova_three_model` with
+the same `free=`, `redshift_prior=` and `time_grid="auto"` (full signatures in
+[§10](#jax-model-factories--whisper_cbpfmodelsjax)).
+
+- `free=["t_exp", "redshift"]` (either or both) makes the explosion (merger) time, on the light
+  curve's own clock, and the redshift ordinary parameters, appended to `Model.parameters` in that
+  order and traced: jit or vmap over many values compiles once.
+- `t_exp` needs a prior: `prior=Prior({"t_exp": ...})`. In a fit, a `Uniform` model prior is cut to
+  the default window (`wp.default_t_exp_prior`); a prior passed to the fit is used as given. A supernova on fixed diffusion
+  epochs needs a `t_exp` prior with a finite lower bound (a `Uniform`, or a `TruncatedNormal` with a
+  finite `low`): the epochs are sized from the earliest explosion it allows, and a `Normal` raises.
+- With the redshift free, pass `redshift=None, dl_cm=None`: the distance follows the redshift
+  (Planck18). Its prior is `prior["redshift"]`, else `redshift_prior` (a `LightCurve.redshift_prior`
+  hint or a distribution), else Uniform(0.001, 1).
+- Epochs before the explosion carry no light (`mag_floor`). In a fit the rows before the first
+  detection are left out of the likelihood (the pre-event rule above) and set the default `t_exp`
+  window instead, so an upper limit there does not enter the likelihood.
+- **A fitted redshift can bias a model comparison**: a model can move the source to buy a fit. Read
+  the redshift posterior against its prior before ranking.
+- `supernova_model(diffusion_grid=)`: `"data"` is redback's scheme on the observed epochs (exact to
+  redback, epochs fixed at compile time); `"fixed"` diffuses on fixed source-frame epochs
+  (`epochs_per_decade`, default 30, up to `max_phase_days`, default 200 d), interpolates only the
+  bolometric luminosity and evaluates the SED at the observations: within 9e-4 mag of redback, and
+  one compile for any epochs. `None` means `"data"` with nothing free and `"fixed"` otherwise. A
+  concrete epoch past `max_phase_days` raises, naming the value to rebuild with; `log_density` (and
+  so `fit_batch`, `likelihood_max_opt` and `profile`, which pass the epochs traced) runs the same check on the
+  light curve's epochs under the fit's prior before it builds the density
+  (`model.predict_jax.check_epochs(times, prior=None)`). `times=` sizes `max_phase_days` to the
+  given epochs; `compare` passes the light curve's.
+- The kilonova factories' `time_grid="auto"` is redback's grid with nothing free, the converged
+  quadrature otherwise. `register_*` take `redshift=None, dl_cm=None` and forward them.
+
+`luminosity_distance_cm(z, xp=numpy)` (`whisper_cbpf.models.cosmology`, also `wp.`): the Planck18
+luminosity distance in cm from a 2000-node log-log table over [1e-4, 10], within 1e-6 mag of astropy;
+`xp=jax.numpy` makes it traceable and differentiable; numpy input outside the table raises.
+`whisper_cbpf.io.schema.redshift_distribution(hint)` maps a `redshift_prior` hint to a distribution
+(`Uniform`/`LogUniform`, or `Normal`/`TruncatedNormal` → `TruncatedNormal(mu, sigma, low, high)`).
+
+```python
+model = wp.supernova_model("arnett", ["lsstg", "lsstr"], free=["t_exp", "redshift"],
+                           prior=wp.Prior({"t_exp": wp.Uniform(-20.0, 0.0)}),
+                           redshift_prior=lc.redshift_prior)
+round(wp.luminosity_distance_cm(0.1) / 3.0857e24)           # 476 (Mpc)
+```
+
+The observed-epoch supernova photometry is `whisper_cbpf.models.jax.supernova`:
+`build_fixed_grid(max_phase_days=200.0, epochs_per_decade=30, dense_resolution=1000,
+first_epoch=0.01, t_pad=100.0, spacing="geometric", csm_interp=True)` → `FixedGrid` (`arrays`,
+`n_epochs`, `max_phase_days`, `dense_times(t_last)`); `bolometric_at(model, fixed, tau_days, params,
+*, t_last=None, magnetar_convention="1.15", interaction=True)`; `ab_magnitude_at(model, fixed,
+tau_days, params, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, *, magnetar_convention="1.15",
+interaction=True, mag_floor=40.0, **kw)`. `tde.diffusion(..., timesteps=100, geometric=False)`:
+`geometric=True` finds each segment of a geometric grid by arithmetic (same values).
+
+### ABC: the worst-point distance and single precision
+
+`max_abs_z_distance(obs, obs_err, sim, bands=None)` (also `wp.`), registered as `"max_abs_z"`
+(`"max_abs_z_jax"` on the GPU): `max_i |obs_i - sim_i| / err_i`, so `threshold=k` accepts a draw only
+if every point is within k sigma of its own error. `abc` and `abc_gpu` accept `d <= k`, `abc_smc` and
+`abc_smc_gpu` accept `d < epsilon`; a NaN or infinite simulated point is infinitely far. AIC/BIC still
+come from the exact Gaussian likelihood. ABC-SMC's `min_epsilon="auto"` floor is derived for `chi2`
+and warns with any other distance.
+
+`ABCGPUSampler.fit(lc, model, prior=None, *, predict_jax=None, n_simulations=10000, quantile=0.01,
+threshold=None, distance="chi2", simulate_noise=True, space="auto", scatter_param=None, seed=0,
+chunk=250, max_logl_scan=None, precision=None)`: each draw costs one model evaluation, which yields
+its distance and its exact log-likelihood; draws stay on the device. `precision=None` follows the
+session, `"float32"` runs the sweep in single precision (kilonovae and the flare; the float64-only
+supernova and TDE engines raise), `"float64"` runs double. `info["precision"]`, `info["x64_session"]`,
+`info["postprocess_s"]` record what ran.
+
+```python
+res = wp.fit_ABC(lc, "flare", distance="max_abs_z", threshold=5.0, simulate_noise=False,
+                 space="magnitude")
+res.info["n_accepted"], res.min_distance      # worst point of the closest draw, in sigma
+```
+
+## A3. Find the likelihood peak
+
+`likelihood_max_opt(result, lc, model=None, *, n_candidates=300, n_starts=5, tol=0.0001,
+max_rounds=20, space=None, likelihood=None, backend="auto", seed=0, prior=None)` →
+`LikelihoodMaxOptResult` (`wp.likelihood_max_opt`; the module is `whisper_cbpf.likelihood_max_opt`).
+Also `SamplerResult.likelihood_max_opt(lc, model=None, **kwargs)` and
+`fit(..., likelihood_max_opt=True)`, which keep the peak in `result.info["likelihood_max_opt"]`.
+
+A sampler's best draw is a lower bound on the maximum likelihood, short by a different amount for
+each model, so a ranking on the sampler's own BIC carries sampler noise. `likelihood_max_opt`
+climbs from the fit's best draws to the peak of the fit's own likelihood (the space, likelihood
+class and scatter term the fit recorded, the model's constraint wall, the rows the fit used, and
+the prior the fit recorded unless `prior=` is given) and recomputes AIC and BIC there. The
+posterior is not changed, and `wp.likelihood_max_opt` does not modify `result`. Why this matters, with numbers:
+[`LSST_ALERTS.md` §5](LSST_ALERTS.md#5-why-the-ranking-uses-the-likelihood-maximum).
+
+- **Coordinates.** Uniform, LogUniform and two-sided TruncatedNormal climb on [0, 1] in their own
+  coordinate (log10 for LogUniform); Normal and one-sided TruncatedNormal in `(x - mu) / sigma`,
+  bounded at the finite end. A finite bound is reached exactly. `Fixed` parameters are held.
+- **Candidates.** Up to `n_candidates` draws, plus the fit's best draw and any earlier peak in
+  `result.info["likelihood_max_opt"]`.
+- **Climbs.** From the `n_starts` best: projected Adam (JAX backend), bounded L-BFGS-B (exact
+  gradients on the JAX backend, central differences on the CPU), Nelder-Mead where L-BFGS-B did not
+  converge; the two best restart until a round gains less than `tol`.
+- **Never lower.** Every evaluated point is kept, so `max_log_likelihood >= start_log_likelihood`.
+- **Backends.** `backend="auto"` uses the JAX density when the model has `predict_jax` and JAX
+  implements the likelihood, else `model.predict` with scipy. Its compiled programs are kept in an
+  LRU of `PROGRAM_CACHE_SIZE = 16` densities. Enable float64 for a JAX-backend optimisation.
+
+`LikelihoodMaxOptResult` (frozen dataclass): `params`, `max_log_likelihood`, `start_log_likelihood`,
+`gain`, `at_edge`, `aic`, `bic`, `n_data`, `n_params`, `n_evals`, `runtime_s`, `method`,
+`sampler_log_likelihood`; `.enough_data`, `.to_dict()`, `LikelihoodMaxOptResult.from_dict(d)`.
+
+| field | how to read it |
+|---|---|
+| `gain` | peak minus the sampler's best draw. Above ~1, the sampler never reached the peak |
+| `at_edge` | parameters within 0.1 % of a prior bound (`EDGE_TOL`), in their own coordinate: widen that prior, or quote a bound |
+| `aic`, `bic` | `nan`, with a "not enough data" warning, when `n_data <= n_params` |
+| `sampler_log_likelihood` | the ln L the fit's own BIC used |
+
+Errors name the cause and the fix: a light curve with another number of points, a best draw outside
+the prior box (pass `prior=`), an unregistered model (pass `model=`), a fitted parameter neither in
+the model nor read by the likelihood. A density-mismatch warning says to pass `space=` /
+`likelihood=`.
+
+```python
+res  = wp.fit(lc, "flare", sampler="mcmc")
+peak = wp.likelihood_max_opt(res, lc)
+peak.max_log_likelihood, peak.gain, peak.at_edge, peak.bic
+```
+
+## A4. Check a fit
+
+`SamplerResult.diagnostics(*, prior=None, likelihood_max_opt=None)` → `DiagnosticsReport`: one convergence
+report with the checks that apply to the sampler that ran.
+
+| sampler | checks |
+|---|---|
+| every fit | posterior draws > 0; data points > free parameters ("not enough data"); prior-edge pile-up: at most 5 % of draws in the outer 1 % of a prior range (log10 for LogUniform) |
+| NUTS (`nuts_gpu`, `pymc_jax_gpu_*`) | divergences = 0; split R-hat < 1.01; bulk and tail ESS >= 100 per chain; log-likelihood R-hat < 1.01; no stranded chain; no frozen chain; prior-scan optimum no more than 10 nats above the best draw |
+| emcee (`mcmc`, `emcee_jax`, `fit_batch`) | no stuck walker; nsteps / largest tau >= 50; R-hat across walkers < 1.05; bulk and tail ESS >= 400; no frozen walker (`emcee_jax`, `fit_batch`); R-hat between independent ensembles < 1.01 (`emcee_jax` with two or more ensembles) |
+| ABC | accepted draws >= 100 |
+| ABC-SMC | distinct particles >= 100 |
+| nested | stopped on dlogz; effective sample size >= 100 |
+| SNPE | final draw by rejection |
+| other samplers | their own `converged` flag |
+
+`prior=` sets the prior for the edge check (default: the prior recorded with the fit).
+`likelihood_max_opt=` takes a `LikelihoodMaxOptResult` or a float and adds a check ("gap to the
+likelihood maximum") that the best draw is within 5 nats of the peak.
+R-hat and ESS skip `Fixed` parameters. Thresholds are constants of `whisper_cbpf.results`
+(`ENSEMBLE_RHAT_MAX = 1.05`, `ENSEMBLE_ESS_MIN = 400`, `N_OVER_TAU_MIN = 50`,
+`MIN_INDEPENDENT_DRAWS = 100`, `EDGE_BAND = 0.01`, `EDGE_FRACTION_MAX = 0.05`, `LIKELIHOOD_MAX_GAP_MAX = 5.0`).
+
+`DiagnosticsReport` (frozen dataclass: `sampler`, `model`, `kind`, `rows`): `.passed` (no check
+failed; a check that could not run is "not checked", `passed=None`, and does not fail the report),
+`.rows` (`DiagnosticRow(check, value, threshold, passed, reason)`), `.reasons` (`"check: reason"`
+for every failed check), `.to_dict()`, and `print(report)`: the table, then a "Why:" section.
+
+```python
+report = res.diagnostics()
+report.passed, report.reasons
+```
+
+## A5. Compare models
+
+`compare(lc, models, sampler="auto", *, likelihood_max_opt=True, cache_dir=None,
+evidence_check="auto", n_jobs=None, prior=None, seed=0, parallel=False, gpus="auto",
+cpu_cores=None, ABC_time_prior=False, ABC_time_prior_kwargs=None, **fit_kwargs)` → `Comparison`
+
+Fits several models to one light curve with the same settings, finds each fit's likelihood peak
+(`wp.likelihood_max_opt`, so AIC and BIC come from the peak), attaches each fit's convergence
+report, and ranks.
+
+**`models`**: `Model` objects, registered names, or family names bound to `lc`: any
+`wp.supernova_models()` name (sixteen, including `"csm_interaction"`, `"shock_cooling"`,
+`"shocked_cocoon"` and `"general_magnetar_driven"`), `"magnetar"`, `"csm_shock_arnett"`,
+`"shock_cooling_arnett"`, `"tde"` / `"tde_gaussianrise"`, `"tde_fallback"`, `"tde_mosfit"`, `"tde_analytical"`,
+`"tde_stream_stream"`, `"metzger_kilonova"`, `"magnetar_boosted_kilonova"` and `"tide"` (the CPU model; needs libtide)
+(`whisper_cbpf.compare.FAMILY_ALIASES`, `TDE_NAMES`, `OWN_FAMILIES`, `CPU_FAMILIES`). The phenomenological shapes are not bound by name: pass the `Model`
+that `wp.phenomenological_model` returns. A bound family
+takes the light curve's bands, fixes the redshift at `lc.redshift` when it is known and fits it from
+`lc.redshift_prior` otherwise, and fits the explosion time over `wp.default_t_exp_prior(lc)` unless the
+time reference is the explosion. With `ABC_time_prior=True` each JAX model's window is first
+narrowed by the GPU ABC step of [A2](#what-every-fit-does) (a CPU-only model such as TiDE keeps the
+default window, with one warning).
+
+**`sampler`**: `"auto"` is nested sampling (`"nested"`, dynesty) for every model, CPU and JAX
+models alike (`whisper_cbpf.compare.AUTO_SAMPLER`), because it gives every model a ln Z and the
+ranking is then by ln Z. Up to 0.3.0 it was `emcee_jax` on a GPU and CPU `mcmc` otherwise; pass
+that sampler by name for the old behaviour. `fit(sampler="auto")` keeps its own rule. Any
+registered name runs every model with it, and a dict `{model: sampler}` picks per model (`"auto"`
+for the models it does not name). With the default sampler, `fit_kwargs` take nested sampling's
+settings (`nlive=`, `dlogz=`); `nsteps=` or `nwalkers=` are refused before any fit runs.
+
+**Three ways to run a comparison**, all ranked the same way:
+
+| mode | call | where it runs | ranking |
+|---|---|---|---|
+| a CPU model (TiDE), nested sampling | `sampler="auto"` | CPU | ln Z |
+| a JAX model, nested sampling (the default) | `sampler="auto"` | dynesty on the CPU, calling the model's compiled JAX prediction one point at a time | ln Z |
+| a JAX model, the on-device ensemble sampler | `sampler="emcee_jax"` (or `{model: "emcee_jax"}`) | one GPU per fit | BIC at the optimised maximum; `evidence_check` runs nested sampling on the top two when their gap is small |
+
+Measured on one 175-point TDE light curve (35 epochs x 5 LSST bands, `tde_mosfit` truth), the five
+JAX TDE models, seed 0, nested sampling at its defaults (500 live points), the wall of the whole
+`compare` call:
+
+| mode | wall (s) | slowest fit (s) | winner | every fit converged |
+|---|---|---|---|---|
+| serial, nested, one CPU core | 5 870 | 2 255 (`tde_fallback`) | `tde_mosfit`, ln Z, decisive | yes |
+| `parallel=True`, nested on CPU core blocks | **2 429** | 2 204 (`tde_fallback`) | `tde_mosfit`, ln Z, decisive | yes |
+| nested with the JAX likelihood on GPUs (one card per fit, 4 cards for 5 fits) | 3 522 | 3 216 (`tde_cooling_envelope`) | `tde_mosfit`, ln Z, decisive | yes |
+| `parallel=True`, `sampler="emcee_jax"`, `until_converged=True`, `max_time_s=900` | 1 574 (fits 1 001) | 974 (`tde_analytical`, at the cap) | `tde_mosfit`, BIC, decisive | no: 2 of 5 stopped at the cap |
+
+The three nested modes give the same ln Z to 1e-12 (`tde_mosfit`: 1391.50 +/- 0.42); the GPU
+changes only the time, and pays off only for the heaviest models (`tde_mosfit` 2 070 → 942 s,
+`tde_fallback` 2 204 → 1 221 s) while `tde_cooling_envelope` is 4x slower on a GPU (804 → 3 210 s).
+**Recommended: `parallel=True` with nested sampling on CPU cores** (`gpus=None`), the fastest mode in
+which every fit converges, with ln Z directly. The `emcee_jax` mode is faster but gives BIC, not ln
+Z, ranks the losing models in another order, and spent 573 s of its 1 574 s in the calling
+process's serial likelihood maxima and reports of very long chains. TiDE alone, nested on 8 cores,
+took 5 045 s on the same light curve and ranked between `tde_fallback` and `tde_stream_stream`.
+
+**`parallel`, `gpus`, `cpu_cores`**: `parallel=True` sends every model's fit, and the evidence
+check's runs, to its own fresh Python process through `run_jobs` ([A10](#a10-many-alerts-and-how-fast)).
+A fit with a JAX sampler (`emcee_jax`, ...) gets one card to itself (`gpus`: `"auto"` every idle
+card this process may see, a list of `nvidia-smi` indices, or `None` for none, when the GPU fits run
+on the CPU); the other fits (nested sampling, `mcmc`, TiDE) run on their own contiguous blocks of
+`cpu_cores` (default: `run_jobs`' share). No process uses two cards. The fits come back to the
+calling process, which finds the likelihood maxima, the reports and the ranking as the serial run
+does: with the same `seed` the comparison is the same. `settings["jobs"]` lists where each fit ran
+(device, cores, wall seconds). `gpus=` or `cpu_cores=` without `parallel=True` is a `ValueError`.
+Everything a fit carries is pickled to the new process, so a model built from a lambda or a closure
+in a notebook fails before any fit starts, and a script must make the call under
+`if __name__ == "__main__":`. Start the calling process with `JAX_PLATFORMS=cpu`: a JAX model built
+there otherwise opens every card JAX sees, which makes idle cards look busy to the jobs.
+
+```python
+cmp = wp.compare(lc, ["tde_mosfit", "tde_fallback", "tde_stream_stream"], parallel=True, gpus=None)
+cmp.settings["jobs"]
+```
+
+**Ranking.** By ln Z when every ranked model has a nested run that stopped on dlogz; otherwise by
+BIC at the optimised likelihood maximum, `-2 ln L_max + k ln n`. `delta` is `BIC - BIC_best` (or `ln Z_best - ln Z`); `weight`
+is `exp(-delta/2)` (or the evidence weight), normalised over the ranked models; `grade` is Jeffreys'
+scale on ln B (`delta / 2` under BIC): below 1.15 "inconclusive", below 2.30 "substantial", below
+4.61 "strong", otherwise "decisive" (`GRADE_CUTS`). The winner's row is graded against the
+runner-up, every other row against the winner.
+
+**ln Z of a model behind a constraint wall** (the supernova and TDE families, the redback adapter)
+is computed with its prior renormalised to the region the wall allows, as bilby normalises a
+constrained prior: nested sampling treats a walled draw as `-inf`, and `ln Z` gains `-ln f`, `f`
+the allowed fraction of 20 000 prior draws (`samplers.nested.CONSTRAINT_FRACTION_DRAWS`; its error
+is added to `log_evidence_err`). Without it every walled model's ln Z was low by `-ln f` (about 1
+nat for Arnett, the magnetar and the TDE). `info["constraint_prior"]` records `allowed_fraction`,
+`n_draws`, `log_evidence_correction`, `correction_err` and `log_evidence_before_correction`
+(`None` for a model without a wall).
+
+**Left out, each with `left_out_reason`**: a failed fit; no posterior draws; a fit to another number
+of points than the most common one (for example after its fit dropped pre-event rows); among the
+fits with that number, a fit to other rows or scored in another space (flux or magnitude) than the
+most common rows and space; `k >= n` ("not enough data"); no finite BIC. If nothing can be ranked, `winner` is `None` and the headline
+says "not enough data".
+
+**`evidence_check`**: `"auto"` runs CPU nested sampling on the top two when their BIC ln B is below
+ln 10 (`EVIDENCE_CHECK_LN_B`); `True` always; `False` never. If ln Z disagrees with BIC, the
+winner's grade becomes "inconclusive" and the reason is given. About 8-12 minutes per supernova
+family on a 34-point alert, serial: use `n_jobs=`, `cache_dir=`, or `False`. It does nothing when
+every ranked model was fitted by nested sampling (the default): their ln Z is already in the table.
+
+**`cache_dir`**: fits go through `wp.fit_cached`, so a rerun loads them and an interrupted comparison
+resumes. **`prior`**: a `Prior` for every model, or `{model: Prior}`; for a bound family it
+overrides the named parameters of the default prior, and a `t_exp` prior given this way is used as
+given (not cut to the default window): `prior={"arnett": Prior({"t_exp": Uniform(t1 - 60, t1)})}`
+widens the window when the rise was not observed. A supernova family's `t_exp` prior needs a
+finite lower bound. **`fit_kwargs`**: passed to every fit; a
+setting one of the samplers does not take is refused before any fit runs.
+
+`Comparison`:
+- `.table`: one row per model, ranked first, best first: `model, sampler, n_params, n_data,
+  max_log_likelihood, aic, bic, log_evidence, log_evidence_err, delta, weight, grade, converged,
+  problems, status, left_out_reason` (`whisper_cbpf.compare.COLUMNS`).
+- `.results`, `.peaks` (`{model: LikelihoodMaxOptResult}`), `.winner`, `.criterion` (`"ln Z"` or
+  `"BIC"`), `.diagnostics`, `.evidence`, `.evidence_check`, `.n_data`, `.problems`, `.timing`
+  (`fit_s`, `likelihood_max_opt_s` and `evidence_s` per model), `.settings`, `.lc`, `.models`.
+- `.summary()`: the winner and its grade, the table, the models left out and why, the evidence check,
+  and the caveats, as text.
+- `.save(path, *, overwrite=False)` and `Comparison.load(path, *, models=None)` round-trip the table,
+  peaks, results, diagnostics and data. A family bound by name is bound again from the saved light
+  curve and the prior its fit recorded; pass `models=` for models you built with a factory.
+- `.facts(**kwargs)`, `.report(path, **kwargs)`, `.forecast(times, bands, **kwargs)` and
+  `.discriminate(times, bands, survey_depth=None)` hand off to [A7](#a7-forecast-and-choose-the-next-observation)
+  and [A9](#a9-facts-and-the-html-report).
+
+A likelihood maximum more than 1 ln L above the sampler's best draw (`LIKELIHOOD_MAX_GAIN_FLAG`)
+and a peak on a prior edge are listed in `problems`.
+When a ranked model fits the redshift, the comparison says so.
+
+```python
+cmp = wp.compare(lc, ["arnett", "magnetar", "csm_shock_arnett", "tde"])
+print(cmp.summary())
+cmp.save("sn_d30"); cmp.report("sn_d30/report.html")
+```
+
+## A6. Save, reload and resume
+
+| name | signature | what it does |
+|---|---|---|
+| `SamplerResult.save` | `(path, *, overwrite=False)` → `Path` | A `.npz` path writes one file; any other path a directory with `manifest.json`, `result.json` and `arrays.npz`. Saves the draws (by chain for NUTS, PyMC and emcee), the summary, best fit, AIC/BIC and `info`, and a manifest: whisper version and git state, package versions, the model and the prior used, the sampler with its seed, explicit settings and applied defaults, devices, and timing (`runtime_s`, `run_s`, `compile_s`, `init_s`, `warmup_s`, `sampling_s`, `postprocess_s`, `wall_s`). Live objects are listed under `not_saved`. `FileExistsError` unless `overwrite=True`. |
+| `load_result` | `(path)` → `SamplerResult` | Every field equal to the saved one; `result.samples_by_chain` restored; `result.loaded_from` set. `FileNotFoundError`; `ValueError` for a path that is not a saved result, a newer format, or a hash that no longer matches ("modified or truncated"). |
+| `SamplerResult.provenance` | dict | Recorded by every registered sampler's `fit`: environment, data hash, model and prior, sampler settings and seed, JAX devices, wall time. Empty for a result built by hand. |
+| `fit_cached` | `(lc, model, sampler, cache_dir, **fit_kwargs)` → `SamplerResult` | Loads an identical fit saved in `cache_dir`, or fits and saves. The hash covers the data, the model (name, parameters, prior, the identity of `predict`), the sampler with its explicit and default settings, the whisper version, and the band system and float64 setting; `progress` is ignored. Saves go to a hidden directory renamed into place, so an interrupted batch finishes only what is missing. `result.provenance["cache"]` holds the configuration and hash; `whisper_cbpf.results.cache_config(lc, model, sampler, **fit_kwargs)` returns `(config, hash)` without fitting. |
+
+The light curve itself is not saved with a fit, only its hash: pass it again for
+`likelihood_max_opt`, plots and predictive checks. `Comparison.save` does save it.
+
+```python
+res = wp.fit(lc, "flare", sampler="mcmc", nsteps=600, burnin=200, seed=0)
+res.save("out/flare_mcmc")                        # or "out/flare_mcmc.npz"
+same = wp.load_result("out/flare_mcmc")
+for seed in range(6):
+    wp.fit_cached(lc, "flare", "mcmc", "fits/", nsteps=4000, seed=seed)
+```
+
+## A7. Forecast and choose the next observation
+
+`forecast(result, times, bands, *, lc=None, model=None, n_draws=400, quantiles=(0.025, 0.16, 0.5,
+0.84, 0.975), survey_depth=None, seed=0)` → `pandas.DataFrame` (`wp.forecast`; also
+`SamplerResult.forecast(times, bands, **kw)` and `Comparison.forecast(times, bands, **kw)`, which
+adds a leading `model` column)
+
+Predicted AB magnitudes at (time, band) cells from a fit's posterior draws. Every combination of
+`times` x `bands` is a cell, time-major; `times` are on the fit's clock.
+- **Draws:** up to `n_draws` posterior rows, without replacement, chosen by `seed`.
+- **Model:** `model=`, or the registered model `result.model` names; a JAX twin reads the draws
+  through `param_aliases`.
+- **Evaluation:** a model with `predict_jax` runs in one compiled batch (the GPU when JAX has one),
+  constraint wall applied, compiled once per (model, epochs, bands) and cached; any other model uses
+  `Model.predict` once per draw.
+- **Columns:** `time, band, mean_mag, sd_mag, q2.5, q16, q50, q84, q97.5, frac_too_faint, frac_dark,
+  n_draws, depth`. Statistics are over the draws that predict light; dark draws (zero or non-finite
+  flux, a JAX `mag_floor`, or fainter than `DARK_MAG = 35`) are counted in `frac_dark`. With fewer
+  than two lit draws a cell is NaN, with a "not enough data" warning.
+- **`survey_depth`:** one 5-sigma magnitude or `{band: mag}`; it sets `frac_too_faint` (draws fainter
+  than the depth, dark included) and `depth`.
+- **`.attrs`:** `model, sampler, n_draws, n_samples, seed, quantiles, survey_depth, time_label,
+  backend, eval_s, dark_mag, lc_name`.
+- **With `lc=`:** times on another clock are refused, and the message gives the shift.
+
+`discriminate(results, times, bands, *, survey_depth=None, phot_sigma=None)` → `pandas.DataFrame`
+(`wp.discriminate`; `Comparison.discriminate(times, bands, survey_depth=None)` does it for the top
+two ranked models)
+
+For every pair of models and cell, `D = |mean_a - mean_b| / sqrt(sd_a^2 + sd_b^2 + sd_phot^2)`.
+- `results`: `{name: SamplerResult}`, or `{name: forecast DataFrame}` over the same cells and depth.
+  Fits with no draw are named in `.attrs["left_out"]`.
+- `sd_phot`: `phot_sigma` (one value or per band); otherwise, with a depth,
+  `SIGMA_AT_LIMIT * 10**(0.4 (m - depth))` (0.217 mag at the 5-sigma depth); otherwise 0.
+- `observable`: both means brighter than the depth and fewer than half of each model's draws too
+  faint (without a depth: fewer than half dark).
+- Columns: `model_a, model_b, time, band, mean_a, mean_b, sd_a, sd_b, sd_phot, D, observable`.
+  `.attrs["best"]` is the observable row with the largest D (or `None` with `.attrs["reason"]`).
+- Reading D: near 1 or below, one measurement cannot tell the two models apart; 3 or more, it can.
+
+```python
+fc = wp.forecast(res, lc.time.max() + np.array([0.5, 1, 3]), ["lsstg", "lsstr"], lc=lc,
+                 survey_depth=24.5)
+d = cmp.discriminate(lc.time.max() + np.array([1, 3, 7]), ["lsstg", "lsstr"], survey_depth=24.5)
+d.attrs["best"]
+```
+
+## A8. Plot
+
+Every plot returns `Axes` (never calls `plt.show()`, so a bare call in a notebook draws exactly one
+image), is in AB magnitudes with brighter up, and labels the time axis from the light curve's day 0.
+
+| function | what it draws |
+|---|---|
+| `plot_forecast(forecast_df, ax=None)` | per band, the median with the 68 % and 95 % intervals, the 5-sigma depths (dashed), open markers where at least half the draws are too faint. One model at a time: select one model's rows of a `Comparison.forecast` table |
+| `plot_models(results_or_comparison, lc, ax=None, bands=None, *, n_draws=200, seed=0)` | one column per band: the data and each model's median and 68 % band (rank order and weights for a Comparison, drawn with its own model objects); below, residuals at the detections each fit used. Pre-event rows are open grey squares, with no residual and no curve before a declared event. With `ax=`: one band, no residuals |
+| `plot_model_comparison(comparison, history=None)` | weight bars, best on top, with the gap to the best and the grade, and the reasons models were left out. `history={label: comparison}` (oldest first) adds each model's weight at each decision point |
+| `plot_widths(result, prior=None, *, ax=None)` | posterior 68 % width over prior 68 % width per free parameter, in the prior's own coordinate; a line at 1 (posterior = prior) and the facts file's `prior_dominated` threshold. `whisper_cbpf.plotting.posterior_width_ratios(result, prior=None)` returns the numbers |
+| `plot_ppc(..., intervals=(68, 95))` | shades both predictive intervals by default; `intervals=(95,)` gives the 0.1.1 figure |
+| `plot_corner(..., log_params="auto")` | parameters with a LogUniform prior in the fits passed in go on log10 axes, labelled `log10 <name>`; `log_params=None` turns it off |
+
+```python
+wp.plot_models(cmp, lc)
+wp.plot_model_comparison(cmp)
+wp.plot_forecast(fc)
+```
+
+## A9. Facts and the HTML report
+
+`result_facts(result, lc, *, model=None, prior=None, thresholds=None)` → dict (also
+`SamplerResult.facts(lc, **kwargs)`): every number a reader
+quotes from one fit, each computed by a stated rule, JSON-ready (no NaN, no time stamp, no path) and
+sealed with a `sha256`. Keys: `fit` (n, k, draws, the sampler's max ln L, the optimised likelihood
+maximum and its gain as `optimised_max_log_likelihood` and `likelihood_max_gain`, AIC and BIC or
+"not enough data", ln Z); `parameters` (median, p16, p84, the prior, the
+posterior/prior 68 % width ratio, `prior_dominated` (ratio above 1/sqrt(2)), `at_prior_edge`, a
+one-line `reading`); `fixed`; `narrowing` (redshift and `t_exp`); `data` (per band the brightest
+detection, the state, rise and decline rates with errors; the latest colours with errors; the last
+non-detection before the first detection); `absolute_magnitude` (asymmetric, Planck18);
+`diagnostics`; `caveats` (`converged`, `stranded_walkers`, `not_enough_data`, `no_posterior_draws`,
+`large_likelihood_max_gain`, `prior_dominated`, `at_prior_edge`, `data_differs_from_fit`); `readings`,
+`thresholds`, `rules`, `inputs` (SHA-256 of the data, the draws, the model identity and the prior),
+`sha256`. `thresholds` overrides `whisper_cbpf.facts.DEFAULT_THRESHOLDS`
+(`prior_dominated_ratio`, `edge_band`, `edge_fraction`, `likelihood_max_gain_large`,
+`colour_max_separation_days`, `grade_cuts_ln_b`); an unknown key raises.
+
+`comparison_facts(comparison, lc=None, *, thresholds=None)` → dict (also `Comparison.facts()`):
+`ranking` (criterion, winner, runner-up, ln B and grade, and per model its rank, delta, weight,
+grade and diagnostics; the models left out with the reason), `models` (`{name: result facts}`),
+`data`, `absolute_magnitude`, `caveats` (`models_left_out`, `winner_converged`,
+`winner_prior_dominated_parameters`, `evidence_check_disagrees`, `models_with` each flag,
+`comparison_problems`), `thresholds`, `rules`, `inputs`, `sha256`.
+
+`write_facts(facts, path)` → `Path`: indented, NaN-free UTF-8 JSON, the same bytes for the same facts;
+a path that is not `.json` is a directory that gets `facts.json`.
+
+`report(comparison, lc, out, *, forecast_times=None, decision=None, title=None)` → `Path` (also
+`Comparison.report(path, **kw)`): one self-contained HTML page (inline CSS, base64 PNG figures, no
+script, no external URL; readable on a phone, light or dark). Sections: the answer and caveats; an
+optional decision card (only when `decision=` is passed, labelled as supplied by the caller); the
+ranking; the figures (models over the data, weights, posterior/prior widths, the winner's corner
+plot, the forecast); the parameters; what the data show; every diagnostic; the forecast, when
+`forecast_times=` is given, with where the leading models differ most; and the provenance, with the
+facts file as a download. Every number comes from `comparison_facts`; the same inputs give the same
+bytes. A figure or forecast that cannot be made is left out with a warning and its reason on the
+page. `out` ending in `.html` is the file; otherwise a directory that gets `report.html`.
+
+```python
+facts = cmp.facts()
+facts["ranking"]["winner"], facts["ranking"]["grade"]
+wp.write_facts(facts, "out/")
+cmp.report("out/", forecast_times=[t_next, t_next + 3])
+```
+
+## A10. Many alerts, and how fast
+
+### `log_density(lc, model, *, space="auto", likelihood="auto", prior=None, bucket="auto", epoch_bucket="auto")` → `LogDensity`
+
+The log-posterior of one light curve under one JAX model (`whisper_cbpf.samplers.jax._adapters`),
+with the likelihood `wp.fit` would use and the pre-event rule applied.
+- `.fn(theta)`: the log posterior, `-inf` outside the prior's support and past a constraint wall;
+  differentiable, and works inside `jax.jit`, `jax.vmap` and `jax.grad`.
+- `.names` (sampled parameters; `Fixed` ones are in `.fixed`), `.lows` / `.highs`, `.n_data`
+  (observations, padding excluded), `.log_likelihood(theta)`, `.shared(theta, data)` (the jitted
+  program, returning log posterior and log likelihood), `.data`, and `.pre_event` (the pre-event
+  rule applied, as a fit records it in `info["pre_event"]`: the rows at or before the event are
+  not in the density).
+- **Data as arguments.** Observations are padded to a bucket (16, 24, 32, 48, 64, 96, ...:
+  `bucket_size(n)`) by repeating the latest epoch with mask 0, and the prior's numbers travel as a
+  table, so every light curve with the same model, prior families, likelihood and bucket reuses one
+  compiled `.shared`. A model that needs concrete epochs (a supernova on `diffusion_grid="data"`, a
+  kilonova on redback's grid) or a float32 session on a clock with |t| >= 1e3 closes over its
+  epochs instead; `.data_as_argument` is then `False` and `.reason` says why.
+- **Distinct epochs** (`tde_fallback`, `tde_mosfit`): the epoch map of the padded epochs travels in
+  `.data` (`epoch_first`, `epoch_inv`, int32), and the model evaluates each distinct epoch once.
+  `epoch_bucket=` pads the distinct epochs (`"auto"` follows `bucket`: the ladder for
+  `bucket="auto"`, the bucket itself for an explicit one; `None`: exact); `.n_distinct_epochs`,
+  `.epoch_bucket`. Programs compile per (bucket, epoch bucket); data stack only with a common one.
+- Raises `ValueError` for a model without `predict_jax` or with its own `log_prob_jax`, no prior, a
+  prior missing a parameter, every parameter Fixed, a `bucket` smaller than the light curve, an
+  `epoch_bucket` outside [distinct epochs, bucket] or a string other than `"auto"`, a `predict_jax`
+  that carries `epoch_index` but does not take `epoch_idx=`, an empty light curve, or a supernova
+  on fixed diffusion epochs whose epochs, at the earliest `t_exp` and lowest redshift the prior
+  allows, reach past its `max_phase_days` (the traced epochs cannot be checked inside the density);
+  `NotImplementedError` for the mixture likelihood.
+
+### `fit_batch(lcs, model, *, sampler="emcee_jax", nwalkers=32, nsteps=5000, burnin=1000, thin=10, seed=0, prior=None, space="auto", likelihood="auto", init="prior_scan", metrics=True, walker_coordinates="own")` → `list[SamplerResult]`
+
+One model fitted to many light curves in one compiled on-device loop
+(`whisper_cbpf.samplers.jax.batch`). Each light curve gets its own ensemble of `nwalkers` walkers,
+moved by emcee's stretch move (a = 2) with its randomised red-blue split; the kept states are
+emcee's `get_chain(discard=burnin, thin=thin)`. Light curve i uses its own stream, `seed + i` (or
+`seed[i]`), so `fit_batch([a, b], m, seed=0)[1]` samples the density of `fit_batch([b], m,
+seed=1)[0]` and equals it draw for draw when the padded shapes agree (the same length bucket and,
+for the fall-back TDEs, the same distinct-epoch count). For a model that evaluates each distinct
+epoch once, the distinct epochs are padded exactly to the batch's largest count, so one light curve
+with many distinct epochs sets the cost for all; group alerts by epoch count for speed. `prior=` is
+one Prior or one per light curve (same families; their numbers are data, so they share the compile);
+the pre-event rule sets each light curve's `t_exp` window. `init=`: `"prior_scan"` (default, a
+derivative-free scan of the prior, every light curve's batched; `emcee_jax` uses the same), `"prior"`, a `(K, nwalkers, ndim)` array, or
+one start per light curve in any form `emcee_jax` takes. `walker_coordinates=` as for `emcee_jax`
+(see "Where the walkers move" in A2).
+
+Each result has `sampler="emcee_batch"`, draws, summary, best fit, AIC/BIC from the best kept draw,
+`samples_by_chain`, the `emcee_jax` diagnostics plus `info["frozen_walkers"]` and
+`info["n_nan_proposals"]`, and `info["batch"]` (`n_alerts`, `alert_index`, `bucket`, `epoch_bucket`,
+`n_distinct_epochs`, `program`, and
+the batch's `compile_s`, `start_s`, `run_s`, `run_s_per_alert`); `runtime_s` is this light curve's
+share. `diagnostics()`, `save()` and `load_result()` work. One warning names the unconverged fits.
+Raises `ValueError` for a sampler other than `emcee_jax`, an unknown `init`, `burnin >= nsteps`, a
+`thin` that keeps no draw, fewer than `2 * ndim` walkers, mismatched `seed` / `prior` / `init`
+lengths, light curves that do not share the sampled parameters, or a light curve whose density is
+`-inf` at every prior draw; `TypeError` for a single `LightCurve`.
+
+Measured on one A6000, float64, 60 x 10 000 chain, per alert at 512 alerts per call: free `arnett`
+5.33 s chain + 0.31 s start; TDE 3.26 s + 0.25 s; alone (K = 1) 10.7 s and 53.7 s.
+
+### `profile(model, lc, *, batch_sizes=(1, 64, 480, 4096), grad=True, prior=None, space="auto", likelihood="auto", repeats=5, seed=0)` → `ProfileReport`
+
+Times `jit(vmap(log density))` and, with `grad=True`, `jit(vmap(value_and_grad))` on B prior draws
+per batch size, with the data as arguments (`whisper_cbpf.profile`). The compile is timed apart; the
+call time is the median of `repeats` calls. `ProfileReport`: `rows` (per batch size and kind:
+`compile_s`, `call_s`, `per_eval_us`, `temp_bytes`, `temp_bytes_per_eval`, `skipped`),
+`finite_fraction`, `gradient` (finite fraction, zero fraction, median |g|), `peak_bytes`,
+`n_distinct_epochs` and `epoch_bucket` (the fall-back TDEs: the distinct epochs, padded exactly, as
+`fit_batch` pads one light curve; `None` elsewhere);
+`seconds_per_eval(kind="value")`, `seconds_per_alert(*, nwalkers=32, nsteps=5000)` (chain plus the
+start's scan draws, not its climb; it assumes a batch of light curves like the profiled one),
+`to_dict()`. A program whose scratch memory exceeds 90 % of the
+device's free memory is skipped, with the reason.
+
+### `capacity(cost, *, hours=12.0, n_gpus=1, nwalkers=32, nsteps=5000)` → dict
+
+Alerts that fit in `hours` on `n_gpus` busy cards: `alerts_exact = hours x 3600 x n_gpus /
+seconds_per_alert`. `cost` is seconds per alert (for example a `fit_batch` result's `runtime_s`), a
+`ProfileReport` (converted at `nwalkers` / `nsteps`), or a list of them, summed. Returns `alerts`,
+`alerts_exact`, `alerts_per_gpu_hour`, `seconds_per_alert`, `hours`, `n_gpus`, `basis`,
+`assumptions`; device time only.
+
+```python
+round(wp.capacity(636.7, hours=12)["alerts_exact"])      # 68: five families, one alert at a time
+wp.capacity([5.64, 3.51], hours=12, n_gpus=5)["alerts"]  # 23606: arnett + TDE per alert, batched
+```
+
+### `run_jobs(jobs, *, gpus="auto", cpu_cores=None, cache_dir=None, retries=1, timeout=None)` → `JobsReport` and `Job(lc, model, sampler, kwargs={}, name=None)`
+
+Many fits, one fresh Python process per job, over the GPUs and CPU cores this run may use
+(`whisper_cbpf.parallel`).
+- **Jobs**: a `Job`, a tuple `(lc, model, sampler[, kwargs])`, or a dict. Names default to
+  `<lc.name>__<model>__<sampler>` and must be unique.
+- **Devices**: jobs with a JAX sampler run one per card at a time, with `CUDA_VISIBLE_DEVICES=<uuid>`
+  and `JAX_PLATFORMS=cuda`; other jobs run on CPU cores beside them (`JAX_PLATFORMS=cpu`). Every job
+  is pinned to its own block of cores before it imports anything, and gets `NCCL_P2P_DISABLE=1`.
+- **`gpus`**: `"auto"` (the idle cards this process may see: under 512 MiB and 10 % utilisation,
+  checked again before every launch; with none, GPU jobs run on the CPU with a warning), a list of
+  `nvidia-smi` indices, or `None` (CPU only).
+- **`cpu_cores`**: `None` (60 % of the allowed cores), an int, or a string such as `"0-15,32"` or a
+  list.
+- **`cache_dir`**: each job calls `wp.fit_cached`, so a rerun fits only what had not finished; logs
+  and the summary are written there (a new temporary directory with `None`).
+- **`retries`**: how many more times a failed job runs. **`timeout`**: seconds per attempt, start-up
+  and compile included; the job gets SIGTERM, then SIGKILL after `STOP_GRACE_S = 10` s, and counts as
+  a failed attempt.
+- **Returns** `JobsReport`: `rows` (name, sampler, model, device, cores, status, attempts, wall_s,
+  resumed, error, log, result), `passed`, `failed`, `table()`, `result(name)`, `results`.
+- **Files**: `run_jobs.log`, `jobs/<name>/log.txt`, `run_jobs_summary.json`.
+- **Requirements**: everything a job carries is pickled (a factory-built model is picklable; a
+  `predict` defined in a notebook cell or as a lambda is not). A script must call `run_jobs` under
+  `if __name__ == "__main__":`. Ctrl-C stops the running jobs, writes the summary and raises again.
+
+```python
+jobs = [wp.Job(lc, model, "emcee_jax", kwargs={"seed": 0}) for lc in alerts]
+report = wp.run_jobs(jobs, cache_dir="runs/", timeout=3600)
+fits = report.results                               # {name: SamplerResult}
+```
+
+### `check_device_transfers(devices=None, *, refresh=False)` → dict
+
+Checks that direct card-to-card copies arrive intact (`whisper_cbpf.parallel`). For every ordered
+pair of the devices (default: every GPU JAX can see; none on a CPU-only machine, which checks
+nothing), a `TRANSFER_CHECK_BYTES` (4 MiB) array with a pattern unique to the pair and the call is
+put on the source (the host → source → host round trip is checked too), copied directly to the
+destination, fetched and compared bit for bit (float64 under `JAX_ENABLE_X64=1`, else float32).
+- **Why**: on some multi-GPU hosts a direct copy between two cards returns zeros or stale data with
+  no error, while `nvidia-smi topo -p2p r` still reports the path as working. Any program that keeps
+  one process on several such cards (sharded arrays, `pmap`, chains split over devices) then computes
+  on corrupted numbers. On the host this package is validated on, the check found one such pair
+  (every value zero in one direction, stale data in the other) and passed the intact pairs, in about
+  1 s including the CUDA start; a second call returns the kept result in microseconds.
+- **Returns** `devices` (labels, with each card's `CUDA_VISIBLE_DEVICES` entry when that is set),
+  `pairs`, `bad_pairs` (empty), `dtype`, `bytes`, `wall_s`, `cached`. The result is kept per process
+  and per device set; `refresh=True` copies again.
+- **Raises** `RuntimeError` naming every bad pair, how many values differed, and suggesting one
+  process per card (`run_jobs`); a device set that failed raises again from the kept result.
+  `ImportError` without JAX.
+- **When it runs**: only when called. Nothing in the package puts two cards in one process:
+  `emcee_jax` and `fit_batch` run on one device, and `run_jobs` and `compare(parallel=True)` give
+  each process one card. Call it before your own multi-device code.
+
+```python
+wp.check_device_transfers()["bad_pairs"]       # [] or RuntimeError naming the bad pairs
+```
+
+### The persistent compile cache (`jax_compilation_cache_dir`)
+
+A JAX fit spends seconds to a minute compiling before it samples. JAX can keep the compiled
+programs on disk and load them in a later process instead of compiling again. The package does not
+turn this on; it is a JAX setting, made before the first compile:
+
+```python
+import jax
+jax.config.update("jax_compilation_cache_dir", "/path/to/jax_cache")
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)   # also keep the short programs
+```
+
+or `JAX_COMPILATION_CACHE_DIR=/path/to/jax_cache` in the environment (the setting reaches the `run_jobs`
+processes this way). Processes that share the directory share the programs.
+
+**What it keys on.** A program is reused when it is the same program: the same model and prior
+families, the same sampler configuration (for `emcee_jax` and `fit_batch`: the number of ensembles
+K, the walkers, the steps, burn-in, thinning and pilot), the same light-curve length bucket
+(`bucket_size`), and for `tde_fallback` and `tde_mosfit` the same number of distinct epochs (with
+the default exact epoch bucket of one light curve), on the same JAX version and device kind. The
+data are arguments, not constants, so another light curve of the same shape hits it: a cache filled
+on one 175-point, 35-epoch TDE light curve served another of the same shape, 24 of 24 programs, in
+29.9 s against 30.4 s for the curve that filled it. One epoch fewer (34 distinct epochs, same
+bucket) missed 6 of 23 `tde_mosfit` programs and compiled for 13.5 s instead of 3.4 s.
+
+**What it saves**, measured on one RTX A6000 per process, TDE light curves of 175 points:
+- `emcee_jax` (4 x 32 walkers): compile 6-50 s cold against 1-6 s from a filled cache
+  (`tde_stream_stream` 6.0-6.3 → 1.1 s, `tde_cooling_envelope` 29-50 → 3.8 s); a time-capped run
+  spends the saved time sampling.
+- `fit_batch`, one ensemble, one light curve: 22.8 s (`tde_fallback`), 24.4 s (`tde_mosfit`) and
+  61.1 s (`tde_cooling_envelope`) of compile removed on a heavily loaded host; with 4 ensembles,
+  7.1-33.8 s.
+- Four cards, one process each, `tde_mosfit`: 68.2 s with no persistent cache, 54.7 s from a filled
+  cache; `tde_stream_stream`'s pilot-and-restart recipe 42.5 s against 29.7-30.5 s.
+
+**Filling a fresh cache costs more than running without one**: writing the programs takes longer
+than compiling them. Four-card `tde_mosfit` took 76.6 s while filling an empty cache against 68.2 s
+with none (compile 21.0-21.6 s against 13.8-14.4 s per process), four-card `tde_stream_stream` 46.3
+s against 42.5 s, one-card `tde_mosfit` 140.0 s against 131.3 s. The cache pays from the second
+process of the same configuration on. Quote a fit's time with the compile paid in the process and
+the time with a cache filled earlier separately: they are different numbers.
+
+## A11. Check that two models agree
+
+`check_parity(model_a, model_b, params_or_posterior, times, bands, *, tolerance=0.02, n=200, seed=0)`
+→ `ParityReport` (`whisper_cbpf.validation`)
+
+Whether two models predict the same band magnitudes at the same parameters: a JAX port against its
+redback twin, two grid settings, two photometry modes. Both are called through `predict(params,
+times, bands)` and must return Jy on the same clock. `params_or_posterior` is a dict, a list of
+dicts, a `Prior` (`n` draws in sequence from `default_rng(seed)`), a DataFrame of samples (`n` rows),
+or a `SamplerResult` (its best fit plus `n - 1` posterior rows). Parameters named differently are
+paired through `Model.param_aliases`; `times` are sorted first.
+
+A point is compared when either model is brighter than 30 mag (`PARITY_FAINT_MAG`). One model dark
+where the other is bright gives an infinite difference and fails; so does a NaN flux. With nothing
+brighter than 30 mag the check fails with "Not enough data". `ParityReport`: `passed` (`max_abs <=
+tolerance`), `reason`, `n_draws`, `n_points`, `median_abs`, `p99_abs`, `max_abs`, `per_band`
+(`{band: {n, median_abs, p99_abs, max_abs, median_signed, passed}}`), `worst` (`PARITY_N_WORST = 5`
+draws), `nonfinite`, `dmag` (signed `mag_a - mag_b`, NaN where not compared), `table()`.
+
+```python
+from whisper_cbpf.models import redback_adapter as ra
+cpu = ra.redback_model("arnett", ["ztfg", "ztfr"], redshift=0.051, constraint=None)
+gpu = wp.supernova_model("arnett", ["ztfg", "ztfr"], 0.051, ra.redback_luminosity_distance_cm(0.051),
+                         constraint=None)
+report = wp.check_parity(gpu, cpu, cpu.default_prior, t, band_per_epoch)   # 200 prior draws
+report.passed, report.max_abs            # (True, 5.3e-13) on SN2025pgp's ZTF epochs
+```
+
+---
+
+# Part B — by subsystem
 
 ---
 
@@ -71,7 +1063,10 @@ Methods (return a new `LightCurve` unless noted): **`where(**constraints)`** (`c
 `select_bands` / `select_time_window` / `select_snr`; `add_flux(zeropoint_jy=3631.0)` / `add_mag(...)`
 (constant **AB** zero point — pass `zeropoint_jy=lc.zero_point` to opt into per-band; raise for
 `data_mode='flux'`); `resolve_bands(svo_fallback=True)` (fill `lambda_eff`/`zero_point`);
-`set_explosion_date(mjd)` (observer-frame days since explosion); **`calc_phase(reference=, redshift=,
+`set_explosion_date(mjd)` (observer-frame days since explosion); `set_time_reference(mjd, label)`
+(the same shift when day 0 is not the explosion, e.g. `label="first detection"`: kept in
+`meta['time_reference']` / `meta['time_reference_mjd']`, so plots name it and `calc_phase` counts
+from it; a model still reads `time` as days since its own day 0); **`calc_phase(reference=, redshift=,
 peak=, hours=)`** (rest-frame phase `(t − ref)/(1+z)`); **`calc_absmag(dm=, redshift=, ebv=, rv=3.1,
 extinction=)`** (distance modulus from `z`/`luminosity_distance` + Milky-Way extinction via CCM89 or an
 explicit `{band: A_mag}` dict → `absmag` column); `to_dataframe()` (→ `to_pandas()`); `lc()` returns the
@@ -82,7 +1077,13 @@ table itself.
 Auto-maps columns; key options: `column_map`, `band_lookup` (broadband grouping), `default_band`,
 `quality_cuts`, `flag_filters={'catflags':0}`, `time_min/time_max`, `bands`, `min_snr`,
 `explosion_date`, `delimiter`. Detects an `upper_limit` column. Raises `ValueError` for a missing
-time / band / measurement column.
+time / band / measurement column. `path` may also be a DataFrame or a list of records. For ZTF and
+LSST alert photometry, `survey="ztf" | "lsst"` and `limits=` read the brokers' own fields: see
+[A1](#a1-load-alert-photometry-survey-presets).
+
+`LightCurve.explosion_time_prior(*, fallback_days=30.0)` returns the narrow explosion-time window the
+data define; a fit's default is the wider `wp.default_t_exp_prior(lc)`
+([A2](#what-every-fit-does)).
 
 Ingestion options:
 
@@ -104,7 +1105,10 @@ Column auto-detection uses the case-insensitive synonym table `io.loader.CANONIC
 unknown the light curve records `redshift_known=False` and `io.schema.DEFAULT_REDSHIFT_PRIOR`.
 
 ## 3. Bands & SVO resolution  (`io.bands`, `io.svo`)
-`DEFAULT_BAND_ALIASES` and `FILTER_LOOKUP` (96 labels → 10 effective bands; ZTF `ZTF_g`/`ztf_g`-style names included, aliases matched case-insensitively).
+`DEFAULT_BAND_ALIASES` and `FILTER_LOOKUP` (97 labels → 11 effective bands; ZTF `ZTF_g`/`ztf_g`-style names included, aliases matched case-insensitively). `lsstu` groups to U-band and `y`/`Y`/`lssty`/`y-p1` to their own **y-band** (LSST y, 9710 Å), which up to 0.1.0 was folded into z-band with z's 8679 Å.
+
+These groups are for ingestion, plotting and quick looks. **A model integrates over a filter, not a
+group**: models resolve labels with `whisper_cbpf.resolve_filter` (§4b), which refuses a grouped label.
 
 - **`normalize_band(band, aliases=None, warn_unknown=False, known=None)`** → the canonical label
   (whitespace-trimmed, alias applied case-sensitively first, then case-insensitively). `aliases` is
@@ -126,10 +1130,12 @@ unknown the light curve records `redshift_known=False` and `io.schema.DEFAULT_RE
   info)` arrays (NaN where unresolved); resolves each distinct band once.
 - **`LSST_BAND_INFO`** — effective wavelength + zero point per effective band.
 
-**SVO** (`io.svo`, needs `astroquery`, shipped with `[gpu]`): `resolve_band_svo(band, *,
+**SVO** (`io.svo`, needs `pyphot` or `astroquery`; pyphot is used first when installed, astroquery is
+the fallback and is needed for the wavelength search): `resolve_band_svo(band, *,
 lambda_eff_hint=None)`, `get_filter_metadata(filter_id, *, use_cache=True)` (cached by ID; offline-safe
 disk cache under `$WHISPER_SVO_CACHE` — `use_cache=False` forces a fresh fetch, e.g. after SVO revises a
-filter), `get_transmission_data(filter_id)` (Phase-2 spectral integration),
+filter), `get_transmission_data(filter_id, *, use_cache=True)` (the curve a model bound to an SVO ID
+integrates; cached in `svo_curves/` beside the metadata), `transmission_backend()`,
 `find_filter_id(band, *, lambda_eff_hint=None, tol_frac=0.05)`,
 `register_manual_band(band, lambda_eff, zero_point)`, `clear_cache(disk=False)`. `find_filter_id`
 resolves in priority order **`DEFAULT_SVO_IDS`** (the documented band → SVO-ID table) → wavelength
@@ -158,27 +1164,58 @@ validates + converts and is the entry point the loader uses; it dispatches to th
 
 A no-unit column warns and applies the `DEFAULT_UNITS` entry for its mode.
 
+## 4b. Synthetic photometry  (`whisper_cbpf.synphot`)
+How every model turns an SED into a band flux, the same on CPU and GPU: `m_b = -2.5 log10[Σ w_k
+F_ν(λ_k) / (3631 Jy Σ w_k)]` with the nodes and weights of one `FilterSet`. The full account, with
+the measurements, is [`docs/PHOTOMETRY.md`](PHOTOMETRY.md).
+
+| Name | Signature | Description |
+|---|---|---|
+| `resolve_filter` | `(label, aliases=None, default_system=None, known=())` | A data label → a filter name (sncosmo name, shipped filter or SVO ID; a name in `known` — the filters of a FilterSet you pass a model — as is). Bare `u g r i z y` are **LSST** (one warning per session); a grouped label (`g-band`) raises. Also `wp.resolve_filter`. |
+| `set_default_band_system` / `default_band_system` | `(system)` / `()` | The system bare letters are read in for the session: `lsst` (default), `sdss`, `ztf`, `ps1`, `des`. Returns the previous one; mirrored in `$WHISPER_BAND_SYSTEM` so spawned sampler workers agree. Also `wp.set_default_band_system`. |
+| `FilterSet` | `(names, nodes, weights, *, rule, provenance=None)` | Per-band nodes [Å] and weights. `.norms`, `.hash`, `.select(names)`, `FilterSet.concat(sets)`, `.save(path)` / `FilterSet.load(path)` (npz, hash-checked), `.to_legacy()` (the JAX factories' `filter_set=` dict), `FilterSet.from_legacy(dict)`. Plain numpy: pickles by value. |
+| `gauss_rule` | `(names, n_nodes=16, *, curves=None)` | The band-adapted Gauss rule on `T dλ/λ`; curves from sncosmo, SVO IDs, or `curves={name: (wave, trans)}`. Warns if its build-time self-check on 1500–50 000 K blackbodies exceeds 0.02 mmag. |
+| `filter_set_for` | `(names, n_nodes=None)` | The default FilterSet: Gauss-16, from the shipped LSST ugrizy / ZTF gri / SDSS ugriz files where possible (no sncosmo needed), else built. Memoised. |
+| `band_flux_jy` | `(flux_jy, times, names, filter_set)` | CPU band flux: `flux_jy(t_flat, nu_flat_hz)` called once on every observation's nodes; an observation with any non-finite node returns 0. |
+| `grid_rule.make_filter_set`, `grid_rule.ab_weights` | as in `models.jax.kilonova` | The shared-grid rule of whisper ≤ 0.1.0, moved verbatim (re-exported by `kilonova`/`tde`/`supernova`); a factory's `n_wave=` selects it. |
+
+The CPU redback adapter takes the same knobs: `redback_model(model, band_names=None, *, ...,
+photometry="band", filter_set=None, default_system=None, band_aliases=None)` (and
+`register_redback`; the rest of its signature is in [§6.2b](#62b-the-redback-adapter--whisper_cbpfmodelsredback_adapter)).
+`photometry="monochromatic"` is whisper ≤ 0.1.0's reference-frequency path.
+For redback's double-dilation TDEs (`redback_double_dilation(model)`) it calls redback at `t (1+z)`,
+which undoes that double time dilation.
+
 ## 5. Plotting
+
+Every plot function returns its matplotlib `Axes` (the figure is `np.ravel(axes)[0].figure`) and leaves
+the figure open in pyplot, so a bare call shows it exactly once in a notebook, and `plt.show()`,
+`plt.savefig` and `save=` work as usual.
 
 **`plot_light_curve(lc, *, layout="report", quantity="apparent_mag", bands=None, ncols=3, figsize=None, title=None, save=None)`**
 — `layout`: `"report"` (mag + flux panels) or `"grid"` (per band). `quantity`: `apparent_mag` /
 `absolute_mag` (needs redshift) / `flux`. Markers: detections = circles, SNR<3 = △, upper limits = ▽.
+Returns the `Axes` array: the 2 panels for `"report"`, the `nrows x ncols` grid for `"grid"` (unused
+cells hidden).
 
-**`plot_ppc(results, lc, model=None, *, quantity="apparent_mag", panel_by="auto", n_draws=200, bands=None, tmin=None, tmax=None, ncols=None, colors=None, figsize=None, title=None, seed=0, save=None)`**
+**`plot_ppc(results, lc, model=None, *, quantity="apparent_mag", panel_by="auto", n_draws=200, bands=None, tmin=None, tmax=None, ncols=None, colors=None, figsize=None, title=None, seed=0, save=None, intervals=(68, 95))`**
 — **posterior-predictive check as a grid.** For each fit, draws `n_draws` posterior samples, evaluates
-the model on a smooth time grid, and shades the **95% predictive band** (2.5–97.5 percentiles) + median
-over the photometry, per band. `results` is one `SamplerResult`, a `{label: SamplerResult}` dict, or a
+the model on a smooth time grid, and shades each central predictive interval in `intervals` (by
+default the **68 % and 95 % bands**, darker for the narrower; `intervals=(95,)` gives the 0.1.1
+figure) + median over the photometry, per band. A model that is not registered needs `model=`. `results` is one `SamplerResult`, a `{label: SamplerResult}` dict, or a
 list. `panel_by`: `"method"` (one panel per fit, bands overlaid — the multi-sampler grid),
 `"band"` (one panel per band, fits overlaid), or `"auto"` (method when several fits, else band).
-`quantity`: `"apparent_mag"` (inverted axis) or `"flux"` (flux density [Jy]). Returns the `Figure`.
+`quantity`: `"apparent_mag"` (inverted axis) or `"flux"` (flux density [Jy]). Returns the 2-D
+`nrows x ncols` `Axes` array.
 
 **`plot_calibration(results, lc, model=None, *, levels=(0.5, 0.68, 0.8, 0.9, 0.95, 0.99), space="auto", per_band=False, n_draws=400, colors=None, figsize=None, title=None, seed=0, save=None)`**
 — **coverage-calibration curve** (reliability / pp-plot): empirical posterior-predictive coverage vs the
 nominal credible level, for one or more fits (or one fit broken out `per_band=True`). On the diagonal =
 calibrated; below = over-confident, above = under-confident. Coverage from `predictive_metrics`.
+Returns the `Axes`.
 
 **`plot_corner(posteriors, *, labels=None, parameters=None, colors=None, truths=None, bins=30,
-levels=(0.39, 0.86), smooth=1.0, log_params=None, title=None, legend_loc="upper right", save=None, **corner_kwargs)`**
+levels=(0.39, 0.86), smooth=1.0, log_params="auto", title=None, legend_loc="upper right", save=None, **corner_kwargs)`**
 — overlay a **list of posteriors** on one publication-ready corner plot.
 
 > **`posteriors` is a sequence, even for one fit.** Pass `[res]`, not `res` — a bare `SamplerResult`
@@ -195,10 +1232,16 @@ levels=(0.39, 0.86), smooth=1.0, log_params=None, title=None, legend_loc="upper 
 Shared per-parameter ranges align the panels; each posterior gets a distinct dark colour
 (`CORNER_PALETTE`); 2-D panels are contour **lines** (default `levels` ≈ 1σ/2σ) and the diagonals are
 step histograms, so several posteriors stay readable overlaid. `parameters` defaults to the columns
-common to all inputs; `log_params` puts those on a `log10` axis; `truths` (dict or list) draws dashed
-reference lines; a colour→label legend is added. Returns the `Figure`. Ideal for comparing samplers on
+common to all inputs; `log_params` puts those on a `log10` axis (the default `"auto"` takes every
+parameter with a LogUniform prior in the `SamplerResult`s passed, labelled `log10 <name>`; `None`
+or `[]` turns it off); `truths` (dict or list) draws dashed
+reference lines; a colour→label legend is added. Returns the `K x K` array of corner `Axes` (row-major,
+as `corner` lays them out). Ideal for comparing samplers on
 the same data — the posteriors (with uncertainties) show whether methods are *compatible*, which a table
 of point estimates cannot.
+
+The plots for comparisons and forecasts (`plot_models`, `plot_model_comparison`, `plot_forecast`,
+`plot_widths`) are in [A8](#a8-plot).
 
 ---
 
@@ -211,7 +1254,13 @@ Small, **picklable** distributions (so they cross process boundaries in parallel
 |---|---|---|
 | `Uniform` | `(low, high, name=None)` | `sample(rng)`, `log_prob(x)`, `rescale(u)`, `bounds` |
 | `LogUniform` | `(low, high, name=None)` (`low>0`) | same |
-| `Prior` | `(distributions: dict)` | `sample(rng=None) -> dict`, `log_prob(params)`, `rescale(unit_cube)`, `names`, `bounds` |
+| `Normal` | `(mu, sigma, name=None)` | same, plus vectorised `cdf`, `ppf`, `std`; `bounds` is `(-inf, inf)` |
+| `TruncatedNormal` | `(mu, sigma, low, high, name=None)` (`low` or `high` may be infinite) | same as `Normal`; exact density with its truncation normalisation |
+| `Fixed` | `(value, name=None)` | `sample`, `log_prob`, `rescale`, `std`, `bounds`: a parameter held at `value` |
+| `Prior` | `(distributions: dict)` | `sample(rng=None) -> dict`, `log_prob(params)`, `rescale(unit_cube)`, `names`, `bounds`, `fixed` (`{name: value}` of the `Fixed` entries) |
+
+Which sampler takes which family, and how a `Fixed` parameter is counted:
+[A2](#priors-beyond-boxes-normal-truncatednormal-fixed).
 
 ```python
 prior = wp.Prior({"amplitude": wp.Uniform(0, 10), "rise_time": wp.Uniform(1, 10)})
@@ -223,10 +1272,10 @@ A model maps parameters to predicted flux: `predict(params: dict, times: np.ndar
 
 | Function | Signature | Description |
 |---|---|---|
-| `register_model` | `(name, predict, parameters, prior=None, description="", *, overwrite=False, predict_jax=None, log_prob_jax=None)` | Register a model by name. The two `*_jax` slots are optional; a factory that built them must pass them through or the registered model is the CPU half only. |
+| `register_model` | `(name, predict, parameters, prior=None, description="", *, overwrite=False, predict_jax=None, log_prob_jax=None, param_aliases=None)` | Register a model by name. The two `*_jax` slots and `param_aliases` are optional; a factory that built them must pass them through or the registered model is the CPU half only. |
 | `get_model` | `(model)` | Resolve a name (or pass a `Model`). |
 | `list_models` | `()` | Sorted registered model names. |
-| `Model` | dataclass: `name, predict, parameters, default_prior, description, predict_jax, log_prob_jax` | Callable: `model(params, times, bands)`. `predict_jax(theta, times, band_idx) -> flux` is `predict` with a flat theta and integer bands, traceable and differentiable; `log_prob_jax(theta) -> scalar` is a data-bound log-*likelihood*. Both `None` unless a factory filled them — see [§10](#10-the-jaxgpu-half). |
+| `Model` | dataclass: `name, predict, parameters, default_prior, description, predict_jax, log_prob_jax, param_aliases` | Callable: `model(params, times, bands)`. `predict_jax(theta, times, band_idx) -> flux` is `predict` with a flat theta and integer bands, traceable and differentiable; `log_prob_jax(theta) -> scalar` is a data-bound log-*likelihood*. Both `None` unless a factory filled them — see [§10](#10-the-jaxgpu-half). `param_aliases` (`{}` unless set) maps parameter names onto the redback-named twin's ([§6.2b](#62b-the-redback-adapter--whisper_cbpfmodelsredback_adapter)). |
 
 Built-in **toy** models (band-independent, vectorized; `t` = days since explosion; scale `amplitude` to
 your flux units for real data):
@@ -242,25 +1291,33 @@ Built-in **physical** models:
 | Name | Physics | Parameters |
 |---|---|---|
 | `mck19` | EM flare from a **BBH merger in an AGN disk** — a GW-recoil-kicked remnant shocks a bound-gas **hotspot** that radiates as a blackbody: a `sin²` rise to the ram-pressure delay `t_ram`, then exponential decay back to the disk baseline. McKernan et al. 2019 ([ApJL 884, L50](https://iopscience.iop.org/article/10.3847/2041-8213/ab4886)), implementation of [Darc 2025](https://arxiv.org/abs/2506.02224). | v_kick, M_smbh, M_bh, r_bh, redshift |
-| `two_component_kilonova` | **Kilonova** (NS–NS merger) with a blue (low-κ) + red (high-κ) ejecta component, via the optional **redback** backend (`[models]` extra). Band-integrated AB magnitudes (redshift-aware) → flux density (Jy). | mej_1, vej_1, kappa_1, temperature_floor_1, mej_2, vej_2, kappa_2, temperature_floor_2, redshift |
+| `two_component_kilonova` | **Kilonova** (NS–NS merger) with a blue (low-κ) + red (high-κ) ejecta component, via the optional **redback** backend (`[models]` extra). The sum of two one-component redback flux densities, band-integrated (§4b) → flux density (Jy). | mej_1, vej_1, kappa_1, temperature_floor_1, mej_2, vej_2, kappa_2, temperature_floor_2, redshift |
 
 `two_component_kilonova` is the **first redback-backed model** — redback is imported lazily, so WHISPER
-and `list_models()` work without it; only `predict` needs the `[models]` extra. It wraps redback's
-`two_component_kilonova_model`, mapping WHISPER bands → redback LSST filters and converting redback's AB
-magnitude to flux density (a machine-precision round-trip). It is an **expensive** simulator (~50 ms per
-band-call), so **SNPE** (amortized) is the natural sampler; ABC/MCMC want modest budgets. See
+and `list_models()` work without it; only `predict` needs the `[models]` extra. It is redback's
+`two_component_kilonova_model` computed as **two `one_component_kilonova_model` calls summed in flux
+density** and integrated over each band's filter (bare letters are LSST; `B`, `J`, `uvot::uvw1` …
+resolve through redback's filter table). Since whisper 0.1.1: redback's two-component model stops at 6
+days source frame, where 0.1.0 returned 99 mag; the sum is finite at every epoch,
+agrees with redback's two-component model to 1.3–2.0 mmag inside 6 d (its grid differs), and costs
+~9 ms per 200-observation predict against 177 ms for the old per-band magnitude calls. See
 [`dev/demo_kilonova.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_kilonova.py)
 and [`dev/fit_kilonova_at2017gfo.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/fit_kilonova_at2017gfo.py)
-(WHISPER_AI, not in this package).
+(pinned history: WHISPER_AI @ 8ba3843, discontinued; superseded by whisper_cbpf).
 
-`mck19` is **band-dependent** — it returns flux density (Jy) at each `(time, band)`, evaluating the
-hotspot + disk blackbody at the band's effective wavelength (via Whisper's band system) and the redshift
-(Planck18 luminosity distance + time dilation). `t = 0` is the merger; the flare peaks at the
-observer-frame delay `t_ram`. Self-contained (astropy constants/cosmology only — no `speclite`); the AB
-magnitude is the monochromatic-at-`λ_eff` approximation to the original LSST filter integration. Fixed
+`mck19` is **band-dependent** — it returns flux density (Jy) at each `(time, band)`, integrating the
+hotspot and disk blackbodies over each band's filter (§4b) at the redshift (Planck18 luminosity
+distance + time dilation). `t = 0` is the merger; the flare peaks at the observer-frame delay `t_ram`.
+Self-contained (astropy constants/cosmology only — no `speclite`, no sncosmo for the shipped LSST,
+ZTF and SDSS filters). A band that names no filter raises; up to 0.1.0 every band was taken at its
+effective wavelength and an unresolved one silently at 6000 Å (the g peak at the test point moves
+25.900 → 25.842). Fixed
 disk constants (`mdot=0.05` Edd, `alpha=0.1`) do not enter the light-curve *shape*. See
 [`dev/demo_mck19.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_mck19.py)
-(WHISPER_AI, not in this package) for the g/r/i light curve.
+(pinned history: WHISPER_AI @ 8ba3843, discontinued) for the g/r/i light curve.
+
+**Any redback model, on the CPU**: `register_redback("arnett", redshift=0.0098)` binds any of redback's 347 models
+through one adapter — see [§6.2b](#62b-the-redback-adapter--whisper_cbpfmodelsredback_adapter).
 
 > For **parallel** ABC (`n_jobs>1`) the `predict` function must be picklable (module-level, not a
 > closure/lambda). Closures work with `n_jobs=1`.
@@ -279,6 +1336,94 @@ disk constants (`mdot=0.05` Edd, `alpha=0.1`) do not enter the light-curve *shap
 these directly (`from whisper_cbpf.models import flare; flare.PRIOR`) to reuse or widen a built-in
 prior instead of retyping its bounds.
 
+### 6.2b The redback adapter  (`whisper_cbpf.models.redback_adapter`)
+Any key of `redback.model_library.all_models_dict` becomes a whisper `Model` on the CPU, with its
+parameters and prior read from redback itself (the `[models]` extra; redback is imported lazily, so
+this module loads without it). `register_redback` is also `wp.register_redback`.
+
+```python
+import whisper_cbpf as wp
+lc.set_explosion_date(60800.2)                       # the adapter's clock: days since t = 0
+wp.register_redback("arnett", ["ztfg", "ztfr"], redshift=0.05, times=lc.time)
+res = wp.fit(lc, "arnett_redback", sampler="mcmc")
+```
+
+| Function | Signature | Description |
+|---|---|---|
+| `redback_model` / `register_redback` | `(model, band_names=None, *, redshift=None, name=None, prior=None, pin=None, min_time_day=1e-3, redback_kwargs=None, description=None, photometry="band", filter_set=None, default_system=None, band_aliases=None, constraint="corrected", times=None)` (+ `overwrite=False` to register) | Build (or build and register, as `f"{model}_redback"` unless `name=`) the model. Arguments below. A `*_bolometric` engine (erg/s, no `redshift`) raises, naming its photometric wrapper, and so does a model whose `flux_density` is the same at two frequencies (a luminosity engine or a unitless curve). |
+| `redback_flux_jy` | `(model, parameters, times, bands=None, *, min_time_day=1e-3, redback_kwargs=None, photometry="band", filter_set=None, default_system=None, band_aliases=None)` | The physics at one parameter set, in Jy: no constraint wall, no domain probe. Epochs redback refuses (any exception) or answers with NaN/inf are 0, with a warning once per model and span. |
+| `redback_parameters` / `redback_prior` / `redback_pinned` | `(model)` | Every parameter redback's model takes (signature plus the `.prior` file's `**kwargs` entries), in redback's order; its prior as a whisper `Prior`; the `DeltaFunction` entries as `{name: value}`. |
+| `redback_luminosity_distance_cm` | `(redshift, model="arnett")` | The distance redback uses for `model` (its module's own cosmology): pass it as `dl_cm` to a JAX twin. |
+| `redback_applies_dilation` / `redback_double_dilation` | `(model)` | Whether the installed redback multiplies `flux_density` by `(1+z)`; whether it dilates time twice (`gaussianrise_cooling_envelope`, `bpl_cooling_envelope`, `stream_stream_tde` in 1.20). For the latter the adapter calls redback at `t (1+z)`, and the model description says so. Both read redback's source. |
+| `installed_redback_preset` | `()` | `"1.20"`, `"1.15"`, `"1.12"` or `None`: the preset key of the JAX ports (`tde.REDBACK_ENGINE_PRESETS`, `supernova.REDBACK_GRID_PRESETS`) that reproduces the **installed** redback, read from its source without importing it. The TDE's default `n_time` follows it. |
+| `LATEST_REDBACK_PRESET` | `"1.20"` | The newest release the presets reproduce; the defaults when no redback is installed. |
+| `redback_package_dir` | `()` | redback's package directory, found without importing it (a redback clone on `sys.path` does not fool it); `None` if absent. |
+
+Constants: `MJY_TO_JY = 1e-3` (redback's `flux_density` is mJy), `MIN_TIME_DAY = 1e-3` (an epoch
+before the explosion, `t < 0`, predicts zero flux; epochs from 0 up to `MIN_TIME_DAY` are clipped up
+to it, since redback silently mis-evaluates `t <= 0`), `PHOTOMETRY_MODES = ("band",
+"monochromatic")`, `DOMAIN_PROBE_DRAWS = 8`.
+
+**Arguments of `redback_model` / `register_redback`:**
+
+| Argument | Meaning |
+|---|---|
+| `band_names` | Labels to resolve now, so a typo fails here and not inside a likelihood. Does not restrict what `predict` accepts. |
+| `redshift` | Sugar for `pin={"redshift": z}`, with the same check: it must be a parameter of the model. |
+| `prior` / `pin` | Per-parameter prior overrides (a named parameter becomes free, even if redback pins it) / fixed values (they leave `Model.parameters`). |
+| `photometry` | `"band"` (default since 0.1.1): redback's SED integrated over each observation's filter, one redback call on every Gauss node (§4b, [`PHOTOMETRY.md`](PHOTOMETRY.md)). `"monochromatic"`: whisper ≤ 0.1.0's single reference frequency per band, 4–40 mmag median and up to 0.65 mag off the band integral; for physics-parity tests. |
+| `filter_set` | The `FilterSet` to integrate with (default: Gauss-16 for the filters the labels resolve to). Pass the one a JAX model was built with and the two compute the same integral. |
+| `default_system` | The system bare `u g r i z y` are read in, for this model only; default the session's (`wp.set_default_band_system`, LSST). |
+| `band_aliases` | Your labels → filter names, applied first: `{"g": "sdssg"}`, `{"g-band": "ztfg"}`. |
+| `constraint` | redback's `Constraint` priors (Arnett nuclear burning ≥ kinetic energy, magnetar rotational ≥ kinetic energy, cooling-envelope `eta`/`beta` bounds, …) as a hard wall: a draw that breaks one predicts **zero flux** and redback is not called. `"corrected"` (default) bounds the Arnett kinetic energy by 1.51e18 erg/g of nickel; `"redback"` keeps redback's 1.91e19; `None` applies none (whisper ≤ 0.1.0). Formulas and modes: `whisper_cbpf.models.constraints` (`constraint_ok(model, params, mode="corrected", xp=np)`, `E_BURN_PER_G`, `E_BURN_PER_G_REDBACK`, `MODELS`). |
+| `times` | The epochs you will fit, on the model's clock. The domain probe then runs at registration (needs `band_names`): epochs redback refuses at every one of `DOMAIN_PROBE_DRAWS` prior draws, with the same message — a limit of the model, like `two_component_kilonova_model`'s 6-day grid — raise a `ValueError` naming the span. Without `times` the probe runs at the first `predict` that loses epochs. Epochs lost at some parameters only are zero for that draw (a rejection) and warn once per span. |
+| `min_time_day`, `redback_kwargs`, `description` | Epoch clip; extra fixed keywords for redback on every call (`cosmology=`, `base_model=`, …); a description override. |
+
+**Time.** `predict`'s `times` are observer-frame **days since the model's own t = 0** — the explosion
+for a supernova, the merger for a kilonova, the fallback for `cooling_envelope` — not MJD. redback's
+photometric models have no explosion-time parameter, so `pin={"t0": mjd}` (or `t_exp`,
+`explosion_time`, …) raises, and the error says this. Put day 0 on the light curve instead:
+`lc.set_explosion_date(mjd)`.
+
+**Bands.** Labels go through `wp.resolve_filter` (§4b): bare letters are LSST unless
+`wp.set_default_band_system(...)`, `default_system=` or `band_aliases=` say otherwise; a grouped label
+(`g-band`) raises; any sncosmo name or SVO ID works. The integral is `synphot.band_flux_jy` over a
+`FilterSet` (`synphot.gauss_rule`, `synphot.filter_set_for`) — the same object the JAX factories take
+as `filter_set=`.
+
+**The same wall on the JAX models.** `supernova_model(..., constraint="corrected")` (for `arnett`,
+`basic_magnetar_powered`, `slsn`, `general_magnetar_slsn`) and `tde_model(..., constraint=...)` (both
+cooling-envelope TDEs) and `tde_analytical_model(..., constraint=...)` take the same three modes: the host `predict` — what the CPU samplers call — gives zero flux
+for a draw that breaks one, as this adapter does, and the JAX samplers apply
+`predict_jax.constraint_ok` ([§10](#10-the-jaxgpu-half)). Pass `constraint=None` to compare the
+physics at any draw. The zeros are silent — the samplers meet such draws on 33-97 % of redback's
+prior — so a direct `predict` at a rejected draw (a plot at a prior's midpoint, say) returns all
+zeros without a warning; test the draw with `model.predict_jax.constraint_ok(theta)` first.
+
+**Parameter names across backends.** `Model.param_aliases` maps a model's parameter names onto its
+redback-named twin's where they differ: the JAX `kilonova_two_model`'s `mej_blue … kappa_red` →
+`mej_1 … kappa_2`, the names of `two_component_kilonova` and of
+`register_redback("two_component_kilonova_model")`. Rename a CPU or GPU sample table with it to pair
+the two posteriors: `samples.rename(columns=model.param_aliases)`. `kilonova_two_model(prior=...)`
+takes either spelling (or a mix), so `prior=kilonova_two.default_prior()`, redback's own box, works
+as it is; the model's `default_prior` comes back in its own names.
+
+**Warnings.** Importing redback runs `warnings.simplefilter("ignore")` for the whole process (redback
+1.20 `result.py:17`) and sets `text.usetex`. The adapter imports it through `_import_redback`, which
+restores your warning filters and matplotlib settings afterwards, so whisper's own warnings (out of
+domain, SNPE fallback, …) still reach you after a redback model is bound.
+
+### 6.2c TiDE, a CPU model  (`whisper_cbpf.models.tide`)
+
+- **`tide_model(band_names=None, redshift=None, dl_cm=None, *, name='tide', free=None, pin=None, prior=None, redshift_prior=None, t_exp_days=0.0, beta_fulldisrupt=1.85, Mdotfb_calc='L09', tmin_calc='default', star_rstar='ms', star_politrop='default', N=1000, n_nodes=1, band_wavelengths=None, band_aliases=None, default_system=None)`**
+  TiDE (Kovacs-Stermeczky & Vinko 2023; libtide through tidepy) as a CPU `Model`: wind + thin-disc tidal-disruption light curve,
+  flux density in Jy, no `predict_jax`. Parameters `bh_M6, star_mstar, bh_eta, fout, fv` (+ freed `eta_r`,
+  `beta_fulldisrupt`, `t_exp`, `redshift`); `pin={"fout": "bifout"}` selects the built-in outflow fraction. Each band is
+  monochromatic at its effective wavelength (`n_nodes>1`: Gauss nodes over the passband); epochs at or before
+  `t_min (1 + 1e-4)` are 0 Jy. `beta_fulldisrupt` defaults to 1.85 (tidepy's; libtide's is 1.0). Needs libtide
+  (`TIDE_LIB`, `TIDE_PATH`) and tidepy, loaded lazily. `register_tide(band_names, redshift, dl_cm, *, name='tide', **kwargs)`
+  registers it (an existing name is replaced).
+
 ### 6.3 Distance  (`whisper_cbpf.distance`)
 `chi2_distance(obs_flux, obs_flux_err, sim_flux, bands=None) -> float` = `sum(((obs-sim)/err)**2)`.
 Any `f(obs_flux, obs_flux_err, sim_flux, bands) -> float` can be passed as a custom distance.
@@ -290,22 +1435,29 @@ Distances are also a **name registry**, so a custom distance can be selected by 
 |---|---|---|
 | `register_distance` | `(name, fn, *, overwrite=False)` | Register a distance by name. |
 | `get_distance` | `(distance)` | Resolve a name (a callable passes straight through). |
-| `list_distances` | `()` | Sorted registered names — **14** out of the box: `chi2`, `chi_square` (an alias), `mse`, `rmse`, `mae`, `wmse`, `wmae`, and a `*_jax` twin of each. The `_jax` entries are listed even without the `[gpu]` extra. |
+| `list_distances` | `()` | Sorted registered names — **16** out of the box: `chi2`, `chi_square` (an alias), `mse`, `rmse`, `mae`, `wmse`, `wmae`, `max_abs_z`, and a `*_jax` twin of each. The `_jax` entries are listed even without the `[gpu]` extra. |
 
-Names are matched **case-insensitively**.
+Names are matched **case-insensitively**. `max_abs_z_distance(obs, obs_err, sim, bands=None)`, the
+worst point in units of its own error, is described in
+[A2](#abc-the-worst-point-distance-and-single-precision).
 
 ### 6.4 Samplers  (`whisper_cbpf.samplers`)
 
 `fit_ABC(lc, model="flare", ...)`, `fit_ABC_SMC(lc, model="flare", ...)`, `fit_MCMC(lc, model="flare",
-...)`, and `fit_SNPE(lc, model="flare", ...)` → `SamplerResult`. `fit(lc, model,
-sampler="abc"|"abc_smc"|"mcmc"|"snpe", **kwargs)` is the generic dispatcher. `list_samplers()` →
-`['abc', 'abc_gpu', 'abc_smc', 'abc_smc_gpu', 'emcee_jax', 'mcmc', 'npe', 'nuts_gpu',
-'pymc_jax_gpu_parallelized', 'pymc_jax_gpu_vectorized', 'snpe']` — **11**, the six GPU entries
-included even without the `[gpu]` extra (`npe` is an alias of `snpe`); `register_sampler(name, cls)`
-adds your own. **ABC/ABC-SMC** use the χ² distance; **MCMC/SNPE** use the shared likelihood layer, so all
-four reach the same posterior on the same data (see
-[`sanity_check/compare_samplers.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/compare_samplers.py),
-WHISPER_AI, not in this package).
+...)`, `fit_nested(lc, model="flare", ...)` and `fit_SNPE(lc, model="flare", ...)` → `SamplerResult`.
+`fit(lc, model, sampler="auto", *, likelihood_max_opt=False, check_convergence=True, ABC_time_prior=False, ABC_time_prior_kwargs=None, **kwargs)` is the generic dispatcher
+(`"auto"`: `emcee_jax` for a JAX model when JAX sees a GPU, CPU `mcmc` otherwise; `compare`'s `"auto"` is nested sampling); what every fit
+does before sampling (the pre-event rule, the explosion-time prior, upper limits) and
+`likelihood_max_opt=` are in
+[A2](#what-every-fit-does). `list_samplers()` →
+`['abc', 'abc_gpu', 'abc_smc', 'abc_smc_gpu', 'dynesty', 'emcee_jax', 'mcmc', 'nested', 'npe',
+'nuts_gpu', 'pymc_jax_gpu_parallelized', 'pymc_jax_gpu_vectorized', 'snpe', 'snpe_gpu']` — **14**, the
+seven GPU entries included even without the `[gpu]` extra (`npe` is an alias of `snpe`, `dynesty` of
+`nested`); `register_sampler(name, cls)` adds your own. **ABC/ABC-SMC** use the χ² distance; **MCMC/SNPE**
+use the shared likelihood layer. All four target the same posterior, but at practical budgets only
+MCMC samples it closely: in [`examples/compare_samplers.py`](../examples/compare_samplers.py)
+(`gaussian_rise`, shipped settings) SNPE came out 3-18× wider than MCMC, and ABC / ABC-SMC 20-65× wider
+with medians shifted by up to 1.5 of their own sd. ABC approaches it only as its acceptance tightens.
 
 Registry helpers: `register_sampler(name, sampler_cls, *, overwrite=False)`,
 **`get_sampler(name)`** → a *fresh instance* of the registered class (`KeyError` listing the available
@@ -355,26 +1507,38 @@ hits it **warns and continues with however many particles it accepted** — so a
 is too tight for the noise floor, not that the fit failed.
 
 **`MCMCSampler.fit(lc, model, prior=None, *, nwalkers=None, nsteps=5000, burnin=1000, thin=10,
-initial_guess=None, initial_scatter=1e-3, space="auto", likelihood="auto", seed=0, progress=False,
-moves=None, n_jobs=None)`** — `n_jobs` runs the walkers' likelihood evaluations in a process pool
+init="prior_scan", initial_guess=None, initial_scatter=1e-3, space="auto", likelihood="auto", seed=0,
+progress=False, moves=None, n_jobs=None, walker_coordinates="own")`** — `n_jobs` runs the walkers' likelihood evaluations in a process pool
 (worth it only for expensive simulators, e.g. the ~0.1 s kilonova model); with
 `likelihood="gaussian_scatter"` a prior parameter named `sigma` is routed to the likelihood as the
 free Villar+17 extra-scatter term (see §6.5). — affine-invariant ensemble MCMC via `emcee` (`samplers.mcmc`; emcee is a **core**
 dependency). The log-posterior is the Whisper prior + the **shared likelihood layer**
 (`make_likelihood(lc, kind=likelihood, space=space)`), so MCMC uses the same physically consistent,
 `data_mode`-aware likelihood as the others (flux data → flux space, magnitude data → magnitude space).
-`nwalkers` defaults to `max(2·ndim+2, 4·ndim)` (forced even); walkers init from the prior unless
-`initial_guess` is given. Sampling is **seeded/reproducible**. `best_params` is the max-posterior draw;
-`max_log_likelihood`/`AIC`/`BIC` are exact Gaussian values; `info` carries acceptance fraction +
-autocorrelation time; the `emcee.EnsembleSampler` is attached as `result.emcee_sampler`. `fit_MCMC(...)`
-is the convenience wrapper.
+`nwalkers` defaults to `max(2·ndim+2, 4·ndim)` (forced even); walkers start from `init=`
+(default `"prior_scan"`: the best prior draws climbed without a gradient, [A2](#where-the-chains-start-init);
+`init="prior"` gives the pre-0.2.0 independent prior draws), or from `initial_guess` when it is
+given. Sampling is **seeded/reproducible**. `best_params` is the max-likelihood draw
+(each draw's log-posterior minus its log-prior, so a LogUniform prior does not bias AIC/BIC);
+`max_log_likelihood`/`AIC`/`BIC` are exact Gaussian values; `info` carries `mean_acceptance_fraction`,
+`mean_autocorr_time` and **`max_autocorr_time`** (the largest over parameters), **`stuck_walkers`**
+(walkers whose median log-posterior after burn-in is more than 10 nats below the best walker's: parked
+in a separate optimum, their draws pooled into the posterior) with `walker_median_log_prob`, and
+**`convergence_problems`**, one sentence per failed check. **`converged`** is `True` only when that list
+is empty: no stuck walker and `nsteps ≥ 50 ×` the *largest* autocorrelation time (an unknown time is not
+a pass); a non-empty list also warns. It used to be the autocorrelation test alone, on the mean time,
+which read `True` on 55 of 78 Gaussian-bump fits with stuck walkers (measured on `emcee_jax`, which
+used the same rule). The `n_jobs` pool starts its workers
+with `spawn` (never `fork` after JAX has started), which costs process start-up: worth it only when one
+likelihood call is expensive. The `emcee.EnsembleSampler` is attached as `result.emcee_sampler`.
+`fit_MCMC(...)` is the convenience wrapper.
 
 **`SNPESampler.fit(lc, model, prior=None, *, num_rounds=2, num_simulations=1000, space="auto",
 density_estimator="maf", embedding_net=None, embedding_latent=32, x_format="value", predict_torch=None,
 scatter_param=None, hidden_features=None, num_transforms=None, num_bins=None,
 proposal_mode="posterior", truncate_quantile=1e-4, support_samples=10000, num_samples=10000,
 device="cpu", seed=0, show_progress=False, num_workers=1, max_logl_scan=2000, scan_timeout=300,
-standardize_x=True, **train_kwargs)`** —
+standardize_x=True, proposal_min_acceptance=1e-3, num_chains=4, **train_kwargs)`** —
 `scatter_param` names a prior parameter used as the free Villar+17 extra-scatter term: it enters the
 simulation noise as `N(0, √(σᵢ²+σ²))` per draw, so the density estimator learns its posterior from
 the noise imprint (§6.5).
@@ -411,9 +1575,12 @@ keeps out-of-prior draws out of the returned posterior. `num_rounds=1` is amorti
   `TCNEmbedding(n_points, n_channels=..., latent_dim=...)` and raises `ValueError` for any other name.
   `fit` calls it for you with `n_channels` set by `x_format` (1 for `"value"`, 3 for `"stacked"`) and
   `latent_dim=embedding_latent`; call it directly only to build/inspect a net outside a fit.
-- **GPU simulation:** `predict_torch(theta, times) -> flux` (batched torch model: `(B, D)` params +
-  `(n,)` times → `(B, n)` flux) replaces the per-row Python simulator with one on-device batched call
-  (~10³× faster simulation; flux-space only). `result.format_x(values)` maps a raw vector to the
+- **GPU simulation:** `predict_torch(theta, times) -> flux`, or `predict_torch(theta, times, bands)`
+  for a photometric model (the three-argument form is detected from the signature; batched torch
+  model: `(B, D)` params + `(n,)` times → `(B, n)` flux) replaces the per-row Python simulator with
+  one on-device batched call (~10³× faster simulation). The flux is mapped into the comparison space
+  before the noise is added, so magnitude data are supported. `sampler="snpe_gpu"` builds this
+  callable from any model's `predict_jax`. `result.format_x(values)` maps a raw vector to the
   network's conditioning input (same observing grid) for amortized reuse.
 - **Sequential scheme:** `proposal_mode='posterior'` (SNPE-C, default) or `'restricted'` (truncated SNPE
   via `RestrictedPrior` + `get_density_thresholder(quantile=truncate_quantile)`; support estimated from
@@ -431,6 +1598,19 @@ keeps out-of-prior draws out of the returned posterior. `num_rounds=1` is amorti
   MCMC-based posterior sampling (`sample_with="mcmc"`, which conditions via `log_prob` instead of the
   flow's inverse). `result.info["final_sample_method"]` records which path was used
   (`"rejection"` or `"mcmc_fallback"`) and `["final_sample_acceptance_rate"]` the probed rate.
+  `proposal_min_acceptance` (default `1e-3`) is the acceptance below which the final draw, and every
+  round-to-round proposal draw, falls back; the fallback runs `num_chains` (default 4, recorded in
+  `info["num_chains"]`) slice-sampling chains seeded from `seed`, so a fit that falls back is
+  reproducible and its chain count no longer depends on `num_workers`.
+- **Is this posterior usable?** `info["leakage"]` is `True` when the final flow put so little mass
+  inside the prior box that the final draw fell back (acceptance below `proposal_min_acceptance`), and
+  `info["converged"]` is `True` only when the final draw needed no fallback. The flag separates the two
+  populations of 45 test fits with an emcee reference: the 38 that fell back sat a median 1.61 emcee-σ from an emcee
+  reference (median worst parameter 19.8σ), the 7 that did not 1.00σ (2.31σ). `info["x_o_min_rms_z"]`
+  is the RMS distance, in data errors, from the observation to the closest round-0 (prior-predictive)
+  simulation: large means the prior cannot produce the data before any training is spent.
+  `runtime_s` covers simulation and training; `info["postprocess_s"]` is the final draw plus the
+  max-likelihood scan, which the fallback can make several times longer.
 
 - **Device (GPU):** `device` = `'cpu'` (default), `'cuda'`/`'gpu'`/`'cuda:N'`, or `'auto'` (CUDA when
   available, else CPU). The torch prior + observed data are placed on the device; a GPU request without
@@ -438,7 +1618,7 @@ keeps out-of-prior draws out of the returned posterior. `num_rounds=1` is amorti
   most with many simulations / large nets — see
   [`sanity_check/benchmark_snpe_device.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/benchmark_snpe_device.py)
   and [its figure](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/sanity_check/figures/snpe_device_benchmark.png)
-  (WHISPER_AI, not in this package).
+  (pinned history: WHISPER_AI @ 8ba3843, discontinued).
 
 Extra kwargs pass to `NPE.train` (e.g. `max_num_epochs`, `training_batch_size`, `stop_after_epochs`).
 `max_log_likelihood`/`AIC`/`BIC` are the exact Gaussian values at the best posterior draw. The trained
@@ -450,10 +1630,21 @@ sbi posterior is attached as `result.posterior` (and `result.posteriors` per rou
 `runtime_s`, `info` (n_simulations, n_accepted, acceptance_rate, epsilon, quantile, n_jobs, plus
 **`band_metrics`** — per-band MSE/RMSE/MAE at the best fit — and **`predictive_metrics`** — RMSE / LPD /
 ELPD-LOO / WAIC / AIC / BIC + the coverage-calibration curve; see §6.6), `min_distance`,
-`max_log_likelihood`, `aic`, `bic`. Methods: `n_samples`, `to_dict()`, `to_json(path=None, indent=2)` —
+`max_log_likelihood`, `aic`, `bic`, and `provenance` (how the fit was made: versions, model and prior,
+sampler settings and seed, devices, timing; [A6](#a6-save-reload-and-resume)). Methods: `n_samples`,
+`to_dict()`, `to_json(path=None, indent=2)` —
 every field above (`band_metrics` and `predictive_metrics` included) is serialised to the JSON, written
 to `path` when given and always returned as a string; `indent=None` emits compact one-line JSON for
 machine-read outputs.
+
+| method | signature | see |
+|---|---|---|
+| `save` | `(path, *, overwrite=False)` → `Path` | [A6](#a6-save-reload-and-resume) |
+| `diagnostics` | `(*, prior=None, likelihood_max_opt=None)` → `DiagnosticsReport` | [A4](#a4-check-a-fit) |
+| `likelihood_max_opt` | `(lc, model=None, **kwargs)` → `LikelihoodMaxOptResult`, kept in `info["likelihood_max_opt"]` | [A3](#a3-find-the-likelihood-peak) |
+| `forecast` | `(times, bands, **kwargs)` → DataFrame | [A7](#a7-forecast-and-choose-the-next-observation) |
+| `facts` | `(lc, **kwargs)` → dict (`result_facts(self, lc, **kwargs)`) | [A9](#a9-facts-and-the-html-report) |
+| `fitted_lc` | `(lc)` → the rows of `lc` the fit used | [A2](#what-every-fit-does) |
 
 Read-only **metric properties** sit beside `aic`/`bic` so the predictive numbers take one hop instead of
 four: **`waic`** (deviance scale, lower is better), **`waic_reliable`** (`p_waic ≤ n_data/2` — check it
@@ -494,14 +1685,13 @@ Models predict **flux**; a likelihood compares it to the data in a chosen **spac
 magnitude space, flux data → flux space; the correct default). Each exposes
 `log_likelihood(model_flux) -> float` and is picklable.
 
-**Upper limits are a flux-space statement.** `GaussianLikelihoodWithUpperLimits` used to carry a
-magnitude branch as well (a survival term `1 − Φ((limit − model)/(POGSON/upper_limit_sigma))`,
-i.e. "fainter than the limit"); it was **removed**, and `space='magnitude'` — including `'auto'` on
-magnitude data — now raises. A non-detection says the *flux* was below a limiting flux, and the
-magnitude of zero flux is undefined (`−2.5 log₁₀ 0 = +∞`), so there is no magnitude-space censoring
-integral over the same quantity; the removed branch also took its width from the Pogson constant
-rather than from the data. Call `lc.add_flux()` and pass `space='flux'`, or fit the detections alone
-with `lc.where(upper_limit=False)`.
+**Upper limits are a flux-space statement.** A non-detection says the *flux* was below a limiting
+flux, and the magnitude of zero flux is undefined (`−2.5 log₁₀ 0 = +∞`), so there is no
+magnitude-space censoring integral over the same quantity. `space='auto'` on a light curve with
+upper limits (after the pre-event cut) therefore resolves to **flux**, and the censored likelihood is
+used with no argument: detections are scored on flux, limits by the probability that the flux was
+below them. An explicit `space='magnitude'` raises. Fit the detections alone in magnitude space with
+`lc.where(upper_limit=False)`.
 
 **A likelihood that does not model censoring refuses censored data.** Building `GaussianLikelihood`,
 `MixtureGaussianLikelihood` or `GaussianLikelihoodWithScatter` on a light curve with any
@@ -515,7 +1705,7 @@ non-positive error bars on *detections* are refused for the same reason.
 |---|---|
 | `GaussianLikelihood(lc, space="auto")` | Independent Gaussian in the chosen space. |
 | `GaussianLikelihoodWithScatter(lc, space="auto", scatter_param="sigma")` | Gaussian with a **free extra-scatter term added in quadrature** (Villar+2017): `lnL = −½Σ[(O−M)²/(σᵢ²+σ²) + ln(2π(σᵢ²+σ²))]`; `log_likelihood(model_flux, sigma_extra=…)`. `kind="gaussian_scatter"` / `"villar"`. |
-| `GaussianLikelihoodWithUpperLimits(lc, space="auto", upper_limit_sigma=3.0)` | Gaussian for detections + a censoring term `P(true flux < limit) = Φ((limit − model)/(limit/upper_limit_sigma))` for the non-detections. **Flux space only** — `space="magnitude"` raises. |
+| `GaussianLikelihoodWithUpperLimits(lc, space="auto", upper_limit_sigma=None, zeropoint_jy=3631.0)` | Gaussian for detections + a censoring term `P(true flux < limit) = Φ((limit − model)/(limit/upper_limit_sigma))` for the non-detections. **Flux space only** — `space="magnitude"` raises. `upper_limit_sigma=None` reads `lc.meta["upper_limit_sigma"]` (5 for the survey presets), else `DEFAULT_UPPER_LIMIT_SIGMA = 5`. |
 | `MixtureGaussianLikelihood(lc, space="auto", alpha=0.9, sigma_out_scale=10.0)` | Outlier-robust two-component mixture (α, σ_out fixed). |
 | `make_likelihood(lc, kind="auto", space="auto", **kw)` | Build the data-appropriate likelihood (auto-selects upper-limits when present). |
 
@@ -645,7 +1835,7 @@ in `to_json()`. Note that broad tolerance/under-converged posteriors (ABC, un-co
 
 Sampler-agnostic checks that a fit **recovered the truth** with **reliable uncertainties** (used by
 [`sanity_check/sanity_check.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/sanity_check.py),
-WHISPER_AI, not in this package); all take a `SamplerResult` (or its `.samples`) so they work for every sampler.
+pinned history: WHISPER_AI @ 8ba3843, discontinued); all take a `SamplerResult` (or its `.samples`) so they work for every sampler.
 
 **`recovery_metrics(result, truth)`** — per-parameter recovery of a known `truth` (dict): posterior
 `median`/`mean`/`std`, 68% (16–84) and 95% (2.5–97.5) credible intervals, `bias = median − true`, the
@@ -663,9 +1853,14 @@ value within its posterior is **uniform** iff the posterior is calibrated; `sbc_
 histogram + a **χ²-of-uniformity p-value** per parameter (∪-shape = overconfident, ∩-shape =
 underconfident, slope = biased) and a `_summary` with `min_uniformity_p` + a `calibrated` verdict.
 
+`check_parity(model_a, model_b, params_or_posterior, times, bands, *, tolerance=0.02, n=200,
+seed=0)` compares two models' band magnitudes: [A11](#a11-check-that-two-models-agree).
+`posterior_predictive_check` and the metrics that take `(result, lc)` score the rows the fit used
+(`result.fitted_lc(lc)`).
+
 Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`, `wp.sbc_ranks`. See
 [`sanity_check/figures/REPORT.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/figures/REPORT.md)
-(WHISPER_AI, not in this package) for the full synthetic-recovery benchmark across all five samplers.
+(pinned history: WHISPER_AI @ 8ba3843, discontinued) for the full synthetic-recovery benchmark across all five samplers.
 
 ## Notes & limitations (review findings)
 
@@ -689,10 +1884,10 @@ Exposed as `wp.recovery_metrics`, `wp.posterior_predictive_check`, `wp.sbc_rank`
 `io.loader._resolve_columns`, `schema.LightCurve._subset/_copy`, `plotting._categories/_scatter`,
 `samplers.abc._simulate_batch/_worker`, `samplers.base.summarize_posterior`,
 `io.units.to_canonical`, `io.svo._svo_fetch_metadata/_svo_fetch_index/_svo_fetch_transmission`
-(network boundary), and — in WHISPER_AI, not in this package —
+(network boundary), [`examples/demo_ingestion.py`](../examples/demo_ingestion.py), and — pinned
+history, WHISPER_AI @ 8ba3843, discontinued —
 [`dev/phase0_smoke.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/phase0_smoke.py),
-[`dev/demo_abc_at2017gfo.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_abc_at2017gfo.py),
-[`dev/demo_ingestion.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_ingestion.py).
+[`dev/demo_abc_at2017gfo.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_abc_at2017gfo.py).
 
 ## 9. End-to-end example
 
@@ -714,7 +1909,7 @@ print(res, res.best_params)
 
 Everything below needs the `[gpu]` extra (`pip install "whisper-cbpf[gpu]"`) **and** the
 environment bootstrap sourced before Python starts. Signatures and summaries below are
-generated by introspecting the installed package, not transcribed.
+produced by introspecting the installed package, not transcribed.
 
 Naming: GPU samplers keep their registered names (`nuts_gpu`, `abc_gpu`, …) and JAX distances
 take a `_jax` suffix (`mse` → `mse_jax`). The photometric models do **not** auto-register —
@@ -744,23 +1939,155 @@ bind them with a factory. See [`CHOOSING.md`](CHOOSING.md) for which to use when
 
 - **`flare_model()`**  
   The JAX flare as a ``whisper_cbpf.models.Model``. Self-contained, auto-registered.
-- **`kilonova_model(band_names, redshift, dl_cm, *, name='kilonova_one_jax', n_wave=2000, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', temperature_floor=None, mag_floor=40.0, t_exp_days=0.0, filter_set=None, arnett_prefactor=1.0)`**  
-  Bind dataset context to the one-component JAX kilonova and return a whisper ``Model``. The only
-  factory that fills `Model.predict_jax` so far: `predict_jax(theta, times, band_idx)` returns Jy
+Every photometric factory below takes `redshift=None, dl_cm=None` (required unless the redshift is
+free), `free=["t_exp", "redshift"]` and `redshift_prior=`: the explosion (merger) time and the
+redshift as traced parameters ([A2](#free-explosion-time-and-redshift-jax-factories)).
+
+- **`kilonova_model(band_names, redshift=None, dl_cm=None, *, name='kilonova_one_jax', n_wave=None, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', temperature_floor=None, mag_floor=40.0, t_exp_days=0.0, filter_set=None, arnett_prefactor=1.0, time_grid='auto', band_aliases=None, default_system=None, free=None, prior=None, redshift_prior=None)`**  
+  Bind dataset context to the one-component JAX kilonova and return a whisper ``Model``. **Band
+  integral (every factory):** `filter_set=None, n_wave=None` is Gauss-16 per band (§4b); pass a
+  `FilterSet` (the one a CPU model uses, to compute the same integral) or a `make_filter_set` dict
+  as `filter_set=`, or `n_wave=` for whisper ≤ 0.1.0's shared grid (it was `n_wave=2000`; ≤ 0.005
+  mmag apart). `band_names` are filter names or labels resolved by `resolve_filter`: bare letters are
+  LSST unless `default_system=` says otherwise. Every factory fills `Model.predict_jax`:
+  `predict_jax(theta, times, band_idx)` returns Jy
   from a flat theta, is differentiable, and carries `predict_jax.band_index(bands)` for the
   string → index map. Both it and `predict` go through one core jitted at factory time.
-- **`register_kilonova(band_names, redshift, dl_cm, *, name='kilonova_one_jax', **kwargs)`**  
+  `time_grid='auto'` is redback's 500-node grid with nothing free and the converged quadrature when
+  anything is free; `prior=` overrides the default distributions per parameter.
+- **`register_kilonova(band_names, redshift=None, dl_cm=None, *, name='kilonova_one_jax', **kwargs)`**  
   Build a kilonova ``Model`` for this dataset and register it under ``name``.
-- **`tde_model(band_names, redshift, dl_cm, *, name=None, rise='gaussian', n_wave=2000, n_time=None, f_debris=1.0, xi=1.0, n_pre=100, pin=None, prior=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, **engine_kwargs)`**  
+- **`kilonova_two_model(band_names, redshift=None, dl_cm=None, *, name='kilonova_two_jax', n_wave=None, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', mag_floor=40.0, t_exp_days=0.0, filter_set=None, prior=None, time_grid='auto', band_aliases=None, default_system=None, free=None, redshift_prior=None)`**  
+  The blue + red kilonova (Villar et al. 2017 priors with disjoint opacity corridors;
+  `prior=Prior({"t_exp": ...})` alone keeps them). `register_kilonova_two(band_names, redshift=None,
+  dl_cm=None, *, name='kilonova_two_jax', **kwargs)` builds and registers it.
+- **`kilonova_three_model(band_names, redshift=None, dl_cm=None, *, name='kilonova_three_jax', n_wave=None, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', mag_floor=40.0, t_exp_days=0.0, filter_set=None, prior=None, time_grid='auto', band_aliases=None, default_system=None, free=None, redshift_prior=None)`**  
+  Blue + purple + red. `register_kilonova_three(band_names, redshift=None, dl_cm=None, *,
+  name='kilonova_three_jax', **kwargs)` builds and registers it.
+- **`tde_model(band_names, redshift=None, dl_cm=None, *, name=None, rise='gaussian', n_wave=None, n_time=None, f_debris=1.0, xi=1.0, n_pre=100, pin=None, prior=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, band_aliases=None, default_system=None, t_exp_days=0.0, constraint='corrected', free=None, redshift_prior=None, **engine_kwargs)`**  
   Bind dataset context to the JAX cooling-envelope TDE and return a whisper ``Model``.
-- **`register_tde(band_names, redshift, dl_cm, *, name=None, **kwargs)`**  
+  `**engine_kwargs` are the engine's own (`t_0_init`, `binding_energy_const`, `zeta`, `hoverR`);
+  anything else raises here rather than at the first predict. `t_exp_days` is the model's time
+  zero on the light curve's clock (fallback for `rise='none'`), subtracted on the host in float64.
+- **`register_tde(band_names, redshift=None, dl_cm=None, *, name=None, **kwargs)`**  
   Build a TDE ``Model`` for this dataset and register it under ``name``.
-- **`supernova_model(model, band_names, redshift, dl_cm, *, name=None, n_wave=2000, t_exp_days=0.0, dense_resolution=None, magnetar_convention='1.15', interaction=True, dilation=True, pin=None, prior=None, mag_floor=40.0, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, times=None)`**  
+- **`supernova_model(model, band_names, redshift=None, dl_cm=None, *, name=None, n_wave=None, t_exp_days=0.0, dense_resolution=None, spacing='geometric', csm_interp=True, magnetar_convention='1.15', interaction=True, dilation=True, pin=None, prior=None, mag_floor=40.0, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, times=None, band_aliases=None, default_system=None, constraint='corrected', free=None, redshift_prior=None, diffusion_grid=None, max_phase_days=None, epochs_per_decade=None, engine_options=None)`**  
   Bind dataset context to one of the JAX supernova models and return a whisper ``Model``.
+  `diffusion_grid`: `"data"` (redback's scheme on the observed epochs, fixed at compile time) or
+  `"fixed"` (fixed source-frame epochs, the SED at the observations only; the default when anything
+  is free), [A2](#free-explosion-time-and-redshift-jax-factories).
+  `model` is any of `supernova_models()`: the twelve of 0.2.0 and `csm_interaction`
+  (Chevalier–Chatzopoulos CSM interaction, a different model from `csm_shock_and_arnett`),
+  `shock_cooling` (Piro, alone, with its own photosphere), `shocked_cocoon` and
+  `general_magnetar_driven` (a relativistic ejecta ODE). These four are evaluated at the
+  observations themselves, so `diffusion_grid`, `max_phase_days`, `spacing` and `csm_interp` do
+  not apply to them, and they need float64.
+  `engine_options` is a dict of one model's engine settings, checked against the model:
+  `csm_interaction` takes `csm_diffusion_method` (`"cumulative"`, default, or redback's legacy
+  `"quadrature"`) and `dense_resolution`; `general_magnetar_driven` takes `solver` (`"auto"`,
+  default: `diffrax` when installed, else a fixed-step RK4 with a one-time warning; `"diffrax"`,
+  `"rk4"`, or redback's own `"euler"`), `n_grid`, `rtol`, `atol` and `max_steps`. The other models
+  take none; an unknown option raises.
+
+**What the JAX samplers read off `predict_jax`** besides `band_index` (every photometric factory):
+`predict_jax.constraint_ok(theta) -> bool` — redback's `Constraint` priors for `arnett`,
+`basic_magnetar_powered`, `slsn`, `general_magnetar_slsn` and both TDEs, armed by `constraint=`
+(same modes as the CPU adapter; `None` elsewhere) — which `samplers.jax._adapters` applies as
+`-inf` log-density and zero flux in the batched forward map; and `predict_jax.mag_floor`, the
+magnitude cap (redback has none). `make_batched_predict_jax` counts the points at the cap into
+`.floor_stats` (`n_points`, `n_floored`, `fraction`, `mag_floor`) and warns once above
+`MAG_FLOOR_WARN_FRACTION = 0.10`. `predict_jax` itself is the physics, with no wall; the host `predict`
+(what the CPU samplers call) applies the same wall as zero flux, like the CPU redback adapter.
+`t_exp_days` is subtracted on the host in float64 in every factory, and the adapters pass the
+float64 epochs, so a raw-MJD clock is safe in float32 (kilonovae). And
+`predict_jax.epoch_index(times, size=None) -> (first, inv)` (`tde_fallback`, `tde_mosfit`; absent
+elsewhere): the host-side map of the distinct epochs, which `log_density` passes back as
+`predict_jax(theta, t, band_idx, epoch_idx=(first, inv))`. The map is two int arrays with
+`times[first][inv] == times`: `inv` has one entry per observation, `first` one per distinct epoch,
+padded to `size` (passed positionally) by repeating an existing epoch, so
+`epoch_index(times)[0].size` is the distinct count (`whisper_cbpf.models.jax._adopted_tde.epoch_index`).
+A model that carries it must accept the keyword (`log_density` raises `ValueError` otherwise). A
+caller that passes nothing gets the per-observation result.
 - **`supernova_models()`**  
-  The names :func:`supernova_model` accepts.
-- **`register_supernova(model, band_names, redshift, dl_cm, *, name=None, **kwargs)`**  
+  The sixteen names :func:`supernova_model` accepts.
+- **`register_supernova(model, band_names, redshift=None, dl_cm=None, *, name=None, **kwargs)`**  
   Build a supernova ``Model`` for this dataset and register it under ``name``.
+- **`tde_fallback_model(band_names, redshift=None, dl_cm=None, *, name='tde_fallback_jax', n_wave=None, dense_resolution=1000, pin=None, prior=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, band_aliases=None, default_system=None, t_exp_days=0.0, free=None, redshift_prior=None, unique_epochs=True, geometric=True)`**  
+  redback's `tde_fallback` (MOSFiT fall-back tables with a viscous delay and Mockler's photosphere).
+  Parameters `mbh6, mstar, tvisc, bb, eta, rph0, lphoto` (`leddlimit` is pinned at 1 by redback's
+  prior file); redback declares no constraints for it. Needs float64. Each distinct epoch is
+  evaluated once (exact to round-off); `unique_epochs=False` evaluates every observation.
+  `geometric=True` (the default) finds the viscous kernel's segments on its geometric grid by
+  arithmetic (the same interpolant); `geometric=False` keeps the search.
+  `unique_epochs=False, geometric=False` is the code before these options existed.
+  `register_tde_fallback(band_names, redshift=None, dl_cm=None, *, name='tde_fallback_jax',
+  **kwargs)` builds and registers it.
+- **`tde_mosfit_model(band_names, redshift=None, dl_cm=None, *, name='tde_mosfit_jax', n_wave=None, dense_resolution=1000, pin=None, prior=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, band_aliases=None, default_system=None, t_exp_days=0.0, constraint=None, free=None, redshift_prior=None, unique_epochs=True, geometric=True)`**  
+  MOSFiT's `tde` model (Guillochon et al. 2018; Mockler et al. 2019): Guillochon fall-back tables, viscous delay and MOSFiT's own photosphere
+  `R = Rph0 a_p (L / Leddlim L_Edd)^lphoto + r_isco` (not redback's). Parameters `bhmass` (Msun), `starmass`, `b`, `efficiency`, `Tviscous`, `Rph0`,
+  `lphoto` (`Leddlim` is pinned at 1 as in MOSFiT's `tde.json`); `t_exp` is the time of the first fall-back (`texplosion`). The stellar-mass prior is log-uniform on
+  MOSFiT's box (0.01 to 30), not Kroupa; `kroupa_icdf` in `whisper_cbpf.models.jax.tde_mosfit` is MOSFiT's Kroupa. Host extinction is not ported.
+  `constraint=` (default `None`) arms a hard wall on MOSFiT's two penalty terms (the star is not swallowed, the photosphere stays inside its maximum), which MOSFiT itself
+  only subtracts from the log-likelihood (`tde_mosfit_constraint_score`). Needs float64. Each
+  distinct epoch is evaluated once (exact to round-off); `unique_epochs=False` evaluates every
+  observation. `geometric=True` (the default) finds the viscous kernel's segments on its geometric
+  grid by arithmetic (the same interpolant); `geometric=False` keeps the search, as the constraint
+  wall always does. `unique_epochs=False, geometric=False` is the code before these options existed.
+  `register_tde_mosfit(band_names, redshift=None, dl_cm=None, *, name='tde_mosfit_jax', **kwargs)` builds and registers it.
+- **`tde_analytical_model(band_names, redshift=None, dl_cm=None, *, name='tde_analytical_jax', n_wave=None, dense_resolution=1000, cutoff_wavelength=3000.0, pin=None, prior=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, band_aliases=None, default_system=None, t_exp_days=0.0, constraint='corrected', free=None, redshift_prior=None)`**  
+  redback's `tde_analytical`: a `t^-5/3` fall-back luminosity through Arnett diffusion, a
+  temperature-floor photosphere and a cut-off black body. Parameters `l0, t_0_turn, mej, vej, kappa,
+  kappa_gamma, temperature_floor`. `constraint=` arms redback's two constraints (ejecta kinetic
+  energy below the fall-back energy plus 1e51 erg; nebular time between 100 and 500 d) as the hard
+  wall of [§6.2b](#62b-the-redback-adapter--whisper_cbpfmodelsredback_adapter); there is no corrected
+  variant, so `"corrected"` and `"redback"` are the same. Needs float64. `register_tde_analytical(...)`
+  builds and registers it. **Default prior: redback's with `kappa` LogUniform(0.05, 100)** (redback:
+  Uniform over the same bounds, read from redback's file at run time), a deliberate difference
+  ([PORTING_NOTES](PORTING_NOTES.md#tde_analytical-one-deliberate-prior-difference)): under the
+  Uniform the samplers settled in a high-`kappa` solution 42-253 nats below the truth with `t_exp`
+  4.5-11.7 d late. `prior="redback"` (case and spaces ignored; any other string raises
+  `ValueError`) or `prior=redback_default_prior()[0]` fits redback's prior unchanged; a `Prior`
+  that names `kappa` wins over both. With `free=["t_exp"]` and redback's prior, pass
+  `Prior({**redback_default_prior()[0].distributions, "t_exp": ...})`. The model description ends
+  in "kappa prior LogUniform, not redback's Uniform" when the default `kappa` is in use. Module
+  helpers (`whisper_cbpf.models.jax.tde_analytical`): `default_prior()` (the default above),
+  `redback_default_prior()` (redback's, else `fallback_prior()`), `fallback_prior()` (redback
+  1.20's file transcribed, `kappa` Uniform) and `LOG_UNIFORM_OVER_REDBACK = ("kappa",)`.
+- **`tde_stream_stream_model(band_names, redshift=None, dl_cm=None, *, name='tde_stream_stream_jax', n_wave=None, n_time=1000, double_dilation=False, nu4_spectrum=True, del_omega_in_pi=False, sphere_radius=False, extrapolate=False, pin=None, prior=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', filter_set=None, band_aliases=None, default_system=None, t_exp_days=0.0, free=None, redshift_prior=None)`**  
+  redback's `stream_stream_tde` (Piran et al. 2015; Ryu, Krolik & Piran 2020; Krolik, Piran & Ryu 2024): stream-stream collision luminosity
+  `L = L_max (t / t_peak)^(-5/3) 2 / (1 + t_cool / t_dyn)` after `t_peak = 1.5 t_dyn`, a fixed emitting area (`T ~ t^(-5/12)`, constant radius) and a Gaussian rise of
+  centre `peak_time` and width `sigma_t` at constant temperature before it. Parameters `mbh_6, mstar, sigma_t, peak_time`; redback pins `c1 = 1, f = 0.2, h_r = 0.2,
+  inc_tcool = 1, del_omega = 2`. The model ends 1500 days after its time zero (`mag_floor` after that). **`peak_time` is not the engine's peak time**
+  (`stream_stream_peak_time(mbh_6, mstar)` is): away from it the light curve peaks at `exp((t_peak - peak_time)^2 / (2 sigma_t^2))` times the physical maximum.
+  The defaults reproduce redback's `magnitude` output, including the behaviours the keywords remove: `sphere_radius` (the band fluxes carry 4x the bolometric energy),
+  `del_omega_in_pi` (`del_omega` is used in steradians though documented in units of pi), `nu4_spectrum` (the band spectra are `nu / nu_0` times the Planck function),
+  `double_dilation` (redback's `flux_density` output, not its band outputs, dilates time twice), `extrapolate` (linear extrapolation past the grid; masked by default).
+  `tde_stream_stream_flux_density` is that `flux_density` output (double dilation by default), `tde_stream_stream_bolometric` redback's bolometric function
+  (source-frame days). Needs float64. `register_tde_stream_stream(band_names, redshift=None, dl_cm=None, *, name='tde_stream_stream_jax', **kwargs)` builds and registers it.
+- **`metzger_kilonova_model(band_names, redshift=None, dl_cm=None, *, name='metzger_kilonova_jax', n_wave=None, ebv_mw=None, ebv_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', mag_floor=40.0, t_exp_days=0.0, filter_set=None, band_aliases=None, default_system=None, free=None, prior=None, redshift_prior=None, vmax=0.7, neutron_precursor=True)`**  
+  The Metzger (2017) multi-shell kilonova of redback: 200 velocity shells between `vej` and `vmax`,
+  r-process and free-neutron heating, per-shell diffusion, a black body at the photosphere with no
+  temperature floor. Parameters `mej, vej, beta, kappa`. **Not comparable parameter for parameter with
+  `kilonova_one_jax`**, a one-zone model with other parameters. The ODE is solved once per parameter
+  set on a fixed internal grid, so a light curve does not depend on the other epochs; float32 is
+  safe. `register_metzger_kilonova(...)` builds and registers it.
+- **`magnetar_boosted_kilonova_model(band_names, redshift=None, dl_cm=None, *, name='metzger_magnetar_driven_kilonova_jax', ..., vmax=0.7, neutron_precursor=True, pair_cascade=True, pair_cascade_fraction=0.01, ejecta_albedo=0.5)`**  
+  redback's `metzger_magnetar_driven_kilonova_model` (`magnetar_heating='first_layer'`): the same
+  ejecta with a central magnetar heating the innermost shell, and pair-cascade suppression.
+  Parameters `mej, vej, beta, kappa, p0, bp, mass_ns, theta_pb, thermalisation_efficiency`; the
+  other arguments are `metzger_kilonova_model`'s. `register_magnetar_boosted_kilonova(...)` builds
+  and registers it.
+- **`phenomenological_models()`**  
+  `['smooth_exponential_powerlaw', 'exp_rise_powerlaw_decline', 'bazin_sne', 'villar_sne']`.
+- **`phenomenological_model(model, band_names=None, *, name=None, prior=None, band_aliases=None)`**  
+  A `Model` for one of those functions, redback's, with a JAX half. Bound to `band_names` it carries
+  one amplitude per band, named after redback's argument with the band appended (`aa_ztfg`,
+  `bb_ztfg`, `m_peak_ztfg`, `a_1_ztfg`, `cc_ztfg`) and shape parameters shared by the bands; bound to
+  no bands it is band-independent, with redback's names. Returns flux density in Jy (the
+  exponential-rise model's magnitude is read as AB). The default amplitude prior is redback's
+  unit-free `LogUniform(1e-15, 1e15)`, a placeholder: pass `prior=`. `wp.compare` does not bind these
+  by name; pass the `Model`. `register_phenomenological(model, band_names=None, *, name=None,
+  **kwargs)` builds and registers it.
 
 ### JAX/GPU samplers  (`whisper_cbpf.samplers.jax`)
 
@@ -775,24 +2102,161 @@ with. `likelihood="gaussian_scatter"` needs the scatter parameter (default `"sig
 `prior`: the sampled vector then grows by that column, which is routed to the likelihood's
 `sigma_extra` instead of to `model.predict`, and `info["scatter_param"]` names it.
 
+**Where the chains start.** `NUTSGPUSampler.fit` and the two PyMC samplers take
+**`init_strategy="prior_scan"`** (the default; `None` means the same), `fit_emcee_jax` takes
+**`init="prior_scan"`**: 1000 prior draws (`max(1000, 4·nwalkers)` for emcee) are scored in one device
+program, the best 32 climbed a short monotone gradient ascent to learn which basin each belongs to, and
+each chain (walker) starts ~2 posterior sd from a distinct climbed point that reached the best basin. It
+replaced NumPyro's `init_to_uniform`, PyMC's jitter and emcee's uniform box, which left chains in local
+optima (a model hidden between the epochs, a prior-box corner): broken runs fell from 22 / 100 to 0
+(`nuts_gpu`, Gaussian bump) and 78 / 100 to 0 (`emcee_jax`). `emcee_jax` now runs on the device and
+its `"prior_scan"` is `fit_batch`'s derivative-free scan (one batched scoring per round for every
+ensemble), not this gradient climb; what follows on the climb applies to the NUTS and PyMC samplers
+(and to `emcee_jax` up to 0.3.0). The old starts are one name away —
+`"uniform"` (NumPyro), `"jitter"` (PyMC), `init="box"` (emcee) — beside `"prior"` (independent prior
+draws, not ranked, at which the density is finite), NumPyro's `"median"`, `"sample"`, `"feasible"`,
+`"mean"` or any NumPyro init callable, and one start per chain as a `(num_chains, k)` array in
+parameter units. `emcee_jax` also takes a point (a dict or `(k,)` array) or `(point, scale)` for a
+ball, a `(nwalkers, k)` array, or a previous `SamplerResult` to continue from. A start where the
+density is `-inf` is skipped or redrawn (`"prior"`, emcee's random starts) or refused (your per-chain
+or per-walker starts, a previous result). A point start with more than
+one chain warns (R-hat then cannot tell a stuck chain from a converged one). `info["init_strategy"]`
+(`info["init"]`, `info["init_detail"]` for emcee) records what ran, and `info["prior_scan"]` the scan
+(`n_draws`, `n_climbed`, `n_reaching_best`, `plateau_fraction`, `climb_error`,
+`best_log_likelihood`, `start_log_likelihood`). The start costs seconds to minutes, compile included,
+on the CPU or one A6000 alike: 7-13 s for a kilonova or an arnett supernova. On the TDE it is mostly
+compiling the climb's gradient through the ODE, so it dominated a short `emcee_jax` run there up to
+0.3.0 (`info["init_time_s"]`): a 60 × 300 fit at `n_time=500` on one heavily loaded A6000 spent 96-97 s on
+the start and 3-4 s sampling. The curvature that spreads the starts is a finite difference through
+the scan's compiled scorer; as a `jax.hessian` it took the same start to 219-361 s. The scan
+runs whatever the start, because its best point is the independent optimum every run is checked
+against. Since 0.2.0 every one of these samplers, and CPU `mcmc`, also takes the shared `init=`
+keyword (a point, `(point, scale)`, one start per chain, or a previous result such as an ABC fit):
+[A2](#where-the-chains-start-init). `nuts_gpu` and the PyMC samplers refuse `init=` together with
+`init_strategy=`.
+
+**What `converged` means** (`nuts_gpu`, `pymc_jax_gpu_*`). `info["converged"]` is `True` only when
+`info["convergence_problems"]` — one sentence per failed check, repeated in a warning — is empty: no
+divergence (`n_divergences`); rank-normalised R-hat < 1.01 on every parameter (`rhat`, `max_rhat`: a
+float, NaN when unknown) and on the per-chain log-likelihood (`rhat_log_likelihood`); bulk and tail ESS ≥
+100 per chain (`ess_bulk`, `ess_tail`, `min_ess`); no **stranded** chain, i.e. none whose median
+log-likelihood is more than 10 nats below the best chain's (`stranded_chains`,
+`chain_median_log_likelihood`); no **frozen** chain, i.e. none whose adapted step is below 1e-2 of the
+median while it barely moves (`frozen_chains`, `step_size_by_chain`); and no point from the prior scan
+more than 10 nats above every chain's best draw (`reference_log_likelihood`) — the all-chains-wrong case
+R-hat cannot see. `rhat_method` says how R-hat was computed (arviz's rank-normalised statistic on arviz
+0.x and 1.x; NumPyro's split R-hat if arviz fails, with the reason in `rhat_error`). `emcee_jax` reports
+`stuck_walkers`, `max_autocorr_time` and `convergence_problems` as `MCMCSampler` does (§6.4), and
+fails `converged` also when the R-hat between its independent ensembles is 1.01 or more.
+
+**Guards before sampling.** With `jax_enable_x64` off, the three samplers warn when `lc.time` or a
+Uniform prior bound reaches 1e3 in absolute value (an MJD clock: float32 moves it in 0.0039 d steps and
+chains freeze) and record the message in `info["float32_hazard"]`; enable x64 or
+`lc.set_explosion_date(mjd)`. Under the default start they warn when ≥ 90 % of the scan's draws score
+one flat level (a time prior much wider than the data window). A density flagged `includes_prior`
+(a log-*posterior*, what `emcee_jax` builds) passed to `nuts_gpu` or `pymc_jax_gpu_*` is refused when any
+prior is not Uniform (the prior would be counted twice) and warned about otherwise. An empty light curve
+is refused by every sampler, a caller-supplied `log_prob_fn` included.
+
+**Timing keys.** `runtime_s` is the start plus warmup and sampling (`info["init_time_s"]`,
+`["warmup_time_s"]`, `["sampling_time_s"]`; `emcee_jax`: the start plus the on-device loop, the
+loop's compile in `["compile_time_s"]` and the split in `info["device_timing"]`). **`info["postprocess_s"]`** is what follows:
+the log-likelihood of every kept draw, in blocks of 250 (`_diagnostics.SCORE_BLOCK`), and the chain
+checks. The block widths are measured defaults, and compile time on the GPU is erratic in the width
+(the kilonovae compile in seconds at 250 and 1000 but in minutes at 256 or 1024), so prefer widths that
+are not powers of two: `fit_emcee_jax(walker_chunk="half")` (one vmapped block per half-ensemble;
+an int evaluates each half in `lax.map` blocks of that width, `None` is one wide vmap, and `info["walker_chunk"]` records the width), `abc_gpu` /
+`abc_smc_gpu` `chunk=250`, `snpe_gpu` `sim_chunk=250`. The simulation-based samplers record
+`info["mag_floor_stats"]` — the points simulated at the models' `mag_floor` (see the factories above);
+`snpe_gpu` counts every simulation, while the ABC pair run the forward map inside one compiled scan,
+where nothing is counted, and report `None`.
+
 - **`NUTSGPUSampler()`** — *class*  
   NUTS (NumPyro) on GPU. See module docstring for the shared-``log_prob_fn`` design.
-- **`fit_NUTSGPU(lc, model, prior=None, *, log_prob_fn, **kwargs) -> 'SamplerResult'`**  
+- **`NUTSGPUSampler.fit(lc, model, prior=None, *, log_prob_fn=None, num_warmup=1000, num_samples=2000, num_chains=4, space='auto', likelihood='auto', seed=0, progress=False, target_accept_prob=0.8, init=None, init_strategy='prior_scan', dense_mass=False, max_tree_depth=10, step_size=1.0, chain_method='vectorized')`**  
+  The PyMC samplers' `fit` takes the same arguments up to `init_strategy`.
+- **`fit_NUTSGPU(lc, model, prior=None, *, log_prob_fn=None, **kwargs) -> 'SamplerResult'`**  
   Fit ``lc`` with ``model`` via NumPyro NUTS on GPU. See :meth:`NUTSGPUSampler.fit`.
 - **`ABCGPUSampler()`** — *class*  
   Rejection ABC with a vmapped JAX simulator. See the module docstring for matched semantics.
 - **`fit_ABC_GPU(lc, model, prior=None, **kwargs) -> 'SamplerResult'`**  
-  Fit ``lc`` with ``model`` by rejection ABC on the GPU. See :meth:`ABCGPUSampler.fit`.
+  Fit ``lc`` with ``model`` by rejection ABC on the GPU. See :meth:`ABCGPUSampler.fit`, whose
+  signature, one model evaluation per draw and `precision=` are in
+  [A2](#abc-the-worst-point-distance-and-single-precision).
 - **`ABCSMCGPUSampler()`** — *class*  
   Importance-weighted ABC-SMC with a vmapped JAX simulator. See the module docstring.
 - **`fit_ABCSMCGPU(lc, model, prior=None, **kwargs) -> 'SamplerResult'`**  
   Fit ``lc`` with ``model`` via ABC-SMC on GPU. See :meth:`ABCSMCGPUSampler.fit`.
 - **`EmceeJAXSampler()`** — *class*  
   whisper registry adapter for :func:`fit_emcee_jax`.
-- **`fit_emcee_jax(lc, model, log_prob_fn, *, prior=None, nwalkers=32, nsteps=5000, burnin=1000, thin=10, seed=0, progress=False, space='flux') -> 'SamplerResult'`**  
-  Arm A(1): emcee vectorized against the shared jitted JAX log-density.
-- **`fit_emcee_numpy(lc, model, times, values, sigmas, *, prior=None, nwalkers=32, nsteps=5000, burnin=1000, thin=10, seed=0, n_jobs=8, progress=False, space='flux') -> 'SamplerResult'`**  
-  Arm A(2): plain-numpy emcee on N CPU cores — the realistic no-GPU baseline.
+- **`fit_emcee_jax(lc, model, log_prob_fn=None, *, prior=None, nwalkers=32, nsteps=5000, burnin=1000, thin=10, seed=0, progress=False, space='auto', likelihood='auto', walker_chunk='half', init='prior_scan', walker_coordinates='own', n_ensembles=4, pilot='auto', pilot_steps='auto', until_converged=False, max_steps='auto', max_time_s='auto', check_every='auto') -> 'SamplerResult'`**  
+  emcee's stretch move (a = 2, emcee's randomised red-blue split), **run entirely on the device**:
+  the `fit_batch` engine runs every step of every ensemble inside one compiled loop, with no return
+  to Python between steps (up to 0.3.0 the emcee library drove each step from Python). The density
+  is a log-**posterior** (emcee has no prior of its own; built from `model.predict_jax`, with the
+  data as arguments, when `log_prob_fn` is omitted, so light curves of one model and bucket share the
+  compile and the [persistent cache](#the-persistent-compile-cache-jax_compilation_cache_dir)).
+  - **Ensembles.** `n_ensembles` (`DEFAULT_N_ENSEMBLES = 4`) independent ensembles of `nwalkers`
+    walkers each (so 128 walkers by default), each with its own random stream
+    (`ensemble_seeds(seed, n_ensembles)`, from `SeedSequence`, so seeds 0 and 1 share no ensemble)
+    and its own start. `info["ensemble_rhat"]` is the rank-normalised split R-hat between them;
+    `converged` fails when it is 1.01 or more.
+  - **Pilot** (`pilot="auto"`: on for two or more ensembles; `pilot_steps="auto"` = `nsteps // 5`,
+    `pilot_plan(...)`). The ensembles first run the pilot; every ensemble then restarts on its own
+    draws, without replacement, of the kept second-half pilot states of the ensemble with the highest
+    log likelihood, and the main run of `nsteps` follows, all in the same compiled loop. This drops
+    an ensemble stranded in a lower mode; `info["pilot"]` keeps each pilot ensemble's best log
+    likelihood, its gap to the best, `n_ensembles_dropped`, the pilot R-hat (`rhat`,
+    `rhat_log_likelihood`), `restarted_ensembles` (always every ensemble) and `independent`
+    (always `False`). **What the restart costs:** every ensemble, the best one included, restarts
+    from the pool of the ensemble with the highest likelihood peak, so a second peak of comparable
+    (or larger) probability is dropped and the fit can still report converged (MOSFiT
+    `starmass`-`efficiency`, 0-0.5 nats apart). After the restart the between-ensemble R-hat
+    tests mixing within one peak, not that independent starts agree; only the pilot R-hat records
+    disagreement between the starts, and no check reads it. A half-migrated best ensemble can pass
+    trap states on. Use `pilot=False` or nested sampling when a second mode matters.
+  - **`until_converged=True`** (default `False`): after the pilot, the burn-in and the main run to
+    `nsteps`, the run goes on in chunks of `check_every` steps (`"auto"`: half of `nsteps - burnin`,
+    a multiple of `thin`), each one call of the same compiled program with the chain's state kept on
+    the device. Between chunks the checks of `diagnostics()` run on every draw kept so far, cheap
+    first (stuck and frozen walkers, N/tau >= 50; the R-hat and ESS checks, which rank every draw,
+    only once those pass and the chain has grown by `FULL_CHECK_GROWTH` = 25 %). It stops when all
+    pass, or before a chunk that would pass `max_steps` (`"auto"`: `UNTIL_MAX_STEPS_FACTOR` = 40 x
+    `nsteps`) or end later than `max_time_s` after the call began (`"auto"`: `UNTIL_MAX_TIME_S` =
+    600 s, compile included; `None` for no limit). `max_time_s` stops new chunks, not the fit: the
+    last checks and the post-processing come after (10-55 s on the TDE models).
+    `until_plan(nsteps, burnin, thin, check_every, max_steps, max_time_s)` returns the plan;
+    `info["until_converged"]` records `enabled`, `steps_run`, `stop_reason` (`"converged"`,
+    `"max_steps"`, `"max_time_s"` or `"nsteps"`), `n_chunks`, `compiled_calls` and every chunk's
+    checks. It is off by default because on most TDE models it runs to the cap without converging
+    (table in the CHANGELOG): on their own 175-point light curves, one A6000, `tde_stream_stream`
+    converges in 25-30 s, `tde_mosfit` in about half the runs in 5-10 min, and
+    `tde_cooling_envelope`, `tde_analytical` and `tde_fallback` do not within 900 s (N/tau fails
+    last).
+  - **Seeds.** A fixed seed gives identical draws on the CPU. On a GPU only under XLA's
+    deterministic flags (`XLA_FLAGS="--xla_gpu_deterministic_ops=true --xla_gpu_autotune_level=0"`,
+    set before JAX starts); without them two runs with the same seed sample the same posterior but
+    differ draw by draw, and with `until_converged` can stop at different lengths. For a paper,
+    quote GPU runs as statistically, not bitwise, reproducible, or set the flags.
+  - **Result.** `samples` are every ensemble's kept draws; `samples_by_chain` is `(K·W, n_keep, D)`,
+    ensemble-major. `info["nwalkers"]` is the total (K·W); `info["walkers_per_ensemble"]`,
+    `n_ensembles`, `ensemble_seeds`, `ensemble_rhat`, `ensemble_ess_bulk`, `ensemble_ess_tail`,
+    `ensemble_rhat_log_likelihood`, `autocorr_time_by_ensemble`, `max_autocorr_time` (largest over
+    ensembles), `acceptance_fraction`, `stuck_walkers`, `frozen_walkers`, `n_nan_proposals`,
+    `program`, `device_timing`. There is no `result.emcee_sampler`. `progress=` is accepted and
+    ignored.
+  - **Starts.** `init=` as above, plus one start per ensemble as an `(n_ensembles, nwalkers, k)`
+    array; a `(nwalkers, k)` array starts every ensemble there; a previous `SamplerResult` gives
+    each ensemble its own subset. `walker_coordinates=` and `walker_chunk=` as above.
+  - **Measured** on `tde_analytical`'s own 175-point light curve, 4000 steps, one A6000, a cold
+    process: the old host-driven 32-walker run 27.1-27.9 s; the same work on the device 14.9 s
+    (sampling 21 → 5 s); the default 4 x 32 walkers with an 800-step pilot 25.0 s. The compile is
+    larger (7-9 s against 2.5-3 s: one program holds the whole loop), so the gain is in the run.
+  - **Devices.** One device per process; for several cards use `run_jobs` or
+    `compare(parallel=True)`, one process per card.
+- **`fit_emcee_numpy(lc, model, times, values, sigmas, *, prior=None, nwalkers=32, nsteps=5000, burnin=1000, thin=10, seed=0, n_jobs=8, progress=False, space='flux', init='prior_scan') -> 'SamplerResult'`**  
+  Arm A(2): plain-numpy emcee on N CPU cores — the realistic no-GPU baseline. Its default start is
+  the `nwalkers` best-scoring of `max(1000, 4·nwalkers)` prior draws (no gradient to climb with).
 - **`PyMCJAXVectorizedSampler()`** — *class*  
   PyMC frontend, NumPyro NUTS, chains vmapped on one device.
 - **`fit_PyMCJAXVectorized(lc, model, prior=None, **kwargs) -> 'SamplerResult'`**  
@@ -801,8 +2265,14 @@ with. `likelihood="gaussian_scatter"` needs the scatter parameter (default `"sig
   PyMC frontend, NumPyro NUTS, chains ``pmap``ed across devices — the multi-GPU path.
 - **`fit_PyMCJAXParallelized(lc, model, prior=None, **kwargs) -> 'SamplerResult'`**  
   See :class:`PyMCJAXParallelizedSampler`.
-- **`fit_snpe_gpu(lc, model, *, prior=None, num_rounds=3, num_simulations=10000, embedding='none', embedding_latent=32, density_estimator='maf', num_samples=10000, seed=0, device='cuda', show_progress=False, **snpe_kwargs)`**  
+- **`fit_snpe_gpu(lc, model, *, prior=None, num_rounds=2, num_simulations=10000, embedding_net=None, embedding_latent=32, density_estimator='maf', num_samples=10000, seed=0, device='cuda', show_progress=False, embedding=None, **snpe_kwargs)`**  
   Fit one light curve with SNPE on GPU, using the JAX model for GPU-batched simulation.
+  `num_rounds` and `embedding_net` mean what they mean in `SNPESampler.fit`; `embedding=` is a
+  deprecated alias of `embedding_net=`. `SNPEGPUSampler.fit` (registered as `snpe_gpu`) takes
+  `sim_chunk=250` simulations per compiled block and passes every other keyword
+  (`proposal_min_acceptance`, `num_chains`, …) to `SNPESampler.fit`, so its `info` carries the same
+  `leakage`, `converged`, `x_o_min_rms_z` and `postprocess_s`, plus `sim_chunk`, `sim_transfer` and
+  `mag_floor_stats`.
 - **`ContextEmbedding(sigma, band_codes, n_bands, spec='mlp', latent_dim=32)`** — *class*  
   Concatenate constant per-point context (sigma, band one-hot) to the varying flux channel.
 - **`encode_bands(band_array, labels=('u', 'g', 'r', 'i', 'z', 'y'))`**  
@@ -820,7 +2290,9 @@ never imports JAX.
   (default `prior.names` — pass it explicitly, insertion order is not a contract). Same value as
   `Prior.log_prob`, normalising constants included, so **do not** add it to `nuts_gpu`'s
   `log_prob_fn`, which already gets the prior from NumPyro's sample sites. `-inf` outside the
-  support with a *finite* gradient there. Refuses anything but `Uniform` / `LogUniform`.
+  support with a *finite* gradient there. Takes `Uniform`, `LogUniform`, `Normal`,
+  `TruncatedNormal` and `Fixed`. **`priors.ppf_jax(dist)`** is the traceable inverse CDF of a
+  `Normal` or `TruncatedNormal`, for exact draws from U(0, 1) on any device.
 - **`likelihood.log_likelihood_jax(like)`**
   Build the JAX twin of `like.log_likelihood` from an already-constructed likelihood **object**,
   reading `y`, `sigma`, `space`, the detection mask and the normalising constants off it so the two
@@ -872,7 +2344,7 @@ A sampler that probes far outside the prior box must clamp `theta` into it befor
 Physics implementations. Bind them to a dataset with the factories above rather than calling
 them directly unless you know what you are doing.
 
-**Kilonova (one component)** — `whisper_cbpf.models.jax.kilonova` (14 public functions)
+**Kilonova (one component)** — `whisper_cbpf.models.jax.kilonova` (15 public functions)
 
 - `ab_magnitude(*args, **kwargs)` — AB magnitude in the band given by band_idx, for each observation.
 - `ab_weights(lam, trans)` — Photon-counting AB weights: w = T(lam)/lam * dlam, norm = 3631Jy*sum(w).
@@ -884,8 +2356,9 @@ them directly unless you know what you are doing.
 - `extinction_shape(lam_obs_ang, redshift=0.0, r_v=3.1, law='f99', frame='observer')` — A(lambda)/E(B-V) evaluated in the requested frame, on the OBSERVER wavelength grid.
 - `f99_a_over_ebv(lam_aa, r_v=3.1)` — Fitzpatrick (1999) A(lambda)/E(B-V). JAX-native, differentiable in r_v.
 - `flux_density_mjy(*args, **kwargs)` — Flux density in mJy at observer-frame frequencies nu_obs_hz.
-- `make_filter_set(band_names, lam_min=1000.0, lam_max=30000.0, n_wave=5000)` — Export sncosmo bandpasses to plain arrays. Run ONCE, offline, then save.
+- `make_filter_set(band_names, lam_min=1000.0, lam_max=30000.0, n_wave=5000)` — Export sncosmo bandpasses to plain arrays. Run ONCE, offline, then save. (Re-exported from `whisper_cbpf.synphot.grid_rule`, like `ab_weights`; the factories default to `synphot.gauss_rule` instead, see §4b.)
 - `pre_explosion(t_src_s)` — Boolean mask, True where the model returns identically zero flux.
+- `redback_time_grid(t_src_s, t_min=0.01, t_max=7000000.0, dense_resolution=500)` — The source-frame grid [s] redback 1.20's ``one_component_kilonova_model`` solves on. Pass it as ``time_grid=`` to ``bolometric``/``flux_density_mjy``/``ab_magnitude``; the kilonova factories do by default (``time_grid='redback'``).
 - `source_time_s(t_obs_days, redshift, t_exp_days=0.0)` — Observer-frame days -> source-frame seconds SINCE EXPLOSION.
 - `thermalisation_coeffs(mej, vej)` — Barnes+2016 (a, b, d). redback/utils.py:1168.
 
@@ -903,40 +2376,42 @@ them directly unless you know what you are doing.
 - `validity_horizon_days(*args, factor=2.66)` — Beyond this, redback's quadrature is under-resolved for at least one component.
 - `villar_prior(n_components=2, with_sigma=True)` — Villar+2017 multi-component kilonova priors, all opacities free.
 
-**Tidal disruption events** — `whisper_cbpf.models.jax.tde` (22 public functions)
+**Tidal disruption events** — `whisper_cbpf.models.jax.tde` (23 public functions)
 
 - `ab_magnitude(temperature, r_photosphere, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, *, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99')` — AB magnitude per observation, from a photosphere ``(T, R)`` and a filter set.
 - `analytic_fallback(time, l0, t_0)` — Bolometric luminosity: t^-5/3 fall-back with a flat plateau before ``t_0``.
 - `build_interaction_grid(time, dense_times)` — Setup-time (NumPy) companion to :func:`diffusion` / :func:`viscous`.
 - `calc_tfb(binding_energy_const, mbh_6, stellar_mass)` — Fall-back time of the most tightly bound debris, in SECONDS. Pure arithmetic.
 - `cocoon_photosphere(time, luminosity, t_thin, vej, nn)` — redback ``photosphere.CocoonPhotosphere``. time days, luminosity erg/s, vej km/s.
-- `cooling_envelope(mbh_6, stellar_mass, eta, alpha, beta, *, f_debris=1.0, t_0_init=1.0, binding_energy_const=0.8, zeta=2.0, hoverR=0.3, n_time=5000)` — Sarin & Metzger (2024) cooling-envelope TDE engine.
-- `cooling_envelope_ab_magnitude(t_obs_days, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, mbh_6, stellar_mass, eta, alpha, beta, *, n_time=5000, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', **kw)` — redback ``cooling_envelope(..., output_format='magnitude')``, AB magnitudes.
-- `cooling_envelope_flux_density(t_obs_days, nu_obs_hz, redshift, dl_cm, mbh_6, stellar_mass, eta, alpha, beta, *, n_time=5000, dilation=True, **kw)` — redback ``cooling_envelope(..., output_format='flux_density')``, in mJy.
+- `default_n_time()` — ``n_time`` of the INSTALLED redback's grid: the default of every function here (500 for 1.15/1.20 and without redback, 5000 for 1.12).
+- `cooling_envelope(mbh_6, stellar_mass, eta, alpha, beta, *, f_debris=1.0, t_0_init=1.0, binding_energy_const=0.8, zeta=2.0, hoverR=0.3, n_time=None)` — Sarin & Metzger (2024) cooling-envelope TDE engine.
+- `cooling_envelope_ab_magnitude(t_obs_days, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, mbh_6, stellar_mass, eta, alpha, beta, *, n_time=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', **kw)` — redback ``cooling_envelope(..., output_format='magnitude')``, AB magnitudes.
+- `cooling_envelope_flux_density(t_obs_days, nu_obs_hz, redshift, dl_cm, mbh_6, stellar_mass, eta, alpha, beta, *, n_time=None, dilation=True, **kw)` — redback ``cooling_envelope(..., output_format='flux_density')``, in mJy.
 - `default_prior(model_name='cooling_envelope')` — ``(Prior, pinned)`` for a TDE model: redback's, read from redback where possible.
-- `default_prior_gaussianrise()` — ``(Prior, pinned)`` for ``gaussianrise_cooling_envelope``. All seven free in 1.15.1.
+- `default_prior_gaussianrise()` — ``(Prior, pinned)`` for ``gaussianrise_cooling_envelope``. All seven free (1.15.1, 1.20).
 - `envelope_exists(mbh_6, stellar_mass, beta, binding_energy_const=0.8)` — True where the envelope is born OUTSIDE the circularisation radius, i.e. exists at all.
 - `exponential_powerlaw(time, a_1, alpha_1, alpha_2, tpeak)` — a_1 (1 - exp(-t/tpeak))^alpha_1 (t/tpeak)^-alpha_2.
-- `fallback_prior(model_name)` — :func:`redback_prior` without redback. Same return shape; see _FALLBACK.
+- `fallback_prior(model_name)` — :func:`redback_prior` without redback: the latest release's (1.20) files, transcribed. Same return shape; see _FALLBACK.
 - `flux_density_mjy(temperature, r_photosphere, nu_obs_hz, redshift, dl_cm, *, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99')` — Flux density in mJy from a photosphere ``(T, R)`` at observer frequencies.
 - `gaussian_rise(time, a_1, peak_time, sigma_t)` — a_1 * exp(-(t - t_peak)^2 / 2 sigma^2). `time` and the two scales share units.
-- `gaussianrise_cooling_envelope_ab_magnitude(t_obs_days, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, peak_time, sigma_t, mbh_6, stellar_mass, eta, alpha, beta, *, xi=1.0, n_pre=100, n_time=5000, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', **kw)` — Gaussian rise stitched onto the cooling envelope, AB magnitudes per observation.
-- `gaussianrise_cooling_envelope_flux_density(t_obs_days, nu_obs_hz, redshift, dl_cm, peak_time, sigma_t, mbh_6, stellar_mass, eta, alpha, beta, *, xi=1.0, n_pre=200, n_time=5000, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', **kw)` — Gaussian rise stitched onto the cooling envelope, flux density in mJy.
+- `gaussianrise_cooling_envelope_ab_magnitude(t_obs_days, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, peak_time, sigma_t, mbh_6, stellar_mass, eta, alpha, beta, *, xi=1.0, n_pre=100, n_time=None, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', **kw)` — Gaussian rise stitched onto the cooling envelope, AB magnitudes per observation.
+- `gaussianrise_cooling_envelope_flux_density(t_obs_days, nu_obs_hz, redshift, dl_cm, peak_time, sigma_t, mbh_6, stellar_mass, eta, alpha, beta, *, xi=1.0, n_pre=200, n_time=None, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99', **kw)` — Gaussian rise stitched onto the cooling envelope, flux density in mJy.
 - `redback_prior(model_name, *, drop=('redshift',))` — redback's OWN prior for ``model_name``, read from redback, not transcribed.
 - `rise_peaks_near_fallback(peak_time, sigma_t, mbh_6, stellar_mass, *, n_sigma=3.0, xi=1.0, binding_energy_const=0.8)` — True where the Gaussian rise peaks within ``n_sigma`` of the stitch point.
 - `ryu_f_debris(mbh_6, stellar_mass, beta)` — Ryu et al. partial-disruption debris fraction, clipped to [0, 1].
 - `tde_photosphere(time, luminosity, mass_bh, mass_star, star_radius, tpeak, beta, rph_0, lphoto)` — redback ``photosphere.TDEPhotosphere``. Photosphere that expands as a power of Mdot.
 - `temperature_floor_photosphere(time, luminosity, vej, temperature_floor)` — redback ``photosphere.TemperatureFloor``. time days, luminosity erg/s, vej km/s.
 
-**Supernovae** — `whisper_cbpf.models.jax.supernova` (22 public functions)
+**Supernovae** — `whisper_cbpf.models.jax.supernova` (24 public functions)
 
 - `ab_magnitude_of(model, grid, params, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, *, magnetar_convention='1.15', interaction=True, **kw)` — AB magnitude per observation for any model in the family. ``model`` is static.
 - `basic_magnetar(time_s, p0, bp, mass_ns, theta_pb, convention='1.15')` — Dipole spin-down luminosity, erg/s. ``time_s`` SECONDS, ``p0`` ms, ``bp`` 1e14 G.
 - `bolometric(model, grid, params, *, magnetar_convention='1.15', interaction=True)` — Bolometric luminosity in erg/s for any model in the family. ``model`` is static.
-- `build_sn_grid(time_days, dense_resolution=1000, t_pad=100.0)` — Setup-time (NumPy) companion to every model here. Build once per dataset, reuse.
+- `build_sn_grid(time_days, dense_resolution=1000, t_pad=100.0, spacing='geometric', csm_interp=True)` — Setup-time (NumPy) companion to every model here. Build once per dataset, reuse. redback 1.20's grids by default; `spacing='linear'` for redback <= 1.15 (`REDBACK_GRID_PRESETS`).
 - `cutoff_norm(luminosity, temperature, r_photosphere, cutoff_wavelength_ang)` — redback ``CutoffBlackbody._set_norm``. Dimensionless renormalisation, per epoch.
 - `cutoff_shape(lam_obs_ang, redshift=0.0, cutoff_wavelength_ang=3000.0)` — ``min(lam_source/lam_cut, 1)`` on the OBSERVER wavelength grid. Setup-time-able.
 - `default_prior(model)` — ``(Prior, pinned, constraints)``: redback's, read from redback where possible.
+- `dense_grid(time_days, dense_resolution=1000, t_pad=100.0, spacing='geometric')` — The NumPy ``ip.Diffusion`` dense grid in days (redback 1.20's geometric, or ``spacing='linear'`` for <= 1.15).
 - `exponential_powerlaw_engine(time_days, lbol_0, alpha_1, alpha_2, tpeak_d)` — Phenomenological rise-and-decay, erg/s. ``time`` and ``tpeak`` share units (days).
 - `exponential_powerlaw_integrable(alpha_1, alpha_2)` — True where the diffusion integral of this engine EXISTS. A prior condition, not a guard.
 - `fallback_lbol(time_days, logl1, tr)` — t^-5/3 fallback with a flat plateau before ``tr``. Both times in DAYS, erg/s.
@@ -944,7 +2419,7 @@ them directly unless you know what you are doing.
 - `flux_density(model, grid, params, nu_obs_hz, redshift, dl_cm, *, magnetar_convention='1.15', interaction=True, **kw)` — Flux density in mJy for any model in the family. ``model`` is static.
 - `line_band_term(lam_obs_ang, weights, redshift=0.0, line_wavelength=7500.0, line_width=500.0)` — Per-band wavelength integral of the additive line profile, ``(n_band,)``.
 - `magnetar_only(time_s, l0, tau_s, nn)` — Generalised magnetar spin-down, erg/s. ``time_s`` and ``tau_s`` in SECONDS.
-- `model_names()` — The eleven (twelve, counting ``slsn`` and ``basic_magnetar_powered`` separately) names.
+- `model_names()` — Every name `bolometric` and `supernova_model` accept: the twelve of the original table (eleven engines, counting ``slsn`` and ``basic_magnetar_powered`` separately) and the four adopted ones.
 - `nickelcobalt_engine(time_days, f_nickel, mej)` — Ni56 -> Co56 -> Fe56 radioactive heating, erg/s. ``time`` days, ``mej`` Msun.
 - `photosphere(grid, lbol, vej, temperature_floor)` — ``photosphere.TemperatureFloor`` on this module's time grid. Returns ``(T [K], R [cm])``.
 - `redback_prior(model, *, drop=('redshift',))` — redback's OWN prior for ``model``, READ FROM redback rather than transcribed.
@@ -952,6 +2427,18 @@ them directly unless you know what you are doing.
 - `sn_ab_magnitude(grid, lbol, vej, temperature_floor, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, *, sed_kind='blackbody', cutoff_wavelength=3000.0, line_wavelength=7500.0, line_width=500.0, line_time=50.0, line_duration=25.0, line_amplitude=0.3, pp=3.0, nu_max=1000000000.0, source_radius=10000000000000.0, f0=1e-26, mag_floor=40.0, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99')` — AB magnitude per observation from a bolometric light curve.
 - `sn_flux_density(grid, lbol, vej, temperature_floor, nu_obs_hz, redshift, dl_cm, *, sed_kind='blackbody', cutoff_wavelength=3000.0, line_wavelength=7500.0, line_width=500.0, line_time=50.0, line_duration=25.0, line_amplitude=0.3, pp=3.0, nu_max=1000000000.0, source_radius=10000000000000.0, f0=1e-26, dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None, r_v_mw=3.1, r_v_host=3.1, law='f99')` — Flux density in mJy from a bolometric light curve. ``nu_obs_hz`` OBSERVER frame.
 - `synchrotron_f_nu(nu_src_hz, pp, nu_max=1000000000.0, source_radius=10000000000000.0, f0=1e-26, dl_cm=1.0)` — redback ``sed.Synchrotron`` as a flux density in erg/s/cm^2/Hz.
+- `warn_if_spin_down_unresolved(dense_times, p0, bp, mass_ns, theta_pb, convention='1.15', limit=0.1)` — Warn when the magnetar spin-down is too fast for the dense grid. Host-side NumPy; returns the fraction of ``E_rot`` released before the grid's first resolved node.
+
+**Further model modules** — adapted from redback and redback-jax (see [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)); bind them with the factories above.
+
+- `whisper_cbpf.models.jax.csm_interaction` — the Chevalier–Chatzopoulos engine (`csm_coefficients`, `csm_engine`, `csm_diffusion`, `csm_interaction_bolometric`), traceable in every parameter including `eta` and `nn`; reads `whisper_cbpf/data/csm_table.txt`.
+- `whisper_cbpf.models.jax.shock_models` — `shocked_cocoon_engine`, `shocked_cocoon_model`.
+- `whisper_cbpf.models.jax.magnetar_ode` — the relativistic magnetar-driven ejecta ODE (`magnetar_ode_solve`, `general_magnetar_driven_model`), with the solvers `"diffrax"`, `"rk4"` and redback's `"euler"`.
+- `whisper_cbpf.models.jax.tde_fallback`, `tde_analytical` — the two TDE models; `tde_fallback`'s engine is MOSFiT's `Fallback` node for node: it reads `whisper_cbpf/data/tde_fallback_nodes.npz` (`TABLE_FILE`; `build_fallback_tables(table_dir)` makes it from redback's tables, MOSFiT's `Fallback.__init__` arrays; `fallback_tables()` returns them as `{gamma: {name: array or (rising, falling) pair of arrays}}`: `sim_beta`, `premap_count` and `mapped_count` as arrays, `premaptime`, `premapdmdt`, `mapped_time`, `beta_slope` and `beta_yinter` as one array per branch).
+- `whisper_cbpf.models.jax.tde_mosfit` — MOSFiT's `tde` (reuses `tde_fallback`'s engine, which is MOSFiT's `Fallback`; adds MOSFiT's photosphere, the `tde_constraints` score and wall, the Kroupa mass distribution).
+- `whisper_cbpf.models.jax.tde_stream_stream` — redback's `stream_stream_tde` (reuses `tde.stream_stream_collision`; adds the Gaussian rise, redback's 1100-node flux table and its photometry).
+- `whisper_cbpf.models.jax.kilonova_metzger` — `metzger_engine`, `magnetar_boosted_engine`, `metzger_bolometric`, `magnetar_boosted_bolometric`.
+- `whisper_cbpf.models.jax.phenomenological` — `smooth_exponential_powerlaw`, `exp_rise_powerlaw_decline`, `bazin_sne`, `villar_sne` as JAX functions of time.
 
 **Flare (JAX)** — `whisper_cbpf.models.jax.flare` (6 public functions)
 

@@ -3,15 +3,17 @@ message: "If you use WHISPER-CBPF in your research, please cite it."
 title: "WHISPER-CBPF: Bayesian model comparison of transient light curves"
 abstract: >-
   WHISPER-CBPF is an open-source, extensible Python toolkit for Bayesian model comparison of
-  astronomical transient light curves: load photometry, fit candidate models with pluggable
-  samplers (ABC, ABC-SMC, MCMC, nested sampling, NUTS and SNPE, on CPU or GPU), and obtain
-  posteriors plus model-selection metrics (AIC, BIC, WAIC, PSIS-LOO).
+  astronomical transient light curves: load photometry or LSST and ZTF alerts, fit candidate
+  models with pluggable samplers (ABC, ABC-SMC, MCMC, nested sampling, NUTS and SNPE, on CPU or
+  GPU), and obtain posteriors, model-selection metrics (AIC, BIC, WAIC, PSIS-LOO, ln Z) and a
+  ranked, checked comparison of the models.
 type: software
 authors:
   - family-names: Darc
     given-names: Phelipe
     email: phelipedarc@gmail.com
-version: 0.1.0
+version: 0.3.0
+date-released: 2026-10-01
 license: GPL-3.0-or-later
 repository-code: "https://github.com/phelipedarc/WHISPER-CBPF"
 url: "https://github.com/phelipedarc/WHISPER-CBPF"
@@ -24,3 +26,34 @@ keywords:
   - bayesian-inference
   - simulation-based-inference
   - light-curves
+references:
+  - type: software
+    title: "redback"
+    authors:
+      - family-names: Sarin
+        given-names: Nikhil
+    repository-code: "https://github.com/nikhil-sarin/redback"
+    url: "https://github.com/nikhil-sarin/redback"
+    license: GPL-3.0-only
+    notes: "Physical models and priors; the JAX models adapted from it are listed in THIRD_PARTY_NOTICES.md."
+  - type: software
+    title: "redback-jax"
+    authors:
+      - family-names: Sarin
+        given-names: Nikhil
+    repository-code: "https://github.com/nikhil-sarin/redback-jax"
+    url: "https://github.com/nikhil-sarin/redback-jax"
+    license: GPL-3.0-only
+    commit: 3431e2e
+    notes: "JAX models adapted into whisper_cbpf; see THIRD_PARTY_NOTICES.md."
+  - type: software
+    title: "MOSFiT"
+    authors:
+      - family-names: Guillochon
+        given-names: James
+    repository-code: "https://github.com/guillochon/MOSFiT"
+    url: "https://github.com/guillochon/MOSFiT"
+    license: MIT
+    version: 2.1.1
+    commit: 0bc772e
+    notes: "The fall-back engine of tde_fallback and the tde model of tde_mosfit are adapted from it (Guillochon et al. 2018, ApJS 236, 6); see THIRD_PARTY_NOTICES.md."
