@@ -121,3 +121,17 @@ def test_seed_controls_the_draws(lc, model):
     assert np.array_equal(np.sort(np.asarray(a.samples["amp"], float)),
                           np.sort(np.asarray(b.samples["amp"], float)))
     assert a.info["epsilon"] != c.info["epsilon"]
+
+
+def test_default_chunk_is_the_re_measured_width(lc, model):
+    """16 was sized for a compile time the current models no longer have, and it made
+    a latency-bound model pay its per-call cost 16 simulations at a time (the TDE at n_time=5000:
+    1.6 ms a simulation against 0.10 ms at 250). 250 is not a power of two on purpose: the
+    kilonovae compile in seconds at 250 and in minutes at 256 or 1024. ``abc_smc_gpu`` shares it."""
+    from whisper_cbpf.samplers.jax import abc_gpu, abc_smc_gpu
+
+    assert abc_gpu.DEFAULT_CHUNK == 250
+    assert abc_smc_gpu.DEFAULT_CHUNK == abc_gpu.DEFAULT_CHUNK
+    res = abc_gpu.ABCGPUSampler().fit(lc, model, prior=PRIOR, predict_jax=_predict_jax,
+                                      n_simulations=600, quantile=0.05, space="flux", seed=0)
+    assert res.info["chunk"] == 250 and res.info["n_simulations"] == 600

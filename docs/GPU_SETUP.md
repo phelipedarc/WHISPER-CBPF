@@ -6,7 +6,7 @@ message at all**.
 ## Install
 
 ```bash
-pip install "whisper-cbpf[gpu]"          # jax[cuda12], numpyro, arviz
+pip install "whisper-cbpf[gpu]"          # jax[cuda12], numpyro, pymc (which brings arviz)
 # pymc ships inside [gpu] -- the two pymc_jax_gpu_* samplers need no extra install
 ```
 
@@ -37,19 +37,22 @@ wp.check_gpu()          # raises with an actionable message if the GPU is not vi
 
 ### The interpreter gotcha
 
-Sourcing the script prints the interpreter it expects, for example
-`python=/opt/jax_gpu_venv/bin/python3` — but it **does not put that interpreter on your `PATH`**. In
-a container where JAX lives in a virtualenv, running plain `python` after sourcing gives:
+Sourcing the script prints the interpreter it will use, for example
+`python=/path/to/venv/bin/python3`, and looks for the CUDA libraries in that interpreter's own
+site-packages. It puts a virtualenv first on your `PATH` **only when you name it**; otherwise it
+uses whatever `python3` is already there. In a container where JAX lives in a virtualenv that is
+not on your `PATH`, running `python` after sourcing gives:
 
 ```
 ModuleNotFoundError: No module named 'jax'
 ```
 
-Use the interpreter the banner names, explicitly:
+Name the virtualenv before sourcing (the discontinued name `WHISPER_GPU_VENV` still works):
 
 ```bash
+export WHISPER_CBPF_VENV=/path/to/venv
 source "$(whisper-cbpf-env)"
-/opt/jax_gpu_venv/bin/python3 -m pytest tests/t0_parity -q
+python -m pytest tests/t0_parity -q
 ```
 
 ## float64 and the TDE — and every supernova
@@ -58,12 +61,16 @@ source "$(whisper-cbpf-env)"
 of the state, below float32's 1.2e-7 epsilon; in f32 the curve terminates after one step and the
 luminosity comes out `inf`. It raises rather than returning a plausible wrong answer.
 
-**Neither can any of the twelve supernova models**, for an unrelated reason: their engines carry
+**Neither can any of the sixteen supernova-family models** (nor `tde_fallback` or `tde_analytical`), for an unrelated reason: their engines carry
 bolometric luminosities in cgs, 1e43 to 1e46 erg/s, and float32 stops at 3.4e38. Every engine in
 the family returns `inf` — including at the faintest corner of redback's prior — and the guards
 would turn that into `mag_floor` in every band, so this one raises too.
 
-Only the kilonovae and the flare are safe in float32.
+Only the kilonovae (the Metzger ones included) and the flare are safe in float32. That includes a raw-MJD light curve with
+`t_exp_days=` on the same clock: since whisper 0.1.1 the factories subtract it on the host in
+float64 before any cast, and the samplers' adapters hand them the float64 epochs. Up to 0.1.0 it
+was subtracted in float32, which resolves 0.0039 d at MJD 58000: 7.3 mmag and a log-likelihood off
+by 5.2 on the two-component kilonova, where days since t0 gave 5e-6 mag and 0.01.
 
 ```python
 import jax
@@ -78,8 +85,8 @@ wp.register_supernova("arnett", ["ztfg", "ztfr"], redshift=0.0206, dl_cm=2.8e26)
 inside the engine and raises when it is first traced. A registry that contains
 `tde_gaussianrise_jax` or `arnett_jax` is therefore not evidence that the session can run it.
 
-> Registration itself succeeds: in float32, all **12/12** supernovae register and all twelve appear
-> in `list_models()`. `build_sn_grid` does carry the float64 check, but it is only reached at factory
+> Registration itself succeeds: in float32, every supernova registers and appears in
+> `list_models()`. `build_sn_grid` does carry the float64 check, but it is only reached at factory
 > time when `times=` is passed, and the default is `times=None`. So the guard fires at the first
 > `predict`, not at registration.
 
@@ -97,7 +104,8 @@ Two things make this awkward, and neither is hidden from you:
    | forward, `vmap` batch 1000 | 1.45 ms | 81.8 ms | **57×** |
    | forward, `vmap` batch 10000 | 14.4 ms | 823 ms | **57×** |
 
-   One RTX A6000, `n_wave=2000` (the `kilonova_model` default), 100 epochs, 4 bands, jitted, best
+   One RTX A6000, `n_wave=2000` (the `kilonova_model` default up to whisper 0.1.0; since 0.1.1 the
+   default band integral is 16 Gauss nodes per band, docs/PHOTOMETRY.md), 100 epochs, 4 bands, jitted, best
    of three timed loops; both dtypes on identical inputs, agreeing to 6e-8 relative. **Batch 1 is
    not a measurement of arithmetic**: the launch floor on this machine is ~45 µs, so the float32
    kernel is only ~12 µs of that 62 and the ratio there moves ±30% between runs. Everything from
@@ -108,7 +116,9 @@ Two things make this awkward, and neither is hidden from you:
    in the first case and is the reason SBI/ABC simulation should not run in it.
 2. **It must be set before the first array is created**, so it cannot be a model default. Nothing in
    this package sets it for you — a silent default here would quietly change the cost of every other
-   model in the session.
+   model in the session. Importing whisper first is safe: since 0.1.1 no model module builds a JAX
+   array at import (the kilonova's quadrature nodes and the supernova's series constants did, and
+   froze in float32 when imported before the flag, 1e-8–2e-6 relative in float64 light curves).
 
 Check the current state with `wp.x64_enabled()`.
 
@@ -182,12 +192,17 @@ If you compare against redback, check which one you have. `redback` 1.12.0 and 1
 | flux | no redshift factor | `× (1 + redshift)` |
 
 **A comparison run against the wrong version will disagree for reasons that have nothing to do with
-this code.** The test suite detects which redback is importable and selects the matching
-`REDBACK_PRESETS` entry.
+this code.** redback 1.20 keeps 1.15.1's TDE column. The JAX TDE's default `n_time` follows the
+installed redback (`tde.default_n_time()`: 500 for 1.15 and 1.20, and without redback; 5000 for
+1.12), and the tests select the matching `REDBACK_PRESETS` entry the same way.
 
-**Do not fit at `REDBACK_PRESETS["1.15"]`.** At `n_time=500` the AB magnitude spreads 0.55 mag under
-a 1e-6 relative change in `mbh_6` (8.3e-6 mag at 5000), photometry-interpolation error reaches
-0.6 mag, and 10% of the prior yields a one-point light curve. It is reproducible, not fittable.
+**The 500-point grid is redback's, and it is coarse.** Under a 1e-6 relative change in `mbh_6` the AB
+magnitude at a fixed epoch moves by ≤ 8.8e-6 mag through 75% of the envelope's life, 7.9e-3 mag at
+90%, and by the whole ~24 mag `mag_floor` step at 95-99%, where the termination index moves by grid
+steps (at 5000: ≤ 4.9e-5 mag through 95%, 0.31 mag at 99%); redback 1.20 steps at the same epochs.
+Photometry-interpolation error reaches 0.6 mag, and 5-10% of the prior yields a one-point envelope
+(the Gaussian rise of `rise="gaussian"` survives it; `PORTING_NOTES.md` §4.3). Pass `n_time=5000`
+when you fit near the envelope's end and parity with redback is not the point.
 
 ## Performance reference
 

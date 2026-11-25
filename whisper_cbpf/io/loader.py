@@ -1,4 +1,4 @@
-"""Flexible CSV -> :class:`LightCurve` loader."""
+"""Flexible table -> :class:`LightCurve` loader, with ZTF and LSST alert presets (``survey=``)."""
 from __future__ import annotations
 
 import warnings
@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from . import surveys as _surveys
 from .bands import FILTER_LOOKUP, group_bands, normalize_bands, resolve_bands
 from .schema import LightCurve
 from .units import to_canonical
@@ -29,8 +30,17 @@ CANONICAL_SYNONYMS = {
 
 _TRUE = {"1", "true", "t", "yes", "y"}
 
+#: Time columns that hold Julian dates when their values are JD-sized; they are read as MJD.
+_JD_COLUMNS = ("jd", "hjd")
+#: ``MJD = JD - JD_MJD_OFFSET``.
+JD_MJD_OFFSET = 2400000.5
+
 
 def _read_table(path, delimiter=None):
+    if isinstance(path, pd.DataFrame):
+        return path.copy()
+    if isinstance(path, (list, tuple)):
+        return pd.DataFrame(list(path))
     if delimiter is not None:
         return pd.read_csv(path, delimiter=delimiter)
     try:  # auto-sniff comma/semicolon/whitespace
@@ -84,47 +94,213 @@ def _resolve_columns(columns, column_map=None):
     return resolved
 
 
-def load_lightcurve(path, *, name=None, redshift=None, luminosity_distance=None, data_mode=None,
-                    flux_unit=None, magnitude_unit=None, column_map=None, band_aliases=None,
-                    band_lookup=None, normalize=True, default_band=None, quality_cuts=True,
-                    drop_nonfinite=True, flag_filters=None, time_min=None, time_max=None,
-                    bands=None, min_snr=None, explosion_date=None, delimiter=None,
-                    resolve_band_info=True, svo_fallback=True) -> LightCurve:
-    """Load a light-curve CSV into a canonical :class:`LightCurve`.
+def _check_survey_arguments(survey, given):
+    """Refuse loader arguments a survey preset sets itself (``normalize`` must stay True)."""
+    clash = [k for k, v in given.items()
+             if ((v is not True) if k == "normalize" else (v is not None and v is not False))]
+    if clash:
+        raise ValueError(
+            f"{', '.join(clash)} cannot be combined with survey={survey!r}: the preset fixes the "
+            f"fields, units and survey band labels itself (whisper_cbpf.io.surveys). Leave "
+            f"{'it' if len(clash) == 1 else 'them'} out, or load with survey=None and map the "
+            f"columns yourself.")
 
-    Auto-detects columns (case-insensitive synonyms; override with ``column_map``), normalizes band
-    names, drops bad rows (non-finite values, non-positive errors -- upper limits are kept), and
-    optionally filters by band/time/SNR. Supports magnitude- or flux-based inputs.
 
-    **Redshift** is resolved in priority order ``redshift=`` argument > a ``redshift`` column > unknown.
-    When unknown the load does *not* fail: the :class:`LightCurve` records ``redshift_known=False`` and
-    a default ``redshift_prior``, and a warning is emitted that a redshift prior must be supplied for
-    the models. ``z`` is validated (``z >= 0``; ``z == 0`` needs ``luminosity_distance``; negative/NaN
-    is fatal).
+def _select_bands(lc, bands, *, survey, normalize, aliases, lookup):
+    """``lc.select_bands`` after spelling ``bands`` the way the loader spelled the band column."""
+    asked = [str(b) for b in ([bands] if isinstance(bands, str) else bands)]
+    if survey is not None:
+        wanted = [_surveys.survey_band(b, survey) for b in asked]
+    else:
+        wanted = [str(b) for b in normalize_bands(asked, aliases=aliases)] if normalize else asked
+        if lookup is not None:
+            wanted = [str(b) for b in group_bands(wanted, lookup=lookup)]
+    out = lc.select_bands(wanted)
+    if len(out) == 0 and len(lc) > 0:
+        raise ValueError(
+            f"bands={asked!r} (read as {wanted!r}) match none of this light curve's bands "
+            f"{lc.bands!r}. Name bands as the band column spells them after normalisation "
+            f"(e.g. 'zg' is 'ztfg'), or leave bands= out.")
+    return out
 
-    **Units** use ``astropy.units``. ``flux_unit`` may be F_nu (Jy/mJy/uJy) or F_lambda
-    (erg/s/cm^2/Angstrom; converted to Jy via the per-band effective wavelength); ``magnitude_unit``
-    must be a dimensionless AB magnitude. A flux column with no ``flux_unit`` warns and assumes the
-    documented default (Jy for ``flux_density``). ``data_mode`` is one of
-    ``flux_density`` / ``magnitude`` / ``flux`` (inferred from the columns when omitted).
 
-    **Bands** are resolved (``resolve_band_info=True``) to per-point effective wavelength + zero
-    point via FILTER_LOOKUP, falling back to the SVO Filter Profile Service for unknown bands
-    (``svo_fallback``; degrades gracefully + warns when SVO/astroquery is unavailable).
+def load_lightcurve(path, *, survey=None, limits=None, name=None, redshift=None,
+                    luminosity_distance=None, data_mode=None, flux_unit=None, magnitude_unit=None,
+                    column_map=None, band_aliases=None, band_lookup=None, normalize=True,
+                    default_band=None, quality_cuts=True, drop_nonfinite=True, flag_filters=None,
+                    time_min=None, time_max=None, bands=None, min_snr=None, explosion_date=None,
+                    delimiter=None, resolve_band_info=True, svo_fallback=True) -> LightCurve:
+    """Load a light curve (a file, a table or alert records) into a :class:`LightCurve`.
 
-    Other options: ``column_map={'time': 'MJD', ...}`` to force a mapping; ``default_band='ztfg'``;
-    ``band_lookup=True`` for broadband grouping; ``flag_filters={'catflags': 0}``; ``time_min/time_max``
-    (MJD), ``bands=[...]`` and ``min_snr``; ``explosion_date=<MJD>`` for days-since-explosion.
+    Without ``survey=`` the table's columns are found by name (case-insensitive synonyms, see
+    ``CANONICAL_SYNONYMS``; override with ``column_map``), band labels are normalised (``zg`` ->
+    ``ztfg``), and bad rows are dropped (non-finite values, non-positive errors; upper limits are
+    kept). Magnitude and flux inputs are both accepted.
+
+    With ``survey="ztf"`` or ``"lsst"`` the records are read in the broker's own fields (ALeRCE, the
+    ZTF alert packet, Fink, the Rubin alert packet) and turned into difference-imaging AB magnitudes:
+    ZTF ``magpsf`` / ``sigmapsf`` where ``isdiffpos`` is positive, with ``diffmaglim`` non-detections
+    as upper limits; LSST diaSource ``psfFlux`` / ``psfFluxErr`` in nJy as ``m = 31.4 - 2.5
+    log10(psfFlux)``, with forced-photometry epochs as upper limits at ``31.4 - 2.5 log10(5
+    psfFluxErr)``. ``magpsf_corr`` and ``scienceFlux`` are never used. Bands are always labelled
+    ``ztfg ztfr ztfi`` / ``lsstu lsstg lsstr lssti lsstz lssty``, never bare letters (a bare ``g`` is
+    SDSS in redback). Rows are sorted by time; negative fluxes, flagged or withdrawn rows, repeats of
+    one exposure and limits at a detection's epoch are dropped and counted in
+    ``lc.meta["n_dropped"]``. The full rules are in :mod:`whisper_cbpf.io.surveys`.
+
+    Selections run in this order, all on the input's MJD clock: ``bands``, ``time_min`` /
+    ``time_max``, ``min_snr``; ``explosion_date`` shifts the clock last, so a window is never compared
+    against days since explosion.
+
+    Parameters
+    ----------
+    path : str, pathlib.Path, file-like, pandas.DataFrame or list of dict
+        The data: a CSV (or, with ``survey=``, a ``.json`` file), a table, or a list of records. With
+        ``survey=`` also one alert packet or ALeRCE's ``{"detections": ..., "non_detections": ...}``.
+    survey : {"ztf", "lsst"}, optional
+        Read ``path`` as that survey's alert photometry (see above).
+    limits : same types as ``path``, optional
+        With ``survey=``: rows that become upper limits, ZTF non-detections (``diffmaglim``) or LSST
+        forced photometry (``psfFluxErr``, e.g. Fink's ``/fp``). Rubin alert packets carry theirs.
+    name : str, optional
+        Object name; defaults to a name / ``objectId`` / ``diaObjectId`` field.
+    redshift : float, optional
+        Priority: this argument, then a ``redshift`` column, then unknown. Unknown does not fail: the
+        light curve records ``redshift_known=False`` and a default ``redshift_prior``, with a
+        warning. ``z >= 0``; ``z == 0`` needs ``luminosity_distance``.
+    luminosity_distance : float, optional
+        Mpc; required when ``redshift == 0``.
+    data_mode : {"magnitude", "flux_density", "flux"}, optional
+        Inferred from the columns when omitted. A survey preset gives ``"magnitude"``.
+    flux_unit, magnitude_unit : str or astropy unit, optional
+        Units of the flux column (F_nu such as Jy, or F_lambda in erg/s/cm^2/Angstrom, converted
+        with each band's effective wavelength) and of the magnitudes (dimensionless AB). ``None``
+        warns and assumes Jy / AB.
+    column_map : dict, optional
+        ``{canonical: column}`` overrides, e.g. ``{"time": "MJD"}``.
+    band_aliases : dict, optional
+        Extra ``{raw: label}`` entries over ``DEFAULT_BAND_ALIASES``.
+    band_lookup : bool or dict, optional
+        ``True`` groups bands into effective bands with ``FILTER_LOOKUP`` (``B`` -> ``g-band``).
+    normalize : bool, default True
+        Apply the band-alias map to the band column.
+    default_band : str, optional
+        Band for a table without a band column.
+    quality_cuts : bool, default True
+        Drop detections whose error is not finite and positive.
+    drop_nonfinite : bool, default True
+        Drop rows with a non-finite time or measurement.
+    flag_filters : dict, optional
+        ``{column: value or callable}``; keep the rows that match, e.g. ``{"catflags": 0}``.
+    time_min, time_max : float, optional
+        Keep ``time_min <= time <= time_max``, in the input's MJD.
+    bands : str or list of str, optional
+        Keep these bands, spelled as in the data or as the loader writes them (``"zg"`` and
+        ``"ztfg"`` both work; with ``survey=``, ``"g"`` means the survey's g). Raises when no point
+        is left.
+    min_snr : float, optional
+        Drop detections below this signal-to-noise. Upper limits have no SNR and are kept.
+    explosion_date : float, optional
+        MJD of day 0: ``time`` becomes days since it (:meth:`LightCurve.set_explosion_date`).
+    delimiter : str, optional
+        CSV delimiter; sniffed when omitted.
+    resolve_band_info : bool, default True
+        Fill per-point ``lambda_eff`` and ``zero_point`` from the band labels.
+    svo_fallback : bool, default True
+        Ask the SVO Filter Profile Service for bands missing from ``FILTER_LOOKUP``.
+
+    Returns
+    -------
+    LightCurve
+        With ``survey=``, ``meta`` also holds ``survey``, ``photometry``, ``time_system``,
+        ``upper_limit_sigma`` (5.0, the limits' significance, which the censored likelihood reads
+        from here), ``n_dropped`` and ``first_detection_mjd`` (MJD of the first detection left
+        after the cuts). A time column named ``jd`` or ``hjd`` holding Julian dates is converted
+        to MJD (``JD - 2400000.5``) and ``meta["time_converted"]`` says so.
+
+    Raises
+    ------
+    ValueError
+        A missing time, band or measurement field; ``bands`` that match nothing; an unknown survey,
+        band, or an argument the preset fixes itself (``column_map``, ``band_lookup``, ...);
+        ``magpsf_corr`` or ``scienceFlux`` without the difference-image field; and, with
+        ``survey=``, no detection left after the cuts (not enough data to fit).
+
+    See Also
+    --------
+    whisper_cbpf.io.surveys : the survey presets' field names and rules.
+    LightCurve.set_time_reference : count days from the first detection instead of an explosion.
+
+    Notes
+    -----
+    A light curve with upper limits is fitted with the censored likelihood, in flux space, by
+    default (``space="auto"``); fit the detections alone with ``lc.where(upper_limit=False)``.
+
+    Examples
+    --------
+    A table in whisper's own columns; ``zg`` is normalised to ``ztfg``:
+
+    >>> import whisper_cbpf as wp
+    >>> rows = [{"time": 60000.0, "band": "zg", "magnitude": 19.2, "magnitude_err": 0.08},
+    ...         {"time": 60001.0, "band": "zr", "magnitude": 19.0, "magnitude_err": 0.06}]
+    >>> wp.load_lightcurve(rows, redshift=0.05, magnitude_unit="mag")
+    LightCurve(name=None, n_points=2, bands=['ztfg', 'ztfr'], mode='magnitude', z=0.05)
+
+    ZTF alerts as ALeRCE returns them: the non-detection becomes an upper limit.
+
+    >>> alerts = {"detections": [
+    ...     {"mjd": 60001.0, "fid": 1, "magpsf": 19.2, "sigmapsf": 0.08, "isdiffpos": 1},
+    ...     {"mjd": 60002.0, "fid": 2, "magpsf": 19.0, "sigmapsf": 0.06, "isdiffpos": 1}],
+    ...     "non_detections": [{"mjd": 59999.0, "fid": 1, "diffmaglim": 20.6}]}
+    >>> lc = wp.load_lightcurve(alerts, survey="ztf", redshift=0.05)
+    >>> lc.bands, lc.upper_limit.tolist(), lc.meta["first_detection_mjd"]
+    (['ztfg', 'ztfr'], [True, False, False], 60001.0)
+
+    LSST diaSources (nJy) with Fink's forced photometry as limits, windowed in MJD and then counted
+    from the first detection:
+
+    >>> src = [{"midpointMjdTai": 61000.0, "band": "g", "psfFlux": 1000.0, "psfFluxErr": 100.0},
+    ...        {"midpointMjdTai": 61003.0, "band": "r", "psfFlux": 1500.0, "psfFluxErr": 120.0}]
+    >>> fp = [{"midpointMjdTai": 60998.0, "band": "r", "psfFlux": 20.0, "psfFluxErr": 60.0}]
+    >>> lc = wp.load_lightcurve(src, survey="lsst", limits=fp, redshift=0.3, time_max=61002.0)
+    >>> [round(float(m), 3) for m in lc.magnitude]
+    [25.207, 23.9]
+    >>> lc.set_time_reference(lc.meta["first_detection_mjd"], "first detection").time.tolist()
+    [-2.0, 0.0]
     """
-    path = Path(path)
-    df = _read_table(path, delimiter)
-    cols = _resolve_columns(df.columns, column_map)
+    if survey is not None:
+        survey = _surveys.check_survey(survey)
+        _check_survey_arguments(survey, {
+            "column_map": column_map, "band_aliases": band_aliases, "band_lookup": band_lookup,
+            "default_band": default_band, "flux_unit": flux_unit, "magnitude_unit": magnitude_unit,
+            "flag_filters": flag_filters, "normalize": normalize})
+        if data_mode not in (None, "magnitude"):
+            raise ValueError(f"data_mode={data_mode!r} cannot be combined with survey={survey!r}: "
+                             f"the presets write AB magnitudes. Leave data_mode out.")
+        df, survey_info = _surveys.survey_table(path, survey, limits=limits, delimiter=delimiter)
+        cols = {c: c for c in _surveys.COLUMNS}
+    else:
+        if limits is not None:
+            raise ValueError(
+                "limits= is read by the survey presets only: pass survey='ztf' or survey='lsst', "
+                "or put the limits in the table as rows with upper_limit=True.")
+        df = _read_table(path, delimiter)
+        cols = _resolve_columns(df.columns, column_map)
+        survey_info = None
+    source = (str(path) if isinstance(path, (str, Path)) else f"<{type(path).__name__}>")
 
     if "time" not in cols:
         raise ValueError(
             f"No time column found (looked for {CANONICAL_SYNONYMS['time']}). "
             f"Available columns: {list(df.columns)}. Pass column_map={{'time': '<column>'}}.")
     time = pd.to_numeric(df[cols["time"]], errors="coerce").to_numpy(dtype=float)
+    time_converted = None
+    is_jd = (survey_info is None and _norm(cols["time"]) in _JD_COLUMNS
+             and np.isfinite(time).any() and np.nanmedian(time) > JD_MJD_OFFSET)
+    if is_jd:
+        # whisper's clock is MJD (explosion_date, time_min/time_max, the survey presets).
+        time = time - JD_MJD_OFFSET
+        time_converted = f"column {cols['time']!r} read as JD: time = JD - {JD_MJD_OFFSET}"
 
     if "band" in cols:
         band = np.array([str(b) for b in df[cols["band"]].to_numpy()])
@@ -157,9 +333,12 @@ def load_lightcurve(path, *, name=None, redshift=None, luminosity_distance=None,
 
     if name is None and "name" in cols and len(df):
         name = str(df[cols["name"]].iloc[0])
+    if name is None and survey_info is not None:
+        name = survey_info["name"]
 
     if normalize:
         band = normalize_bands(band, aliases=band_aliases)
+    lookup = None
     if band_lookup is not None and band_lookup is not False:
         lookup = FILTER_LOOKUP if band_lookup is True else band_lookup
         band = group_bands(band, lookup=lookup)
@@ -177,8 +356,10 @@ def load_lightcurve(path, *, name=None, redshift=None, luminosity_distance=None,
         lambda_eff, zero_point, _ = resolve_bands(band, svo_fallback=svo_fallback)
 
     # --- astropy unit handling: convert flux/magnitude columns to canonical units ---
+    # (a survey preset has written AB magnitudes itself, so there is no unit to guess)
     if magnitude is not None:
-        magnitude = to_canonical(magnitude, magnitude_unit, "magnitude", warn_default=True)
+        magnitude = to_canonical(magnitude, magnitude_unit, "magnitude",
+                                 warn_default=survey is None)
     if flux is not None:
         flux_mode = data_mode if data_mode == "flux" else "flux_density"
         flux = to_canonical(flux, flux_unit, flux_mode, lambda_eff=lambda_eff, warn_default=True)
@@ -213,16 +394,45 @@ def load_lightcurve(path, *, name=None, redshift=None, luminosity_distance=None,
         flux=m(flux), flux_err=m(flux_err), upper_limit=m(upper_limit), system=m(system),
         lambda_eff=m(lambda_eff), zero_point=m(zero_point),
         name=name, redshift=redshift, luminosity_distance=luminosity_distance, data_mode=data_mode,
-        meta={"source_file": str(path), "n_rows_raw": int(len(df)),
+        meta={"source_file": source,
+              "n_rows_raw": int(len(df) if survey_info is None else survey_info["n_rows_raw"]),
               "n_rows_kept": int(mask.sum())},
     )
+    if time_converted:
+        lc.meta["time_converted"] = time_converted
 
     if bands is not None:
-        lc = lc.select_bands(bands)
+        lc = _select_bands(lc, bands, survey=survey, normalize=normalize, aliases=band_aliases,
+                           lookup=lookup)
     if time_min is not None or time_max is not None:
         lc = lc.select_time_window(time_min, time_max)
-    if min_snr is not None:
-        lc = lc.select_snr(min_snr)
+    if survey_info is None:
+        if min_snr is not None:
+            lc = lc.select_snr(min_snr)
+    else:
+        lc = _finish_survey(lc, survey_info, min_snr)
     if explosion_date is not None:
         lc = lc.set_explosion_date(explosion_date)
+    return lc
+
+
+def _finish_survey(lc, info, min_snr):
+    """The survey preset's SNR cut (detections only), its meta, and the not-enough-data check."""
+    dropped = dict(info["n_dropped"], low_snr=0)
+    ul = np.asarray(lc.upper_limit, dtype=bool)
+    if min_snr is not None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            keep = ul | (lc.snr >= min_snr)
+        dropped["low_snr"] = int(np.sum(~keep))
+        lc, ul = lc[keep], ul[keep]
+    if not np.any(~ul):
+        raise ValueError(
+            f"not enough data: no detection is left in this {info['survey'].upper()} light curve "
+            f"({int(ul.sum())} upper limit(s); {info['n_rows_raw']} rows read, dropped: "
+            f"{ {k: v for k, v in dropped.items() if v} }). Widen time_min/time_max or bands=, "
+            f"lower min_snr, or wait for more detections.")
+    lc.meta.update(survey=info["survey"], photometry=info["photometry"],
+                   time_system=info["time_system"], upper_limit_sigma=info["upper_limit_sigma"],
+                   n_dropped=dropped,
+                   first_detection_mjd=float(np.min(np.asarray(lc.time)[~ul])))
     return lc

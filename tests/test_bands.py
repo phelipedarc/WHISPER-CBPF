@@ -1,3 +1,5 @@
+import pytest
+
 from whisper_cbpf.io.bands import (
     group_bands,
     normalize_band,
@@ -34,7 +36,26 @@ def test_normalize_bands_array():
 
 def test_group_bands_basic():
     out = group_bands(["B", "V", "y", "Ks", "F606W", "F110W", "F160W"])
-    assert list(out) == ["g-band", "r-band", "z-band", "K-band", "r-band", "J-band", "H-band"]
+    assert list(out) == ["g-band", "r-band", "y-band", "K-band", "r-band", "J-band", "H-band"]
+
+
+def test_lsst_u_and_y_are_their_own_bands():
+    """``lsstu`` had no alias (it fell to SVO or "unresolved") and ``lssty`` / ``y`` were
+    folded into z-band, so they carried LSST z's 8679 A for a 9710 A filter. Each now resolves to
+    its own LSST anchor, within 1% of sncosmo's photon-weighted mean wavelength and of redback's
+    reference wavelength for the same filter."""
+    from whisper_cbpf.io.bands import resolve_band
+
+    u = resolve_band("lsstu", svo_fallback=False, warn=False)
+    y = resolve_band("lssty", svo_fallback=False, warn=False)
+    assert (u["group"], u["filter_id"], u["source"]) == ("U-band", "LSST/LSST.u", "lsst")
+    assert (y["group"], y["filter_id"], y["source"]) == ("y-band", "LSST/LSST.y", "lsst")
+    assert resolve_band("y", svo_fallback=False, warn=False)["group"] == "y-band"
+    assert resolve_band("lsstz", svo_fallback=False, warn=False)["lambda_eff"] == 8679.0
+    sncosmo = pytest.importorskip("sncosmo")
+    for info, name, redback_aa in ((u, "lsstu", 3680.04), (y, "lssty", 9730.05)):
+        assert info["lambda_eff"] == pytest.approx(sncosmo.get_bandpass(name).wave_eff, rel=0.01)
+        assert info["lambda_eff"] == pytest.approx(redback_aa, rel=0.01)   # redback filters.csv
 
 
 def test_group_bands_2massh_typo_fixed():

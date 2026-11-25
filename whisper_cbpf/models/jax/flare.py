@@ -7,8 +7,8 @@ Parameters, in this fixed order everywhere in this module: ``log_amp, log_sigma,
 log_tau, t0`` (amplitude/sigma/tau are strictly positive by construction, so they're
 sampled/optimized in log space; t0 stays linear).
 
-Ships in whisper-GPU rather than whisper because it is JAX-native. It mirrors
-whisper_cbpf's `Model.predict(params,
+It is JAX-native, so it lives in whisper_cbpf.models.jax, is resolved lazily, and needs the
+[gpu] extra to run. It mirrors whisper_cbpf's `Model.predict(params,
 times, bands) -> flux` contract via `predict_numpy` below, so it drops into
 existing plotting/data-generation helpers that expect that shape.
 
@@ -71,10 +71,20 @@ def predict_jax(params, times):
     return over_theta(log_amp, log_sigma, log_tau, t0, times)
 
 
+def _session_dtype():
+    """``jnp.float64`` under ``jax_enable_x64``, else ``jnp.float32``: the session's precision."""
+    return jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
+
+
 def predict_numpy(parameters, times, bands=None):
-    """whisper_cbpf's ``Model.predict(parameters: dict, times, bands) -> flux`` contract."""
+    """whisper_cbpf's ``Model.predict(parameters: dict, times, bands) -> flux`` contract.
+
+    The epochs follow the session's precision. They were cast to float32, so an x64 session still
+    evaluated the flare in single precision, where an MJD-scale clock moves in 0.0039 d steps:
+    2.3e-2 relative off the float64 NumPy twin on a 0.3-d rise at MJD 59000.
+    """
     params = {k: jnp.asarray(float(parameters[k])) for k in PARAMETERS}
-    return np.asarray(predict_jax(params, jnp.asarray(times, dtype=jnp.float32)))
+    return np.asarray(predict_jax(params, jnp.asarray(times, dtype=_session_dtype())))
 
 
 def make_log_prob_jax(times, values, sigmas, prior_bounds):
@@ -87,12 +97,17 @@ def make_log_prob_jax(times, values, sigmas, prior_bounds):
     This is the ONE object both the vectorized-emcee arm and the NUTS arm call,
     by reference, so the sampler comparison isolates the sampling algorithm
     rather than any difference in how the log-density is computed.
+
+    Arrays follow the session's precision (float64 under ``jax_enable_x64``). They were
+    hard-coded float32, so an x64 session still evaluated the flare in single precision, where
+    an MJD-scale ``t0`` moves in 0.0039 d steps and chains freeze on the staircase.
     """
-    times = jnp.asarray(times, dtype=jnp.float32)
-    values = jnp.asarray(values, dtype=jnp.float32)
-    sigmas = jnp.asarray(sigmas, dtype=jnp.float32)
-    lows = jnp.array([b[0] for b in prior_bounds], dtype=jnp.float32)
-    highs = jnp.array([b[1] for b in prior_bounds], dtype=jnp.float32)
+    dt = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
+    times = jnp.asarray(times, dtype=dt)
+    values = jnp.asarray(values, dtype=dt)
+    sigmas = jnp.asarray(sigmas, dtype=dt)
+    lows = jnp.array([b[0] for b in prior_bounds], dtype=dt)
+    highs = jnp.array([b[1] for b in prior_bounds], dtype=dt)
 
     def log_prob(theta_vec):
         in_bounds = jnp.all((theta_vec >= lows) & (theta_vec <= highs))
@@ -117,12 +132,16 @@ def predict_torch(theta_batch, times, device="cuda"):
     through a CPU numpy array — this is what makes simulation GPU-bound instead
     of the CPU-bound per-row loop ``whisper_cbpf``'s existing SNPE sampler falls
     back to when no ``predict_torch`` is supplied.
+
+    Parameters, epochs and the returned flux follow the session's precision (float64 under
+    ``jax_enable_x64``), as :func:`predict_numpy` does; they were cast to float32.
     """
     import torch
 
-    theta_jax = jnp.from_dlpack(theta_batch.contiguous().float())
+    want = torch.float64 if jax.config.jax_enable_x64 else torch.float32
+    theta_jax = jnp.from_dlpack(theta_batch.contiguous().to(want))
     times_np = times.detach().cpu().numpy() if isinstance(times, torch.Tensor) else np.asarray(times)
-    times_jax = jnp.asarray(times_np, dtype=jnp.float32)
+    times_jax = jnp.asarray(times_np, dtype=_session_dtype())
 
     params = {
         "log_amp": theta_jax[:, 0], "log_sigma": theta_jax[:, 1],

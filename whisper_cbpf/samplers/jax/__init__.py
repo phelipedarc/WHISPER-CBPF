@@ -12,8 +12,9 @@ are load-bearing:
 ``snpe_gpu`` is registered like the rest, as of the generalisation of its simulator; see
 :mod:`whisper_cbpf.backends._registration` for how the lazy binding works.
 
-Adapted from whisper-GPU @ 10796a0, ``samplers/__init__.py``, which lazily exposed the NUTS sampler
-only. The same pattern now covers all six, because the merged package promises a CPU-only import.
+Adapted from whisper-GPU @ 10796a0 (discontinued; superseded by whisper_cbpf),
+``samplers/__init__.py``, which lazily exposed the NUTS sampler only. The same pattern now covers
+all six, because the merged package promises a CPU-only import.
 """
 from __future__ import annotations
 

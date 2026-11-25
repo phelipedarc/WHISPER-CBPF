@@ -1,14 +1,15 @@
 """Registers the JAX/GPU samplers and models into the package's own registries.
 
-Adapted from whisper-GPU @ 10796a0, ``__init__.py``. Two things changed, both forced by the merge:
+Adapted from whisper-GPU @ 10796a0 (discontinued; superseded by whisper_cbpf), ``__init__.py``.
+Two things changed, both forced by the merge:
 
-1. **The whisper compatibility guard is gone.** It verified that an external ``whisper_labia``
-   checkout was importable and new enough, because whisper-GPU was a separate repo cloned into a
-   whisper checkout. There is no external checkout any more -- the CPU core is this same package,
+1. **The whisper compatibility guard is gone.** It verified that an external checkout of the CPU
+   package was importable and new enough, because the GPU half was a separate repo cloned into
+   that checkout. There is no external checkout any more -- the CPU core is this same package,
    so a version skew between the two halves is not expressible.
 
 2. **Registration is lazy.** The legacy module imported the six sampler classes eagerly, and each
-   of those modules imports jax at module scope, so ``import whisper_gpu`` required jax. This
+   of those modules imports jax at module scope, so importing the legacy package required jax. This
    package promises ``import whisper_cbpf`` works with **no jax, no CUDA, no torch, no redback**,
    so the registry holds a zero-argument :class:`_LazySampler` instead of the class object.
    ``get_sampler(name)`` still does ``_SAMPLERS[name]()`` and still gets a sampler instance --
@@ -97,9 +98,9 @@ def _flare_jax_predict_jax(theta, times, band_idx=None):
 #: arguments, because ``get_sampler(name)`` does ``_SAMPLERS[name]()``; all GPU configuration
 #: therefore travels through ``fit(**kwargs)``, never ``__init__``.
 #:
-#: ``snpe_gpu`` is registered like the rest: its simulator is generic, so it works for any
-#: the reason was real: ``fit_snpe_gpu`` took a ``model`` argument but always passed
-#: ``flare_jax.predict_torch``, so registering it would have let
+#: ``snpe_gpu`` is registered like the rest: its simulator is generic, so it works for any model
+#: with a ``predict_jax``. It used to be left out, and the reason was real: ``fit_snpe_gpu`` took a
+#: ``model`` argument but always passed ``flare_jax.predict_torch``, so registering it would have let
 #: ``wp.fit(lc, "kilonova_one_jax", sampler="snpe_gpu")`` return FLARE simulations labelled with a
 #: kilonova's parameter names -- a wrong answer with no error. The root cause was that SNPE's
 #: ``predict_torch(theta, times)`` hook had **no bands argument**, so no photometric model could be

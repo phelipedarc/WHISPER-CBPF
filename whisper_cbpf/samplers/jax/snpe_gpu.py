@@ -32,7 +32,9 @@ What this module adds
    ``predict_torch`` hook with no ``bands`` argument cannot express a photometric model. It can now.
 3. **An optional context embedding.** :class:`ContextEmbedding` injects per-point sigma and a band
    one-hot as extra channels *inside* the embedding — i.e. AFTER sbi's standardizing layer, where a
-   constant channel survives instead of being z-scored to exactly 0.0.
+   constant channel survives instead of being z-scored to exactly 0.0. Pass one as
+   ``embedding_net=``; a NAME (``"mlp"``/``"tcn"``) builds the same network ``snpe`` builds, so a
+   CPU/GPU pair conditions on the same channels.
 
 **Why not ``x_format="stacked"``.** SNPESampler's stacked layout appends (error, time) to the raw
 input vector. For a single-object fit those channels are *constant* across simulations, and sbi
@@ -43,7 +45,7 @@ before the network sees them (sbi even warns: "Data has constant values in dimen
     stacked, 2k sims/2 rounds  -> worst |median - truth| = 6.61  (131 s)
     value,   2k sims/2 rounds  -> worst |median - truth| = 1.43  ( 92 s)
 
-So the default here is ``x_format="value"`` with the context injected inside the embedding instead.
+So the default here is ``x_format="value"``; context, if wanted, goes inside the embedding instead.
 
 **float64.** The TDE and all twelve supernovae REQUIRE it — their engines raise (TDE) or overflow
 (supernovae, cgs luminosities of 1e43-1e46 erg/s against float32's 3.4e38 ceiling) at the first
@@ -61,32 +63,56 @@ cadence, noise and band coverage, so one network cannot be reused across curves.
 """
 from __future__ import annotations
 
+
 import numpy as np
 import torch
 from torch import nn
 
 from ...embeddings import build_embedding
 from ...models import get_model
-from ...samplers.base import BaseSampler
+from ...samplers.base import BaseSampler, _warn_user
 from ...samplers.snpe import SNPESampler, _resolve_device
 
 LSST_BANDS = ("u", "g", "r", "i", "z", "y")
 
-#: Parameter sets per compiled forward-model call, for the same reason ``abc_gpu.DEFAULT_CHUNK``
-#: is 16: on a photometric model the vmapped kernel's XLA **compile time** — not its memory, not its
-#: throughput — is what a wide batch buys you. ``_adapters.MAX_UNCHUNKED_BATCH`` refuses an
-#: unchunked vmap at or above 64 outright, and SNPE's batch IS a simulation count (1e3-1e5), so
-#: chunking is mandatory here rather than optional. Raise it for a cheap analytic model with no
-#: wavelength axis; ``sim_chunk=None`` disables chunking and is only safe below 64 simulations.
-DEFAULT_SIM_CHUNK = 16
+#: Parameter sets per compiled forward-model call. SNPE's batch IS a simulation count (1e3-1e5), so
+#: chunking is mandatory here rather than optional (``_adapters.MAX_UNCHUNKED_BATCH`` refuses an
+#: unchunked vmap at or above 64 outright); ``sim_chunk=None`` disables it and is only safe below
+#: 64 simulations. It was 16, for compile time; re-measured (current models, one A6000, float64,
+#: 1000 simulations per call, the chunked map compiled once), the first call
+#: (compile included) takes 1.3-2.5 s at 250 against 1.4-3.9 s at 16, and every later call pays a
+#: latency-bound model's per-call cost once per block: the TDE at ``n_time=5000`` 0.73 s at 250
+#: against 2.25 s at 16, an arnett supernova 0.56 against 0.78 s, the kilonovae and the TDE at 500
+#: 0.15-0.29 against 0.19-0.36 s. 250, as ``abc_gpu.DEFAULT_CHUNK`` (whose measurements show why a
+#: power of two such as 256 is avoided).
+DEFAULT_SIM_CHUNK = 250
 
 
-def make_predict_torch(lc, model, *, names=None, times=None, chunk=DEFAULT_SIM_CHUNK):
+def make_predict_torch(lc, model, *, names=None, times=None, chunk=DEFAULT_SIM_CHUNK, fixed=None):
     """Build the batched GPU simulator SNPE's ``predict_torch=`` hook takes.
 
     Returns ``predict_torch(theta, times=None, bands=None) -> flux``, mapping a ``(B, D)`` torch
     parameter tensor to a ``(B, n)`` torch **flux** tensor (Jy) evaluated on the light curve's own
     epochs, on the device the computation ran on.
+
+    ``names`` is the order of ``theta``'s columns. ``fixed`` (``{name: value}``) holds parameters
+    that are not columns of ``theta`` -- a prior's ``Fixed`` ones, which SNPE does not sample -- at
+    their values: they are appended to every row, in the call's dtype, before the model runs.
+
+    Examples
+    --------
+    >>> import numpy as np, torch
+    >>> import whisper_cbpf as wp
+    >>> from whisper_cbpf.samplers.jax.snpe_gpu import make_predict_torch
+    >>> flare = wp.get_model("flare_jax")
+    >>> t = np.linspace(1.0, 29.0, 10)
+    >>> lc = wp.LightCurve(time=t, band=["r"] * 10, flux=np.ones(10), flux_err=np.ones(10))
+    >>> sim = make_predict_torch(lc, flare, names=["log_amp", "log_sigma", "log_tau"],
+    ...                          fixed={"t0": 8.0}, chunk=None)
+    >>> out = sim(torch.tensor([[0.5, 0.3, 1.5]]))
+    >>> ref = flare.predict({"log_amp": 0.5, "log_sigma": 0.3, "log_tau": 1.5, "t0": 8.0}, t, None)
+    >>> bool(np.allclose(out.cpu().numpy()[0], ref, rtol=1e-5))
+    True
 
     Three arguments, deliberately. The hook's two-argument form is exactly why no photometric model
     could ever use it: without ``bands`` there is no way to say which filter each observation is in.
@@ -110,8 +136,11 @@ def make_predict_torch(lc, model, *, names=None, times=None, chunk=DEFAULT_SIM_C
 
     from ._adapters import make_batched_predict_jax
 
-    batched = make_batched_predict_jax(lc, model, names=names, times=times,
+    fixed = dict(fixed or {})
+    cols = list(names) if names is not None else [p for p in model.parameters if p not in fixed]
+    batched = make_batched_predict_jax(lc, model, names=cols + list(fixed), times=times,
                                        chunk=None if chunk is None else int(chunk))
+    fixed_values = [float(v) for v in fixed.values()]
     # Match the SESSION's precision, not torch's. `float_dtype()` is float64 exactly when
     # jax_enable_x64 is on, and handing a float32 theta to a float64 trace would either silently
     # downcast the physics (TDE, supernovae: wrong) or force a copy (not zero-copy: slow).
@@ -140,7 +169,11 @@ def make_predict_torch(lc, model, *, names=None, times=None, chunk=DEFAULT_SIM_C
                     "JAX trace, so a different array would evaluate the wrong filters. Rebuild the "
                     "simulator for the new light curve.")
         t = theta if isinstance(theta, torch.Tensor) else torch.as_tensor(theta)
-        t = t.detach().to(want).contiguous()
+        t = t.detach().to(want)
+        if fixed_values:                        # the Fixed parameters, after the sampled columns
+            t = torch.cat([t, torch.tensor(fixed_values, dtype=want, device=t.device)
+                           .expand(t.shape[0], -1)], dim=1)
+        t = t.contiguous()
         try:
             theta_j = jnp.from_dlpack(t)
             transfer = "dlpack"
@@ -165,8 +198,10 @@ def make_predict_torch(lc, model, *, names=None, times=None, chunk=DEFAULT_SIM_C
 
     predict_torch.transfer = None
     predict_torch.device = str(jax.devices()[0])
-    predict_torch.names = list(batched.names)
+    predict_torch.names = list(cols)
+    predict_torch.fixed = dict(fixed)
     predict_torch.chunk = None if chunk is None else int(chunk)
+    predict_torch.floor_stats = batched.floor_stats     # the floored-point count, updated on every call
     return predict_torch
 
 
@@ -252,16 +287,21 @@ class SNPEGPUSampler(BaseSampler):
 
     name = "snpe_gpu"
 
-    def fit(self, lc, model, prior=None, *, predict_torch=None, space="auto", num_rounds=1,
-            num_simulations=1000, density_estimator="maf", embedding="none", embedding_latent=32,
+    def fit(self, lc, model, prior=None, *, predict_torch=None, space="auto", num_rounds=2,
+            num_simulations=1000, density_estimator="maf", embedding_net=None, embedding_latent=32,
             num_samples=10000, sim_chunk=DEFAULT_SIM_CHUNK, device="cuda", seed=0,
-            show_progress=False, **snpe_kwargs):
+            show_progress=False, embedding=None, **snpe_kwargs):
         """Fit ``lc`` with ``model`` by SNPE, simulating and training on the GPU.
 
         Parameters
         ----------
+        prior : Prior, optional
+            As :meth:`SNPESampler.fit`: ``Uniform``, ``LogUniform``, ``Normal``,
+            ``TruncatedNormal``; a ``Fixed`` parameter is held at its value (not sampled, not
+            counted in AIC/BIC) and appended to every simulated row by the built simulator.
         predict_torch : callable, optional
             ``predict_torch(theta, times[, bands]) -> flux`` — an explicit batched forward map.
+            ``theta`` holds the prior's free parameters only, in the prior's order.
             **Optional**: when omitted it is built from ``model.predict_jax`` by
             :func:`make_predict_torch`, so any model registered through the JAX factories
             (``register_kilonova`` / ``register_kilonova_two`` / ``register_kilonova_three`` /
@@ -274,18 +314,25 @@ class SNPEGPUSampler(BaseSampler):
             ``lc.data_mode``. The simulator returns flux; the flux→space map runs on-device and the
             noise is added AFTER it, so magnitude data is fitted in magnitude space.
         num_rounds : int
-            ``1`` (default) is amortized NPE — one pass, which is all the user-facing promise
-            requires ("able to infer after one round on the transient data"). ``>1`` is sequential
-            SNPE; the round-to-round proposal draw is leakage-guarded (see
-            ``proposal_min_acceptance`` in :meth:`SNPESampler.fit`).
+            ``2`` (default, as in ``snpe``) is sequential SNPE; the round-to-round proposal draw is
+            leakage-guarded (see ``proposal_min_acceptance`` in :meth:`SNPESampler.fit`). ``1`` is
+            amortized NPE — one pass, which is all the user-facing promise requires ("able to infer
+            after one round on the transient data"). The default used to be 1 here and 2 on the
+            CPU, so the same call ran a different algorithm on each arm.
         density_estimator : str or callable
             ``'maf'`` (default), ``'nsf'``, ``'mdn'``, ... or a pre-built ``posterior_nn(...)``
             factory. ``hidden_features`` / ``num_transforms`` / ``num_bins`` pass through.
-        embedding : {"none", "mlp", "tcn"} or torch.nn.Module
-            ``"none"`` (default) feeds the data-space vector straight to the flow — measured best at
-            this problem size. ``"mlp"`` / ``"tcn"`` wrap that architecture in
-            :class:`ContextEmbedding`, so per-point sigma and a band one-hot ride along as extra
-            channels *inside* the embedding. Any ``torch.nn.Module`` is passed through untouched.
+        embedding_net : {None, "mlp", "tcn"} or torch.nn.Module
+            The keyword ``snpe`` takes, with the same meaning, so one call configures both arms.
+            ``None`` (default) feeds the data-space vector straight to the flow — measured best at
+            this problem size. ``"mlp"`` / ``"tcn"`` build the same network ``snpe`` builds, over
+            the ``x_format`` channels. Any ``torch.nn.Module`` is passed through untouched —
+            e.g. a :class:`ContextEmbedding`, which adds per-point sigma and a band one-hot as
+            channels inside the embedding (it reads the value-only input, so it needs
+            ``x_format="value"``, and any other layout is refused before simulating).
+        embedding : deprecated
+            The old spelling of ``embedding_net`` (``"none"`` meaning ``None``). It warns, and its
+            ``"mlp"`` / ``"tcn"`` no longer imply a :class:`ContextEmbedding`.
         sim_chunk : int or None
             Parameter sets per compiled forward-model call. See :data:`DEFAULT_SIM_CHUNK`.
         device : str
@@ -296,8 +343,26 @@ class SNPEGPUSampler(BaseSampler):
             (``info["sim_transfer"]``).
 
         Extra keyword arguments pass through to :meth:`SNPESampler.fit` (``x_format``,
-        ``scatter_param``, ``standardize_x``, ``max_num_epochs``, ...).
+        ``scatter_param``, ``standardize_x``, ``num_chains``, ``max_num_epochs``, ...).
         """
+        if embedding is not None:
+            if embedding_net is not None:
+                raise TypeError("snpe_gpu: pass embedding_net= only; embedding= is its deprecated "
+                                "alias.")
+            _warn_user(
+                "snpe_gpu: embedding= is deprecated; use embedding_net=, the keyword snpe takes. "
+                "'mlp'/'tcn' now build the same network as on snpe, not a ContextEmbedding; pass "
+                "embedding_net=ContextEmbedding(...) for that.", DeprecationWarning)
+            embedding_net = None if embedding == "none" else embedding
+        # A ContextEmbedding reads the value-only vector (it adds sigma and the band itself), so
+        # the stacked layout's 3n inputs raised "shape '[1, 1, n]' is invalid for input of size 3n"
+        # at the first training batch, after the simulations had been paid for. Refuse it here.
+        if (isinstance(embedding_net, ContextEmbedding)
+                and snpe_kwargs.get("x_format", "value") != "value"):
+            raise ValueError(
+                f"snpe_gpu: a ContextEmbedding conditions on the value-only input and adds sigma "
+                f"and the band itself; use x_format='value' (the default), not "
+                f"{snpe_kwargs['x_format']!r}.")
         model = get_model(model)
         prior = prior if prior is not None else model.default_prior
         if prior is None:
@@ -313,38 +378,24 @@ class SNPEGPUSampler(BaseSampler):
                     f"register_kilonova_three / register_tde / register_supernova), pass "
                     f"predict_torch= yourself, or use sampler='snpe', whose CPU simulator works "
                     f"from the numpy predict.")
-            # names=prior.names: the adapter reorders into model.parameters order internally and
-            # DROPS a prior-only column, which is exactly the scatter_param case -- that parameter
-            # is a likelihood term and must never reach the physics.
-            predict_torch = make_predict_torch(lc, model, names=list(prior.names), chunk=sim_chunk)
+            # names=the prior's free parameters: the adapter reorders into model.parameters order
+            # internally and DROPS a prior-only column, which is exactly the scatter_param case --
+            # that parameter is a likelihood term and must never reach the physics. SNPE samples
+            # the free parameters only; a Fixed one is appended at its value.
+            fixed = dict(getattr(prior, "fixed", {}) or {})
+            predict_torch = make_predict_torch(
+                lc, model, names=[nm for nm in prior.names if nm not in fixed], chunk=sim_chunk,
+                fixed=fixed)
             sim_source = "auto"
 
         resolved = _resolve_device(device, torch)
-        torch.manual_seed(int(seed))     # BEFORE net construction: embedding init draws from this
-        emb_label = "none (raw values -> flow)"
-        embedding_net = None
-        if isinstance(embedding, str) and embedding not in ("none",):
-            from ...likelihood import GaussianLikelihood
-
-            # sigma in the COMPARISON space, not lc.flux_err: a magnitude-space fit conditions on
-            # magnitudes, so the context channel has to be the magnitude error or it is describing
-            # a different observable from the one the network sees.
-            sigma = np.asarray(GaussianLikelihood(lc, space=space).sigma, dtype=float)
-            codes, labels = encode_bands(lc.band, labels=None)
-            embedding_net = ContextEmbedding(sigma, codes, n_bands=len(labels),
-                                             spec=embedding, latent_dim=int(embedding_latent))
-            emb_label = f"ContextEmbedding({embedding}, {2 + len(labels)} channels)"
-        elif embedding is not None and not isinstance(embedding, str):
-            embedding_net = embedding
-            emb_label = type(embedding).__name__
-
         x_format = snpe_kwargs.pop("x_format", "value")         # see the module docstring
         result = SNPESampler().fit(
             lc, model, prior=prior,
             num_rounds=int(num_rounds), num_simulations=int(num_simulations),
             space=space,
             density_estimator=density_estimator,
-            embedding_net=embedding_net,
+            embedding_net=embedding_net, embedding_latent=int(embedding_latent),
             x_format=x_format,
             predict_torch=predict_torch,
             num_samples=int(num_samples),
@@ -352,12 +403,13 @@ class SNPEGPUSampler(BaseSampler):
             **snpe_kwargs,
         )
         result.sampler = "snpe_gpu"
-        result.info["embedding"] = emb_label
         result.info["predict_torch"] = sim_source
         transfer = getattr(predict_torch, "transfer", None)
         result.info["sim_transfer"] = transfer
         result.info["sim_device"] = getattr(predict_torch, "device", None)
         result.info["sim_chunk"] = getattr(predict_torch, "chunk", None)
+        fs = getattr(predict_torch, "floor_stats", None)   # a caller's map has none
+        result.info["mag_floor_stats"] = dict(fs) if fs else None
         # "jax-dlpack-torch" is the claim the docs make: simulation ran in JAX and the result was
         # adopted by torch in place. Say "jax-host-torch" when it did not, rather than letting a
         # silent host round trip be reported as the GPU path.
@@ -375,10 +427,10 @@ class SNPEGPUSampler(BaseSampler):
         return result
 
 
-def fit_snpe_gpu(lc, model, *, prior=None, num_rounds=1, num_simulations=10000,
-                 embedding="none", embedding_latent=32, density_estimator="maf",
+def fit_snpe_gpu(lc, model, *, prior=None, num_rounds=2, num_simulations=10000,
+                 embedding_net=None, embedding_latent=32, density_estimator="maf",
                  num_samples=10000, seed=0, device="cuda", show_progress=False,
-                 **snpe_kwargs):
+                 embedding=None, **snpe_kwargs):
     """Fit one light curve with SNPE on GPU. See :meth:`SNPEGPUSampler.fit`.
 
     Kept as a direct entry point because it predates registration; ``wp.fit(lc, model,
@@ -388,6 +440,6 @@ def fit_snpe_gpu(lc, model, *, prior=None, num_rounds=1, num_simulations=10000,
     """
     return SNPEGPUSampler().fit(
         lc, model, prior=prior, num_rounds=num_rounds, num_simulations=num_simulations,
-        embedding=embedding, embedding_latent=embedding_latent,
+        embedding_net=embedding_net, embedding_latent=embedding_latent,
         density_estimator=density_estimator, num_samples=num_samples, seed=seed,
-        device=device, show_progress=show_progress, **snpe_kwargs)
+        device=device, show_progress=show_progress, embedding=embedding, **snpe_kwargs)

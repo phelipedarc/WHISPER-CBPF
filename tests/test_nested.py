@@ -286,3 +286,74 @@ def test_nested_agrees_with_mcmc():
     for p in ("amplitude", "rise_time", "decay_time"):
         a, b = rn.summary[p]["median"], rm.summary[p]["median"]
         assert abs(a - b) < 0.2 * abs(b) + 0.2
+
+
+# --- 15. a model with a constraint wall: the prior inside it is renormalised --------------------
+class _WalledLine:
+    """``flux = x + y t``, behind the wall ``x + y < 1`` (half of the Uniform(0, 1)^2 prior).
+
+    Shaped like the JAX factories' ``predict_jax`` (``.ctx`` with ``constraint_model``, ``params``
+    and ``physical``), which is how the nested sampler finds a model's wall. Module level, so it
+    pickles."""
+
+    constraint_model = "toy"
+    params = ["x", "y"]
+
+    def __init__(self):
+        self.ctx = self
+
+    def physical(self, free):
+        return bool(free[0] + free[1] < 1.0)
+
+    def __call__(self, theta, times, band_idx=None):
+        return theta[0] + theta[1] * np.asarray(times)
+
+
+def _walled_predict(parameters, times, bands=None):
+    return float(parameters["x"]) + float(parameters["y"]) * np.asarray(times, dtype=float)
+
+
+def test_a_constrained_prior_is_normalised_inside_its_wall():
+    """Two points pin (x, y) near (0.2, 0.2), well inside the wall: the likelihood integrates to 1
+    over the plane, so ``ln Z = -ln f = ln 2`` with the prior renormalised to the allowed half, and
+    ``ln Z = 0`` without (what every walled model's ln Z was, low by ``-ln f``)."""
+    model = wp.Model(name="walled_line", predict=_walled_predict, parameters=["x", "y"],
+                     default_prior=Prior({"x": Uniform(0.0, 1.0), "y": Uniform(0.0, 1.0)}),
+                     predict_jax=_WalledLine())
+    lc = wp.LightCurve(time=[0.0, 1.0], band=["r", "r"], flux=[0.2, 0.4], flux_err=[0.02, 0.02])
+    r = wp.fit(lc, model, sampler="nested", nlive=200, seed=0)
+    wall = r.info["constraint_prior"]
+    assert abs(wall["allowed_fraction"] - 0.5) < 0.02
+    assert abs(wall["log_evidence_before_correction"]) < 4 * r.info["log_evidence_err"]
+    assert abs(r.info["log_evidence"] - np.log(2.0)) < 4 * r.info["log_evidence_err"]
+    assert wall["log_evidence_correction"] == pytest.approx(-np.log(wall["allowed_fraction"]))
+    free = wp.fit(lc, "flare", sampler="nested", nlive=50, dlogz=5.0, seed=0,
+                  prior=Prior({"amplitude": Uniform(0.0, 1.0), "rise_time": Uniform(1.0, 2.0),
+                               "decay_time": Uniform(1.0, 2.0)}))
+    assert free.info["constraint_prior"] is None            # no wall, nothing to renormalise
+
+
+def test_the_physical_models_walls_are_found():
+    pytest.importorskip("jax")
+    import jax
+
+    from whisper_cbpf.samplers import nested as N
+
+    old = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", True)
+    try:
+        from whisper_cbpf.models.jax import supernova_model
+        walled = supernova_model("arnett", ["lsstg"], redshift=0.1, dl_cm=1.4e27)
+        open_ = supernova_model("arnett", ["lsstg"], redshift=0.1, dl_cm=1.4e27, constraint=None)
+        wall = N._wall_check(walled)
+        assert wall is not None and N._wall_check(open_) is None
+        assert N._wall_check(get_model("flare")) is None
+        names = list(walled.parameters)
+        f, n_ok, n = N._allowed_fraction(wall, walled.default_prior, names, {}, 0, n=4000)
+        assert 0.33 < f < 0.45 and n == 4000             # 0.392 on 20 000 draws (review probe)
+        bad = next(r for r in N._dg.prior_draws(walled.default_prior, names, 200, 1)
+                   if not wall(dict(zip(names, r))))
+        assert N._log_likelihood(bad, names, walled.predict, np.array([5.0]), np.array(["lsstg"]),
+                                 None, wall=wall) == -np.inf
+    finally:
+        jax.config.update("jax_enable_x64", old)

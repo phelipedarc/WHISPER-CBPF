@@ -511,7 +511,8 @@ def test_public_waic_matches_closed_form_end_to_end():
     assert got["waic"] == pytest.approx(-14.609600762525, abs=1e-9)
 
 
-@pytest.mark.skipif(not HAS_ARVIZ, reason="cross-check needs arviz")
+@pytest.mark.skipif(not HAS_ARVIZ or not hasattr(__import__("arviz"), "waic"),
+                    reason="cross-check needs arviz with az.waic (removed in arviz 1.0)")
 def test_waic_cross_checks_against_arviz_on_the_same_log_likelihood_matrix():
     """`arviz.waic` on the identical (draws, data) matrix, built the way `_loo_waic` builds it.
 
@@ -527,11 +528,11 @@ def test_waic_cross_checks_against_arviz_on_the_same_log_likelihood_matrix():
     import warnings
 
     import arviz as az
-    from whisper_cbpf.metrics._numpy import _loo_waic
+    from whisper_cbpf.metrics._numpy import _idata_from_ll, _loo_waic
 
     ll = _closed_form_ll()
     _, w, _ = _loo_waic(ll)
-    idata = az.from_dict(posterior={"_": np.zeros((1, CF_S))}, log_likelihood={"y": ll[None]})
+    idata = _idata_from_ll(az, ll)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")                     # arviz's own p_waic > 0.4 notice
         az_w = az.waic(idata, pointwise=True)
@@ -629,9 +630,17 @@ def test_loo_waic_distinguishes_arviz_failing_from_arviz_absent(monkeypatch):
     import arviz as az
     from whisper_cbpf.metrics._numpy import _loo_waic
 
+    # Healthy arviz: no error recorded. On a continuous posterior -- arviz >= 1.0's PSIS refuses the
+    # two-valued closed-form matrix below outright ("All tail values are the same"), which is
+    # recorded as an error, correctly, and is not what this line tests.
+    theta = np.random.default_rng(0).normal(0.0, 0.3, CF_S)
+    healthy = (-0.5 * np.log(2 * np.pi * CF_SD ** 2)
+               - (CF_Y[None, :] - theta[:, None]) ** 2 / (2 * CF_SD ** 2))
+    loo, w, err = _loo_waic(healthy)
+    assert loo is not None and err is None
+    assert np.isfinite(loo["elpd_loo"]) and np.isfinite(loo["pareto_k_max"])
+
     ll = _closed_form_ll()
-    loo, w, err = _loo_waic(ll)
-    assert loo is not None and err is None                 # healthy arviz: no error recorded
 
     def boom(*a, **k):
         raise RuntimeError("simulated arviz breakage")
@@ -640,3 +649,20 @@ def test_loo_waic_distinguishes_arviz_failing_from_arviz_absent(monkeypatch):
     loo, w, err = _loo_waic(ll)
     assert loo is None and "simulated arviz breakage" in err and "RuntimeError" in err
     assert w["waic"] == pytest.approx(29.960957199265, abs=1e-10)   # WAIC unaffected by LOO failing
+
+
+@pytest.mark.skipif(not HAS_ARVIZ, reason="ESS needs arviz")
+def test_ess_is_finite_on_every_arviz():
+    """``ess_by_parameter`` called ``az.convert_to_inference_data``, which arviz 1.x removed: every
+    ESS, and every ESS/sec built on it, was NaN. It now shares the NUTS samplers' routine."""
+    from whisper_cbpf.metrics import ess_by_parameter, ess_summary
+
+    x = np.random.default_rng(0).normal(size=(4, 500, 2))
+    bulk = ess_by_parameter(x, ["a", "b"])
+    tail = ess_by_parameter(x, ["a", "b"], method="tail")
+    assert all(1000 < v < 4000 for v in bulk.values()), bulk     # ~2000 independent draws
+    assert all(np.isfinite(v) for v in tail.values())
+    s = ess_summary(x, ["a", "b"], wall_clock_s=2.0)
+    assert np.isfinite(s["ess_worst_per_sec"]) and s["ess_worst_param"] in ("a", "b")
+    with pytest.raises(ValueError, match="bulk"):
+        ess_by_parameter(x, ["a", "b"], method="quantile")

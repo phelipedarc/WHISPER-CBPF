@@ -39,7 +39,6 @@ fused.
 from __future__ import annotations
 
 import time
-import warnings
 
 import numpy as np
 import pandas as pd
@@ -47,18 +46,19 @@ from scipy.special import logsumexp
 
 from ...likelihood import GaussianLikelihood, make_likelihood
 from ...models import get_model
-from ...samplers.abc_smc import _importance_log_weights, _kernel_std
+from ...samplers.abc_smc import _importance_log_weights, _kernel_std, _warn_auto_floor_scale
 from ...samplers.base import (
     BaseSampler,
     SamplerResult,
     attach_band_metrics,
     attach_predictive_metrics,
     summarize_posterior,
+    _warn_user,
 )
 
 from ...backends._env import require_jax
 from ...distance._jax import jnp_distance
-from .abc_gpu import DEFAULT_CHUNK, _model_in_space_jnp, _prior_rescale_arrays
+from .abc_gpu import DEFAULT_CHUNK, _best_by_logl, _model_in_space_jnp, _PriorDraw
 
 #: Attempts issued per host synchronisation, as a multiple of ``n_particles``.
 #:
@@ -77,11 +77,17 @@ class ABCSMCGPUSampler(BaseSampler):
             epsilon_schedule=None, quantile=0.5, min_epsilon=None, simulate_noise=True,
             space="auto", scatter_param=None, distance="chi2", seed=0, chunk=DEFAULT_CHUNK,
             attempts_per_wave=None, max_attempts_per_round=None,
-            max_logl_scan=2000) -> SamplerResult:
+            max_logl_scan=None) -> SamplerResult:
         """Fit ``lc`` with ``model`` by importance-weighted ABC-SMC on the GPU.
 
         Parameters
         ----------
+        prior : Prior, optional
+            Defaults to ``model.default_prior``. ``Uniform``, ``LogUniform``, ``Normal``,
+            ``TruncatedNormal`` and ``Fixed``; round 0 draws each through its inverse CDF on the
+            device (as ``abc_gpu`` does). A ``Fixed`` parameter is never perturbed: a constant
+            column in ``samples``, listed in ``info["fixed"]``, left out of the kernel and the
+            importance weights, and not counted in AIC/BIC (``n_params``).
         predict_jax : callable, optional
             ``predict_jax(theta_2d, times) -> flux_2d`` mapping ``(B, D)`` parameters and ``(n,)``
             times to ``(B, n)`` model **flux**, on device. Columns are in ``prior.names`` order.
@@ -92,13 +98,23 @@ class ABCSMCGPUSampler(BaseSampler):
         scatter_param, seed
             As :meth:`whisper_cbpf.samplers.abc_smc.ABCSMCSampler.fit`.
         distance : str
-            ``chi2`` (default), ``mse``, ``rmse``, ``mae``, ``wmse``, ``wmae``.
+            ``chi2`` (default), ``mse``, ``rmse``, ``mae``, ``wmse``, ``wmae``, ``max_abs_z``
+            (every point within epsilon sigma, accepted strictly below epsilon).
+            ``min_epsilon="auto"`` is derived for ``chi2`` and warns with any other distance.
         chunk : int
             Particles per vmapped block inside the scan. **Bounded by XLA compile time, not by
-            memory** — see ``abc_gpu.fit``'s ``chunk`` for the measurement. The default 16 is safe;
-            raising it on a photometric model is the trap.
+            memory**, and that compile time is erratic in the width: see ``abc_gpu.fit``'s
+            ``chunk`` and :data:`~whisper_cbpf.samplers.jax.abc_gpu.DEFAULT_CHUNK` for the
+            measurements behind the default, 250. Prefer a width that is not a power of two
+            (256 and 1024 compile for minutes on the kilonovae).
         attempts_per_wave : int, optional
             Attempts per host synchronisation. Defaults to ``WAVE_MULTIPLIER * n_particles``.
+        max_logl_scan : int, optional
+            Cap on the final-population particles re-scored by exact log-likelihood to pick
+            ``best_params``. **Default ``None`` scores the whole population** -- the particles
+            themselves, before the equal-weight resample. When a cap binds, the particles with the
+            LOWEST distance are scored. ``info['logl_scan_n']`` and ``info['logl_scan_capped']``
+            record what was done.
         """
         jax, jnp = require_jax("abc_smc_gpu")
 
@@ -136,16 +152,19 @@ class ABCSMCGPUSampler(BaseSampler):
         obs_y = np.asarray(lik_space.y, dtype=float)
         obs_err = np.asarray(lik_space.sigma, dtype=float)
 
-        lows, highs, is_log = _prior_rescale_arrays(prior, names)
-        # `lows`/`highs` come back in RESCALE space (log for LogUniform). The perturbation kernel and
-        # the support test both live in NATIVE space, matching abc_smc.py, so keep both forms.
-        nat_lo = np.where(is_log, np.exp(lows), lows)
-        nat_hi = np.where(is_log, np.exp(highs), highs)
+        # Round 0 draws the prior through each parameter's inverse CDF (`_PriorDraw`). The
+        # perturbation kernel and the support test live in NATIVE space, matching abc_smc.py. The
+        # kernel moves the FREE parameters only: a Fixed one has kernel width 0, so it keeps its
+        # value exactly, and it is left out of the importance weights and of AIC/BIC.
+        spec = _PriorDraw(prior, names, "abc_smc_gpu")
+        free_idx = spec.free
+        free_names = [names[i] for i in free_idx]
+        free_prior = type(prior)({nm: prior.distributions[nm] for nm in free_names})
 
         t_j = jnp.asarray(times)
         y_j, e_j = jnp.asarray(obs_y), jnp.asarray(obs_err)
-        lo_j, hi_j, log_j = jnp.asarray(lows), jnp.asarray(highs), jnp.asarray(is_log)
-        nlo_j, nhi_j = jnp.asarray(nat_lo), jnp.asarray(nat_hi)
+        draw = spec.build(jnp)
+        nlo_j, nhi_j = jnp.asarray(spec.nat_lo), jnp.asarray(spec.nat_hi)
         scatter_idx = names.index(scatter_param) if scatter_param else None
 
         def _simulate(theta, key):
@@ -164,8 +183,7 @@ class ABCSMCGPUSampler(BaseSampler):
                 k_prop, k_noise = jax.random.split(key)
                 if round_idx == 0:
                     u = jax.random.uniform(k_prop, (k,))
-                    raw = lo_j + u * (hi_j - lo_j)
-                    theta = jnp.where(log_j, jnp.exp(raw), raw)
+                    theta = draw(u)
                     return theta, _simulate(theta, k_noise)
                 k_pick, k_pert = jax.random.split(k_prop)
                 j = jax.random.choice(k_pick, parents_j.shape[0], p=weights_j)
@@ -192,6 +210,9 @@ class ABCSMCGPUSampler(BaseSampler):
         auto_floor = min_epsilon == "auto"
         eps_floor = None if (auto_floor or min_epsilon is None) else float(min_epsilon)
         floor_c = 2.0 * (k + 2)
+        if (auto_floor and epsilon_schedule is None
+                and str(distance).lower() not in ("chi2", "chi_square")):
+            _warn_auto_floor_scale(str(distance), floor_c)
 
         t0 = time.perf_counter()
         parents_arr = None
@@ -227,7 +248,7 @@ class ABCSMCGPUSampler(BaseSampler):
             while n_acc < n_particles and next_attempt < max_attempts_per_round:
                 idx = jnp.arange(next_attempt, next_attempt + n_blocks * width).reshape(n_blocks, width)
                 _, (th, d) = jax.lax.scan(block, None, idx)          # one wave, one sync
-                th = np.asarray(th, dtype=float).reshape(-1, k)
+                th = spec.exact_fixed(np.asarray(th, dtype=float).reshape(-1, k))
                 d = np.asarray(d, dtype=float).reshape(-1)
                 keep = d < epsilon                                    # STRICT, matching abc_smc.py
                 if keep.any():
@@ -240,9 +261,9 @@ class ABCSMCGPUSampler(BaseSampler):
             attempts = next_attempt
             total_attempts += attempts
             if n_acc < n_particles:
-                warnings.warn(
+                _warn_user(
                     f"abc_smc_gpu round {round_idx + 1}: only {n_acc}/{n_particles} accepted after "
-                    f"{attempts} attempts (epsilon={epsilon:g}).", stacklevel=2)
+                    f"{attempts} attempts (epsilon={epsilon:g}).")
 
             if acc_theta:
                 th_all = np.concatenate(acc_theta, axis=0)
@@ -261,8 +282,9 @@ class ABCSMCGPUSampler(BaseSampler):
             if round_idx == 0 or parents_arr is None or not theta_pop:
                 log_w = np.full(len(theta_pop), -np.log(max(len(theta_pop), 1)))
             else:
-                log_w = _importance_log_weights(theta_pop, names, parents_arr,
-                                                parent_log_weights, kernel_std, prior)
+                log_w = _importance_log_weights(theta_pop, free_names, parents_arr[:, free_idx],
+                                                parent_log_weights, kernel_std[free_idx],
+                                                free_prior)
             weights = np.exp(log_w - logsumexp(log_w)) if len(log_w) else np.array([])
 
             dists = d_all if len(d_all) else np.array([np.inf])
@@ -279,7 +301,10 @@ class ABCSMCGPUSampler(BaseSampler):
             parents_arr = th_all
             parent_log_weights = log_w
             parent_weights = weights
-            kernel_std = _kernel_std(th_all, weights) if len(weights) else None
+            kernel_std = None
+            if len(weights):                         # width 0 on a Fixed column: never moved
+                kernel_std = np.zeros(k)
+                kernel_std[free_idx] = _kernel_std(th_all[:, free_idx], weights)
             if epsilon_schedule is None and round_idx + 1 < n_rounds:
                 epsilon = float(np.quantile(dists, quantile))
                 if auto_floor:
@@ -306,21 +331,13 @@ class ABCSMCGPUSampler(BaseSampler):
         lik = (make_likelihood(lc, kind="gaussian_scatter", space=space,
                                scatter_param=scatter_param) if scatter_param
                else make_likelihood(lc, space=space))
-        scan_n = min(len(samples), int(max_logl_scan)) if len(samples) else 0
-        if scan_n:
-            blocks = []
-            for s in range(0, scan_n, max(int(chunk), 1)):
-                blk = jnp.asarray(np.asarray(samples[names].iloc[s:s + int(chunk)], dtype=float))
-                blocks.append(np.asarray(jax.block_until_ready(predict_jax(blk, t_j)), dtype=float))
-            fluxes = np.concatenate(blocks, axis=0)
-            logls = []
-            for row, (_, rec) in zip(fluxes, samples.iloc[:scan_n].iterrows()):
-                logls.append(lik.log_likelihood(row, sigma_extra=float(rec[scatter_param]))
-                             if scatter_param else lik.log_likelihood(row))
-            logls = np.asarray(logls, dtype=float)
-            b = int(np.nanargmax(logls)) if np.any(np.isfinite(logls)) else 0
-            best = {nm: float(samples[nm].iloc[b]) for nm in names}
-            max_log_likelihood = float(logls[b])
+        # Best fit over the final POPULATION, as abc_smc.py does -- not over the head of the
+        # resampled `samples`, which held duplicates and could miss the best particle entirely.
+        n_scanned, capped = 0, False
+        if population:
+            b, max_log_likelihood, n_scanned, capped = _best_by_logl(
+                jax, jnp, predict_jax, t_j, th_all, d_all, lik, scatter_idx, chunk, max_logl_scan)
+            best = {nm: float(th_all[b, j]) for j, nm in enumerate(names)}
         else:
             best, max_log_likelihood = {nm: float("nan") for nm in names}, float("nan")
 
@@ -341,22 +358,47 @@ class ABCSMCGPUSampler(BaseSampler):
             "backend": "jax-vmap-scan",
             "x64": bool(jax.config.jax_enable_x64),
             "predict_jax": predict_jax_source,
+            "logl_scan_n": int(n_scanned),
+            "logl_scan_capped": bool(capped),
+            # points simulated at mag_floor. None = not counted: this sampler runs the
+            # forward map inside one compiled scan, and a traced map counts nothing.
+            "mag_floor_stats": (dict(fs) if (fs := getattr(predict_jax, "floor_stats", None))
+                                and fs["n_points"] else None),
+            "fixed": dict(spec.fixed),
         }
-        attach_band_metrics(info, lc, model.name, best, lik_space.space)
+        attach_band_metrics(info, lc, model, best, lik_space.space)
 
-        aic = 2.0 * k - 2.0 * max_log_likelihood if np.isfinite(max_log_likelihood) else float("nan")
-        bic = (k * np.log(max(n_data, 1)) - 2.0 * max_log_likelihood
+        k_free = len(free_idx)                       # a Fixed parameter is not counted in AIC/BIC
+        aic = (2.0 * k_free - 2.0 * max_log_likelihood if np.isfinite(max_log_likelihood)
+               else float("nan"))
+        bic = (k_free * np.log(max(n_data, 1)) - 2.0 * max_log_likelihood
                if np.isfinite(max_log_likelihood) else float("nan"))
 
         result = SamplerResult(
             sampler=self.name, model=model.name, parameters=names, samples=samples,
             summary=summarize_posterior(samples, names), best_params=best, n_data=n_data,
-            n_params=k, runtime_s=runtime, info=info, min_distance=chi2_min,
+            n_params=k_free, runtime_s=runtime, info=info, min_distance=chi2_min,
             max_log_likelihood=max_log_likelihood, aic=aic, bic=bic)
-        attach_predictive_metrics(result, lc, lik_space.space)
+        attach_predictive_metrics(result, lc, lik_space.space, model=model)
         return result
 
 
 def fit_ABCSMCGPU(lc, model, prior=None, **kwargs) -> SamplerResult:
-    """Fit ``lc`` with ``model`` via ABC-SMC on GPU. See :meth:`ABCSMCGPUSampler.fit`."""
+    """Fit ``lc`` with ``model`` via ABC-SMC on GPU. See :meth:`ABCSMCGPUSampler.fit`.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import whisper_cbpf as wp
+    >>> from whisper_cbpf.models import get_model
+    >>> from whisper_cbpf.samplers.jax import fit_ABCSMCGPU
+    >>> t = np.linspace(1.0, 29.0, 30)
+    >>> truth = {"log_amp": 0.5, "log_sigma": 0.3, "log_tau": 1.5, "t0": 8.0}
+    >>> flux = np.asarray(get_model("flare_jax").predict(truth, t, None), float)
+    >>> lc = wp.LightCurve(time=t, band=np.array(["r"] * 30), flux=flux,
+    ...                    flux_err=np.full(30, 0.05 * flux.max()))
+    >>> res = fit_ABCSMCGPU(lc, "flare_jax", n_particles=100, n_rounds=3, seed=0)
+    >>> res.n_samples, len(res.info["rounds"])
+    (100, 3)
+    """
     return ABCSMCGPUSampler().fit(lc, model, prior=prior, **kwargs)

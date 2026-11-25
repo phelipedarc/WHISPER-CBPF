@@ -102,3 +102,31 @@ def test_default_band(tmp_path):
     p.write_text("mjd,mag,magerr\n1.0,18.0,0.1\n2.0,18.5,0.1\n")
     lc = load_lightcurve(p, default_band="ztfg")
     assert lc.bands == ["ztfg"] and lc.n_points == 2
+
+
+def test_min_snr_keeps_the_upper_limits(tmp_path):
+    """A non-detection has no SNR; the cut is for detections, as in the survey presets."""
+    p = tmp_path / "ul.csv"
+    p.write_text(
+        "time,magnitude,e_magnitude,band,upper_limit\n"
+        "1.0,20.0,0.1,g,False\n"
+        "2.0,21.0,0.5,g,False\n"     # SNR 2.2 -> dropped
+        "3.0,22.5,nan,g,True\n"      # upper limit -> kept
+    )
+    lc = load_lightcurve(p, min_snr=5.0)
+    assert lc.time.tolist() == [1.0, 3.0] and lc.upper_limit.tolist() == [False, True]
+    assert load_lightcurve(p).select_snr(5.0).time.tolist() == [1.0, 3.0]
+
+
+def test_a_jd_column_is_read_as_mjd(tmp_path):
+    p = tmp_path / "jd.csv"
+    p.write_text("jd,mag,magerr,band\n2460000.5,18.0,0.1,g\n2460001.5,18.5,0.1,g\n")
+    lc = load_lightcurve(p, magnitude_unit="mag", redshift=0.1)
+    assert lc.time.tolist() == [60000.0, 60001.0]
+    assert "JD - 2400000.5" in lc.meta["time_converted"]
+    assert load_lightcurve(p, magnitude_unit="mag", redshift=0.1,
+                           explosion_date=59999.0).time.tolist() == [1.0, 2.0]
+    q = tmp_path / "small_jd.csv"                 # already MJD-sized: left alone
+    q.write_text("jd,mag,magerr,band\n60000.0,18.0,0.1,g\n")
+    lc = load_lightcurve(q, magnitude_unit="mag", redshift=0.1)
+    assert lc.time.tolist() == [60000.0] and "time_converted" not in lc.meta

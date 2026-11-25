@@ -1,18 +1,27 @@
 """SVO Filter Profile Service fallback for bands missing from :data:`FILTER_LOOKUP`.
 
 When a band cannot be resolved locally we ask the `SVO Filter Profile Service
-<http://svo2.cab.inta-csic.es/theory/fps/>`_ (via ``astroquery.svo_fps.SvoFps``) for its effective
-wavelength and zero point, and -- later, for Phase-2 spectral integration -- its transmission curve.
+<http://svo2.cab.inta-csic.es/theory/fps/>`_ for its effective wavelength and zero point, and for
+its transmission curve, which :func:`whisper_cbpf.synphot.gauss_rule` integrates when a model is
+bound to an SVO ID (``"LSST/LSST.g"``).
+
+**Two clients, pyphot first.** With `pyphot <https://github.com/mfouesneau/pyphot>`_ installed
+(``pip install pyphot``) both queries go through it: its SVO client and VOTable parser for the
+metadata, :func:`pyphot.svo.get_pyphot_filter` for the curve. ``astroquery.svo_fps`` is the
+fallback, used when pyphot is absent or fails. Either returns SVO's own numbers: ``WavelengthEff``
+is SVO's Vega-weighted effective wavelength and ``ZeroPoint`` SVO's zero point in its published
+system (Vega for most filters), recorded as metadata; whisper's magnitudes are AB throughout.
 
 **Design rules (so this never crashes a load and never hits the network in CI):**
 
-* All astroquery/network access goes through three thin private wrappers
+* All network access goes through three thin private wrappers
   (:func:`_svo_fetch_metadata`, :func:`_svo_fetch_index`, :func:`_svo_fetch_transmission`). Tests
-  monkeypatch *those* -- nothing else touches the network, and ``astroquery`` is imported lazily so
-  the package installs and imports without it.
+  monkeypatch *those* -- nothing else touches the network, and ``pyphot`` and ``astroquery`` are
+  imported lazily so the package installs and imports without either. ``_svo_fetch_index`` (the
+  wavelength search) needs astroquery: pyphot has no index query.
 * Results are cached **by filter ID** both in memory and on disk
-  (``$WHISPER_SVO_CACHE`` or ``~/.cache/whisper_cbpf/svo_cache.json``), so re-runs are offline-safe
-  and a repeated lookup never re-queries the service.
+  (``$WHISPER_SVO_CACHE`` or ``~/.cache/whisper_cbpf/svo_cache.json``; curves beside it in
+  ``svo_curves/``), so re-runs are offline-safe and a repeated lookup never re-queries the service.
 * Every failure path degrades gracefully: a network error / missing filter raises
   :class:`SvoUnavailable`, which callers turn into a warning plus a manual-override path
   (:func:`register_manual_band`) rather than an exception.
@@ -32,7 +41,17 @@ import astropy.units as u
 
 
 class SvoUnavailable(RuntimeError):
-    """Raised when SVO cannot resolve a band (astroquery missing, network down, unknown filter)."""
+    """Raised when SVO cannot resolve a band (astroquery missing, network down, unknown filter).
+
+    :func:`whisper_cbpf.resolve_band` catches it and returns the band unresolved, with a warning
+    naming :func:`register_manual_band`; catch it yourself around a direct SVO query.
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> issubclass(wp.SvoUnavailable, RuntimeError)
+    True
+    """
 
 
 #
@@ -52,6 +71,8 @@ _MANUAL_BANDS: dict = {}
 
 # In-memory metadata cache: filter_id -> {"WavelengthEff": AA, "ZeroPoint": Jy, "filter_id": ...}.
 _META_CACHE: dict = {}
+# In-memory curve cache: filter_id -> (wavelength_AA, throughput); on disk in svo_curves/.
+_CURVE_CACHE: dict = {}
 _DISK_LOADED = False
 
 
@@ -102,8 +123,9 @@ def _save_disk_cache():
 
 
 def clear_cache(disk=False):
-    """Drop the in-memory cache (and the on-disk file if ``disk=True``). Mainly for tests."""
+    """Drop the in-memory caches (and the on-disk files if ``disk=True``). Mainly for tests."""
     _META_CACHE.clear()
+    _CURVE_CACHE.clear()
     global _DISK_LOADED
     _DISK_LOADED = False
     if disk:
@@ -111,12 +133,34 @@ def clear_cache(disk=False):
             _cache_path().unlink()
         except FileNotFoundError:
             pass
+        curves = _cache_path().parent / "svo_curves"
+        if curves.is_dir():
+            for f in curves.glob("*.npz"):
+                f.unlink()
 
 
 #
-# Thin network boundary -- THE ONLY functions that import astroquery / hit SVO.
+# Thin network boundary -- THE ONLY functions that import pyphot / astroquery or hit SVO.
 # Tests monkeypatch these.
 #
+def _pyphot():
+    """``pyphot.svo`` if pyphot is installed, else ``None``."""
+    try:
+        from pyphot import svo as pyphot_svo
+    except Exception:
+        return None
+    return pyphot_svo
+
+
+def transmission_backend():
+    """Which client fetches SVO curves here: ``"pyphot <version>"`` or ``"astroquery"``."""
+    if _pyphot() is None:
+        return "astroquery"
+    import pyphot
+
+    return f"pyphot {getattr(pyphot, '__VERSION__', '?')}"
+
+
 def _svo() :
     """Lazily import ``astroquery.svo_fps.SvoFps`` (raises :class:`SvoUnavailable` if absent)."""
     try:
@@ -139,11 +183,40 @@ def _svo_fetch_metadata(filter_id):
     facilities the instrument segment of the ID is not an SVO instrument, and supplying it returns
     nothing at all (``SLOAN/SDSS``, ``PAN-STARRS/PS1`` and ``2MASS/2MASS`` all fail that way). The
     per-facility list is a few dozen rows and the result is cached by filter ID, so it is fetched once.
+
+    With pyphot installed, the single-filter ``fps.php?ID=`` response is parsed with pyphot's
+    VOTable reader instead, which keeps those PARAMs: one small request, the same SVO numbers.
+    astroquery is the fallback if pyphot is absent or its query fails.
     """
-    SvoFps = _svo()
     if "/" not in str(filter_id):
         raise SvoUnavailable(
             f"{filter_id!r} is not an SVO filter ID (expected 'Facility/Instrument.Filter').")
+    pyphot_svo, pyphot_error = _pyphot(), None
+    if pyphot_svo is not None:
+        try:
+            from io import BytesIO
+
+            import requests
+            from pyphot.io.votable import from_votable
+
+            response = requests.get(pyphot_svo.QUERY_URL, params={"ID": str(filter_id)},
+                                    timeout=60)
+            response.raise_for_status()
+            params = from_votable(BytesIO(response.content))[1].header
+            return {
+                "filter_id": filter_id,
+                "WavelengthEff": float(params["WavelengthEff"]["value"]),   # Angstrom
+                "ZeroPoint": float(params["ZeroPoint"]["value"]),           # Jy
+            }
+        except Exception as exc:        # unknown ID (no PARAMs), network, parser: try astroquery
+            pyphot_error = exc
+    try:
+        SvoFps = _svo()
+    except SvoUnavailable as exc:
+        if pyphot_error is None:
+            raise
+        raise SvoUnavailable(f"SVO metadata query failed for {filter_id!r} through pyphot "
+                             f"({pyphot_error}) and astroquery is not installed.") from exc
     facility = str(filter_id).split("/")[0]
     try:
         table = SvoFps.get_filter_list(facility=facility)
@@ -179,8 +252,26 @@ def _svo_fetch_index(wl_min_aa, wl_max_aa):
 
 
 def _svo_fetch_transmission(filter_id):
-    """Return the transmission curve as ``(wavelength_AA, throughput)`` arrays (Phase-2 use)."""
-    SvoFps = _svo()
+    """Return the transmission curve as ``(wavelength_AA, throughput)`` arrays.
+
+    pyphot's ``get_pyphot_filter`` when installed (it sorts the curve and clips negative
+    throughput to zero), else astroquery's ``get_transmission_data``.
+    """
+    pyphot_svo, pyphot_error = _pyphot(), None
+    if pyphot_svo is not None:
+        try:
+            filt = pyphot_svo.get_pyphot_filter(str(filter_id))
+            return (np.asarray(filt.wavelength.to("AA").value, dtype=float),
+                    np.asarray(filt.transmit, dtype=float))
+        except Exception as exc:
+            pyphot_error = exc
+    try:
+        SvoFps = _svo()
+    except SvoUnavailable as exc:
+        if pyphot_error is None:
+            raise
+        raise SvoUnavailable(f"SVO transmission query failed for {filter_id!r} through pyphot "
+                             f"({pyphot_error}) and astroquery is not installed.") from exc
     try:
         table = SvoFps.get_transmission_data(filter_id)
     except Exception as exc:
@@ -202,18 +293,58 @@ def register_manual_band(band, lambda_eff, zero_point):
        This is a **process-global** registration: it persists for the rest of the interpreter session
        and affects *all* subsequent band resolutions. Undo it with :func:`unregister_manual_band` (one
        band) or :func:`clear_manual_bands` (all).
+
+    Parameters
+    ----------
+    band : str
+        The band label.
+    lambda_eff : float
+        Effective wavelength [Angstrom].
+    zero_point : float
+        Zero point [Jy] (3631 for AB).
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> wp.register_manual_band("my_halpha", 6563.0, 3631.0)
+    >>> wp.resolve_band("my_halpha")["lambda_eff"], wp.resolve_band("my_halpha")["source"]
+    (6563.0, 'manual')
+    >>> wp.unregister_manual_band("my_halpha")
     """
     _MANUAL_BANDS[str(band)] = {
         "lambda_eff": float(lambda_eff), "zero_point": float(zero_point)}
 
 
 def unregister_manual_band(band):
-    """Remove a single manual band override (no-op if it was not registered)."""
+    """Remove a single manual band override (no-op if it was not registered).
+
+    Parameters
+    ----------
+    band : str
+        The label passed to :func:`register_manual_band`.
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> wp.register_manual_band("my_nb", 6563.0, 3631.0)
+    >>> wp.unregister_manual_band("my_nb")
+    >>> wp.resolve_band("my_nb", svo_fallback=False, warn=False)["source"]
+    'unresolved'
+    """
     _MANUAL_BANDS.pop(str(band), None)
 
 
 def clear_manual_bands():
-    """Remove all manual band overrides registered via :func:`register_manual_band`."""
+    """Remove all manual band overrides registered via :func:`register_manual_band`.
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> wp.register_manual_band("my_nb", 6563.0, 3631.0)
+    >>> wp.clear_manual_bands()
+    >>> wp.resolve_band("my_nb", svo_fallback=False, warn=False)["lambda_eff"] is None
+    True
+    """
     _MANUAL_BANDS.clear()
 
 
@@ -231,9 +362,42 @@ def get_filter_metadata(filter_id, *, use_cache=True):
     return dict(meta)
 
 
-def get_transmission_data(filter_id):
-    """Transmission curve ``(wavelength_AA, throughput)`` for ``filter_id`` (Phase-2 spectral integ.)."""
-    return _svo_fetch_transmission(filter_id)
+def _curve_path(filter_id):
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(filter_id))
+    return _cache_path().parent / "svo_curves" / f"{safe}.npz"
+
+
+def get_transmission_data(filter_id, *, use_cache=True):
+    """Transmission curve ``(wavelength_AA, throughput)`` for ``filter_id``. Cached by ID.
+
+    What :func:`whisper_cbpf.synphot.gauss_rule` integrates for an SVO ID. The curve is kept in
+    memory and in ``svo_curves/`` beside the metadata cache, so a model bound to an SVO filter
+    rebuilds offline. ``use_cache=False`` forces a fresh fetch (e.g. after SVO revises a filter).
+    """
+    key = str(filter_id)
+    if use_cache and key in _CURVE_CACHE:
+        return tuple(a.copy() for a in _CURVE_CACHE[key])
+    path = _curve_path(key)
+    if use_cache and path.exists():
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                curve = (np.asarray(data["wave"], dtype=float), np.asarray(data["trans"], dtype=float))
+            _CURVE_CACHE[key] = curve
+            return tuple(a.copy() for a in curve)
+        except Exception as exc:        # a corrupt cache file must never break a fit
+            warnings.warn(f"Could not read cached SVO curve {path}: {exc}", stacklevel=2)
+    wave, trans = _svo_fetch_transmission(key)
+    wave, trans = np.asarray(wave, dtype=float), np.asarray(trans, dtype=float)
+    if wave.ndim != 1 or wave.shape != trans.shape or wave.size < 2 or \
+            not np.all(np.isfinite(wave)) or not np.all(np.isfinite(trans)):
+        raise SvoUnavailable(f"SVO returned an unusable transmission curve for {key!r}")
+    _CURVE_CACHE[key] = (wave, trans)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, wave=wave, trans=trans)
+    except Exception as exc:  # pragma: no cover - best-effort persistence
+        warnings.warn(f"Could not write SVO curve cache {path}: {exc}", stacklevel=2)
+    return wave.copy(), trans.copy()
 
 
 def find_filter_id(band, *, lambda_eff_hint=None, tol_frac=0.05):

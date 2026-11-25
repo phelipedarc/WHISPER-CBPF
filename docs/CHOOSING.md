@@ -8,6 +8,10 @@ structural, not tuning problems.
 
 | Your situation | Use |
 |---|---|
+| A survey alert and several physical models, want a ranked answer | `wp.compare(lc, models)`: `sampler="auto"` is `emcee_jax` on a GPU, `mcmc` on a CPU, and every fit is optimised to its likelihood maximum and checked ([`LSST_ALERTS.md`](LSST_ALERTS.md)) |
+| Many alerts, one model | `wp.fit_batch` (emcee, all alerts in one compiled GPU loop) |
+| Many fits over several GPUs and CPU cores | `wp.run_jobs` |
+| A Bayes factor for the top two of a comparison | `wp.compare(..., evidence_check=True)` runs `nested` on them |
 | Toy or analytic light curve, want a posterior fast | `abc` or `mcmc` on CPU |
 | Analytic model, want a *good* posterior | `abc_smc` — same accuracy as `abc` at ~4× fewer simulations |
 | Physical model, gradients available (JAX) | `nuts_gpu` — `wp.fit(lc, "kilonova_one_jax", sampler="nuts_gpu")` builds the density for you |
@@ -50,7 +54,8 @@ Two caveats that matter more than the number:
   repo's own 3.8×-at-`n_jobs=8` ABC measurement, not new timings.
 * **This compares whisper's CPU ABC against whisper's GPU ABC, not CPU silicon against GPU
   silicon.** The CPU arm calls `predict` (jitted JAX, one curve per call); the GPU arm calls
-  `vmap(predict_jax)` at `chunk=16`. Some of the gap is batching, not the device.
+  `vmap(predict_jax)` at `chunk=16` (the default then; 250 now). Some of the gap is batching, not
+  the device.
 
 For chain-level parallelism the news is worse: **vmap over chains buys about 1.05×** on a model that
 already saturates the GPU. One chain of the 2-component kilonova is 284 observations × 256
@@ -69,11 +74,10 @@ These are not tuning problems. They cannot be made to work by adjusting paramete
 |---|---|
 | numpy model + `nuts_gpu` or `pymc_jax_gpu_*` | NUTS needs gradients. A numpy simulator has none, and `jax.grad` cannot differentiate through it. |
 | numpy model + `abc_gpu`, `abc_smc_gpu` or `emcee_jax` | They need a batched JAX forward map (`Model.predict_jax`). A numpy model has none, and a numpy function cannot be `vmap`ped. This includes `two_component_kilonova`, which is redback + sncosmo behind a numpy `predict`. |
-| `flare_jax` + any JAX sampler | It *has* a JAX implementation, but `models/jax/flare.py`'s `predict_jax` takes a parameter **dict** rather than the flat theta `Model.predict_jax` specifies, so `flare_jax` registers without the slot. Known gap. |
-| TDE or any of the twelve supernovae in float32 | The envelope ODE's increments are below float32 epsilon; the supernova engines carry cgs luminosities of 1e43–1e46 erg/s against float32's 3.4e38 ceiling. Both raise. **Both raise at the first `predict`, not at registration** — a registry containing `tde_gaussianrise_jax` or `arnett_jax` is not evidence the session can run it. |
-| a non-`Uniform`/`LogUniform` prior + any JAX sampler | Refused rather than approximated by its bounds. Substituting a uniform for a log-uniform is a *different posterior*, not a different parameterisation: log-uniform puts half its mass below 775 K where uniform puts half below 3050 K. |
+| TDE or any of the sixteen supernova-family models in float32 | The envelope ODE's increments are below float32 epsilon; the supernova engines carry cgs luminosities of 1e43–1e46 erg/s against float32's 3.4e38 ceiling. The same holds for `tde_fallback`, `tde_analytical` and `general_magnetar_driven`. All raise. **Both raise at the first `predict`, not at registration** — a registry containing `tde_gaussianrise_jax` or `arnett_jax` is not evidence the session can run it. |
+| a prior distribution other than `Uniform`, `LogUniform`, `Normal`, `TruncatedNormal` or `Fixed` + any JAX sampler | Refused rather than approximated by its bounds. Substituting one family for another is a *different posterior*, not a different parameterisation: log-uniform puts half its mass below 775 K where uniform puts half below 3050 K. The five families work in every sampler ([`API_REFERENCE.md` A2](API_REFERENCE.md#priors-beyond-boxes-normal-truncatednormal-fixed)). |
 | comparing AIC/BIC/WAIC **across spaces** | Not a sampler limit — an arithmetic one. A flux-space and a magnitude-space fit have different likelihoods over different representations of the data, so their information criteria are not on one scale. Compare models *within* a space. |
-| Any non-flare model + `snpe_gpu` | It always passes `flare_jax.predict_torch`. It raises `NotImplementedError` rather than returning flare draws under your model's parameter names. |
+| numpy model + `snpe_gpu` | Its simulator is built from `Model.predict_jax`, and a numpy model has none. It raises `ValueError` naming `sampler='snpe'`, whose simulator runs the numpy `predict` (its network can still train on the GPU with `device='cuda'`). |
 | Fitting a scatter parameter with distance-based ABC | Extra simulated noise only ever increases the expected residual, so the posterior rails to the smallest allowed scatter. **The parameter is not identifiable by ABC at all** — it is a likelihood parameter. `abc_gpu` warns if you try. |
 
 ## The two SNPE paths
@@ -82,18 +86,19 @@ This is the most confusing thing a new user meets, so be explicit about which yo
 
 | | `snpe` / `npe` | `snpe_gpu` |
 |---|---|---|
-| Backend | torch (has its own `device='cuda'`) | JAX |
-| Registered? | yes | **no** — direct import only |
-| Works with | any registered model | **the flare only** |
-| Extra | `[sbi]` | `[gpu]` |
+| Simulator | the model's numpy `predict`, one draw at a time on the CPU | the model's `predict_jax`, batched on the GPU |
+| Training | torch, `device='cpu'` by default (`'cuda'` works) | torch, `device='cuda'` by default |
+| Registered? | yes | yes |
+| Works with | any registered model | any model with a `predict_jax` (the JAX factories, `flare_jax`) |
+| Extra | `[sbi]` | `[sbi]` + `[gpu]` |
 
-**Use `snpe`.** It is the general path and it already runs on a GPU through torch — you do not need
-`snpe_gpu` to get GPU-accelerated SNPE. `snpe_gpu` exists for the flare benchmark and stays
-unregistered because registering it would let `fit(lc, "kilonova_one_jax", sampler="snpe_gpu")`
-return flare simulations labelled with kilonova parameter names — a wrong answer with no error.
+**They are one sampler with two simulators.** `snpe_gpu` hands its batched simulator to the same
+`SNPESampler` code, with the same defaults (`num_rounds=2`) and the same `embedding_net=` names, so
+a CPU/GPU pair differs only in its simulator and its default training device. Use `snpe` for a
+numpy model; for a model built by a JAX factory, `snpe_gpu` moves the simulator onto the GPU too.
 
 ```python
-from whisper_cbpf.samplers.jax import fit_snpe_gpu     # deliberate, explicit
+res = wp.fit(lc, "kilonova_one_jax", sampler="snpe_gpu")
 ```
 
 ## The CPU/GPU sampler pairs
@@ -115,7 +120,9 @@ To compare CPU against GPU fairly, fix the distance. All six metrics (`chi2`, `m
 ## Three NUTS frontends, one kernel
 
 `nuts_gpu`, `pymc_jax_gpu_vectorized` and `pymc_jax_gpu_parallelized` all drive the **same NumPyro
-kernel**. That is deliberate: one acts as a free regression test on the others.
+kernel**. That is deliberate: one acts as a free regression test on the others. They also share the
+default start (`init_strategy="prior_scan"`) and the chain checks behind `info["converged"]`, so a
+disagreement between them is the frontend, not the start or the diagnostics.
 
 - `nuts_gpu` — NumPyro directly. Fewest layers; start here.
 - `pymc_jax_gpu_vectorized` — vmap over chains. **The default on a 2-GPU budget**; leaves a GPU free
@@ -152,8 +159,59 @@ The same warning applies to `flare` and `flare_jax`: **`flare_jax` is a Gaussian
 exponential decay**, which makes it the counterpart of `gaussian_rise`, not of `flare`. Their
 parameter names are disjoint, so a mistake raises rather than silently fitting the wrong model.
 
+### The further physical models
+
+`wp.compare` binds these by name, like `"arnett"`; the notes say what each one is *not*.
+
+| Model | What it is | Note |
+|---|---|---|
+| `csm_interaction` | Chevalier–Chatzopoulos CSM interaction (redback's) | **Not** `csm_shock_and_arnett`, which is Margalit's shell breakout plus nickel: different parameters and different physics, two hypotheses rather than one model. |
+| `shock_cooling`, `shocked_cocoon` | Piro shock cooling alone; shocked jet cocoon | Each carries its own photosphere. |
+| `general_magnetar_driven` | relativistic magnetar-driven ejecta (an ODE) | Needs float64. Uses `diffrax` when installed (`pip install "whisper-cbpf[ode]"`), a built-in fixed-step solver otherwise. |
+| `tde_fallback`, `tde_analytical` | MOSFiT-style fall-back with viscous delay; `t^-5/3` fall-back through diffusion | Both need float64. `tde_analytical` is walled by redback's two constraints. |
+| `metzger_kilonova`, `magnetar_boosted_kilonova` | Metzger (2017) multi-shell kilonova, and with a central magnetar | **Not** comparable parameter for parameter with `kilonova_one_jax` (a one-zone Arnett model): different parameters (`beta`, a velocity profile) and different physics. Float32 is safe. |
+| `bazin_sne`, `villar_sne`, `smooth_exponential_powerlaw`, `exp_rise_powerlaw_decline` | per-band phenomenological shapes | Built with `wp.register_phenomenological(model, bands)`, not bound by name in `wp.compare`; the amplitude prior is a placeholder, so pass `prior=`. |
+
 ## When a fit has not converged
 
+`result.diagnostics()` is one report for every sampler: each check with its value, threshold, pass
+or fail and a plain reason, then a "Why" section. `result.info["convergence_problems"]` lists every
+check the sampler itself failed, one sentence each, and the fit warned with the same text
+(`nuts_gpu`, `pymc_jax_gpu_*`, `emcee_jax`, `mcmc`). `converged` is `True` only when the list is
+empty.
+
+- **`stranded_chains` or `stuck_walkers` not empty** → a chain (or emcee walker) sits in a local
+  optimum, typically the model switched off between the epochs or a corner of the prior box, and
+  its draws are pooled into the posterior. The default start (`init_strategy="prior_scan"` for the
+  NUTS samplers, `init="prior_scan"` for `emcee_jax`) makes this rare; if it persists, tighten the
+  prior the optimum lives on (a width floor below the largest cadence gap lets a bump hide), or
+  start the chains yourself with `init=` (every MCMC-type sampler, CPU `mcmc` included): one row per
+  chain or walker, a point, or `init=previous_result` (an ABC fit, or the same alert's earlier cut).
+  The `"uniform"` / `"box"` / `"jitter"` starts reproduce old runs. `"prior"` (independent prior
+  draws) is the fallback when the default start cannot spread the walkers: an ensemble start that
+  does not span every parameter is refused with a message naming it.
+- **`stuck_walkers` on a fit run with `walker_coordinates="linear"`** → in linear coordinates a
+  LogUniform parameter's `-ln x` prior density can put walkers spread over a flat direction "more
+  than 10 nats below the best walker". The default, `walker_coordinates="own"`, moves such a
+  parameter in its log, where that direction is flat.
+- **A large gain of the likelihood maximum** (`result.likelihood_max_opt(lc).gain` above 1 ln L, or
+  the report's "gap to the likelihood maximum" above 5) → the sampler never reached the likelihood peak, so its posterior may miss the
+  best region. Restart from the peak: `init=(peak.params, 0.01)`, then run longer.
+- **"every chain's best draw is ... below the best point the prior scan found"** → the chains agree
+  with each other and are all wrong, which R-hat cannot see. Same remedies.
+- **`frozen_chains` not empty** → a chain adapted a tiny step and stopped moving. In float32 this
+  is an MJD-scale clock or parameter (the sampler warned before starting): enable x64, or use
+  `lc.set_explosion_date(mjd)` with a t0 prior in days.
+- **A warning that most prior draws "score the same log-density"** (before sampling) → over most of
+  the prior box the model puts no signal where the data are, typically a `t0` or explosion-epoch
+  prior much wider than the data window. A chain there has no gradient to follow, and the start
+  depends on the few draws that landed near the data (with t0 ~ U(-10 000, 10 000) around 40 d of
+  data, 1 seed in 4 had none). Give the time parameter a box around the data.
+- **Divergences with nothing stranded** → the posterior has a kink or a funnel the integrator
+  cannot follow (`flare_jax`'s rise/decay join at `t0` diverges in most fits). Raise
+  `target_accept_prob`, or treat the posterior near that feature with suspicion.
+- **R-hat just above 1.01 with a small ESS, nothing stranded** → the chains are too short. Raise
+  `num_samples` (for emcee, `nsteps`: it needs `nsteps >= 50 x` its largest autocorrelation time).
 - **r-hat above ~1.1, ESS in the single digits, and chains in different places** → genuine
   multimodality, not a warmup problem. NUTS is a local sampler and **cannot** hop between separated
   modes at any warmup budget. Switch to `abc_smc_gpu` or dynesty, or report per-mode rather than

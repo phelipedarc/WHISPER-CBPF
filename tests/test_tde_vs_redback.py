@@ -16,9 +16,11 @@ There are three of them, and they are not the same claim:
 3. **"Agrees with redback" is ambiguous until the version is named.** redback 1.12.0 (the
    clone this project pins) and 1.15.1 (installed in the GPU container) have IDENTICAL
    ``_cooling_envelope`` loop bodies but differ in the grid size (5000 vs 500), the
-   termination guards, ``f_debris``, and a ``(1+z)`` flux factor. A test that hardcoded one
-   of them would fail in the other container for a reason that has nothing to do with this
-   code, so :func:`_preset_for_installed_redback` picks the matching preset at run time.
+   termination guards, ``f_debris``, and a ``(1+z)`` flux factor (1.20 is 1.15's grid). A
+   test that hardcoded one of them would fail in the other container for a reason that has
+   nothing to do with this code, so the package's own selector,
+   ``redback_adapter.installed_redback_preset``, picks the matching preset at run time -- the
+   one the module's default ``n_time`` follows too.
 
 FLOAT64. The engine requires it and raises otherwise (see CHANGE 8 in the module). The
 fixture below enables it for this module and restores the previous setting afterwards, so
@@ -57,19 +59,10 @@ def _x64():
 
 
 def _preset_for_installed_redback():
-    """Which redback is on this path, and therefore which preset must be compared to it.
+    """The package's selector (keyed on redback's source, read without importing it)."""
+    from whisper_cbpf.models.redback_adapter import installed_redback_preset
 
-    Keyed on the SOURCE rather than on ``__version__``: 1.15.1 reports its version as
-    "unknown" in this environment, and the thing that actually matters is whether the
-    installed ``_cooling_envelope`` has the ``f_debris`` rewrite -- which is the same commit
-    that changed the grid from 5000 to 500 and added the termination guards.
-    """
-    import inspect
-
-    from redback.transient_models import tde_models
-
-    src = inspect.getsource(tde_models._cooling_envelope)
-    return "1.15" if "f_debris" in src else "1.12"
+    return installed_redback_preset()
 
 
 # ---------------------------------------------------------------------------------------
@@ -266,6 +259,132 @@ def test_presets_are_the_documented_difference():
     assert "termination" not in T.REDBACK_ENGINE_PRESETS["1.12"]
 
 
+def test_default_n_time_follows_the_installed_redback(monkeypatch):
+    """1.2: the default grid is the installed redback's -- 500 for 1.15 and 1.20, and when
+    redback is absent (the latest release); 5000 only for 1.12. It was 1.12's 5000 whatever was
+    installed, which put the port up to 19.6 mag from redback 1.20 where the envelope ends."""
+    from whisper_cbpf.models import redback_adapter as RA
+
+    assert T.REDBACK_ENGINE_PRESETS["1.20"] == dict(n_time=500)
+    assert T.REDBACK_PRESETS["1.20"]["dilation"] is True
+    for release, n in (("1.12", 5000), ("1.15", 500), ("1.20", 500), (None, 500)):
+        monkeypatch.setattr(RA, "installed_redback_preset", lambda r=release: r)
+        assert T.default_n_time() == n, release
+    monkeypatch.undo()
+
+    pytest.importorskip("redback")
+    want = T.REDBACK_ENGINE_PRESETS[_preset_for_installed_redback()]["n_time"]
+    assert T.default_n_time() == want
+    got = T.cooling_envelope(*CASES[0])
+    assert got["time_temp"].shape == (want,)
+    ref = T.cooling_envelope(*CASES[0], n_time=want)
+    assert np.array_equal(np.asarray(got["bolometric_luminosity"]),
+                          np.asarray(ref["bolometric_luminosity"]))
+
+
+@pytest.mark.parametrize("model", ["cooling_envelope", "gaussianrise_cooling_envelope"])
+def test_fallback_prior_is_the_latest_redbacks_file(model):
+    """Without redback the prior is a transcription, and it must be the LATEST release's -- the
+    one ``default_n_time`` already follows when redback is absent. It was 1.15.1's, whose
+    ``cooling_envelope.prior`` pins four of five parameters; redback 1.18 (and so 1.20) frees them
+    with ranges of its own, so the same factory call had one free parameter without redback and
+    five with it. Checked against the installed file when that file IS the latest release."""
+    from whisper_cbpf.models.redback_adapter import LATEST_REDBACK_PRESET
+
+    pytest.importorskip("redback")
+    if _preset_for_installed_redback() != LATEST_REDBACK_PRESET:
+        pytest.skip("the transcription is of the latest redback; this one is older")
+    rb, rb_pinned = T.redback_prior(model)
+    fb, fb_pinned = T.fallback_prior(model)
+    assert rb_pinned == fb_pinned, model
+    assert set(rb.distributions) == set(fb.distributions), model
+    for k, d in rb.distributions.items():
+        assert type(d).__name__ == type(fb.distributions[k]).__name__, f"{model}.{k}"
+        assert d.bounds == pytest.approx(fb.distributions[k].bounds, rel=1e-12), f"{model}.{k}"
+
+
+def test_factory_default_matches_the_installed_redback():
+    """``tde_model``'s default reproduces the installed redback's envelope, end included."""
+    pytest.importorskip("redback")
+    import whisper_cbpf
+
+    lam = np.geomspace(1000.0, 30000.0, 1000)
+    fs = {"lam": lam, "trans": np.stack([((lam > 3000) & (lam < 4000)).astype(float),
+                                         ((lam > 5000) & (lam < 6000)).astype(float)])}
+    n = T.REDBACK_ENGINE_PRESETS[_preset_for_installed_redback()]["n_time"]
+    default = whisper_cbpf.tde_model(["a", "b"], 0.05, 7e26, rise="none", filter_set=fs)
+    explicit = whisper_cbpf.tde_model(["a", "b"], 0.05, 7e26, rise="none", filter_set=fs,
+                                      n_time=n)
+    t = np.geomspace(1.0, 300.0, 24)
+    b = np.array(["a", "b"] * 12)
+    for p in CASES:
+        par = {k: v for k, v in zip(PNAMES, p) if k in default.parameters}
+        assert np.array_equal(default.predict(par, t, b), explicit.predict(par, t, b)), p
+
+
+def test_default_grid_stability_probe():
+    """THE RISK OF THE 500-POINT DEFAULT, measured: a 1e-6 nudge of ``mbh_6`` (1.2's risk line).
+
+    ``OPEN_ITEMS.md`` warned "do not fit at 500" (0.55 mag under a 1e-6 relative change in
+    ``mbh_6``): the termination index moves by grid steps under such a nudge, so at a FIXED epoch
+    near the envelope's end the magnitude steps by the whole ``mag_floor`` gap. Probed at fixed
+    epochs, fractions of the nominal life, over ``mbh_6 (1 + k 1e-7)``, ``|k| <= 10``, AB magnitude
+    at 6e14 Hz (zero flux read as ``mag_floor`` = 40). Max spread over ``CASES``:
+
+        fraction of the life     0.05    0.25    0.5     0.75    0.9     0.95    0.99
+        port, n_time=500         1.2e-6  1.4e-6  2.7e-6  8.8e-6  7.9e-3  23.7    24.2
+        redback 1.20 (500)       1.2e-6  1.4e-6  2.7e-6  8.8e-6  1.4e-2  24.2    24.7
+        port, n_time=5000        1.4e-6  1.3e-6  2.5e-6  7.7e-6  2.3e-5  4.9e-5  0.31
+
+    (jitted; the last two columns are the chaotic tail, where an XLA scheduling change alone
+    moves the numbers -- CHANGE 1's unroll note.)
+
+    So the default is smooth where the envelope is and a ``mag_floor``-sized step where it ends,
+    and redback 1.20 has the same step at the same epochs: parity inherits it, the port adds
+    nothing. ``n_time=5000`` pushes it into the last per cent. Asserted: both grids smooth in the
+    bulk, the step bounded by ``mag_floor``, and -- where redback is installed at 500 points --
+    redback just as smooth and just as stepped.
+    """
+    fracs = np.array([0.05, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99])
+    ks = np.arange(-10, 11) * 1e-7
+    z, dl, nu = 0.05, 7e26, 6e14
+
+    def mag(mjy):
+        mjy = np.asarray(mjy, dtype=float)
+        return np.where(mjy > 0, -2.5 * np.log10(np.maximum(mjy, 1e-300) * 1e-3 / 3631.0), 40.0)
+
+    def probe(n, flux):
+        spread = []
+        for p in CASES:
+            o = T.cooling_envelope(*p, n_time=n)
+            if int(o["constraint"]) < 20:
+                continue
+            t = fracs * float(o["termination_time"]) * (1 + z) / DAY
+            m = np.array([mag(flux(t, (p[0] * (1 + k), *p[1:]))) for k in ks]).clip(max=40.0)
+            spread.append(m.max(0) - m.min(0))
+        s = np.max(spread, axis=0)
+        print(f"\n[n_time={n}] max |dmag| under 1e-6 in mbh_6, by fraction of the life: "
+              + ", ".join(f"{f:.2f}: {x:.2e}" for f, x in zip(fracs, s)))
+        return s
+
+    port = {n: probe(n, jax.jit(lambda t, v, n=n: T.cooling_envelope_flux_density(
+        t, nu, z, dl, *v, n_time=n))) for n in (500, 5000)}
+    assert np.all(port[500][fracs <= 0.75] < 1e-4), port[500]
+    assert port[500][fracs == 0.9][0] < 0.05, port[500]
+    assert np.all(port[500] < 40.0 - 10.0), port[500]       # bounded by the mag_floor step
+    assert np.all(port[5000][fracs <= 0.95] < 1e-3), port[5000]
+
+    pytest.importorskip("redback")
+    if T.REDBACK_ENGINE_PRESETS[_preset_for_installed_redback()]["n_time"] != 500:
+        return
+    from redback.transient_models.tde_models import cooling_envelope
+
+    rb = probe(500, lambda t, v: cooling_envelope(t, z, *v, output_format="flux_density",
+                                                   frequency=np.full(t.size, nu)))
+    assert np.all(rb[fracs <= 0.75] < 1e-4), rb
+    assert np.all(rb[fracs >= 0.95] > 1.0), rb          # redback steps where the port does
+
+
 def test_termination_is_the_models_own_criterion():
     """CHANGE 3: the curve stops where the ENVELOPE stops, and `valid` proves it.
 
@@ -451,14 +570,21 @@ def test_short_lived_envelope_is_not_a_flat_light_curve():
 
     lam, W, N = _flat_filters()
     t = jnp.asarray(np.geomspace(5.0, 400.0, 8))
-    for fn, args in ((T.cooling_envelope_ab_magnitude, (t, jnp.zeros(8, dtype=int), W, N, lam,
-                                                        0.05, 7e26, *p)),
-                     (T.gaussianrise_cooling_envelope_ab_magnitude,
-                      (t, jnp.zeros(8, dtype=int), W, N, lam, 0.05, 7e26, 20.0, 15.0, *p))):
-        mag = np.asarray(fn(*args, n_time=5000))
-        assert np.allclose(mag, 40.0), f"{fn.__name__}: expected mag_floor, got {mag}"
+    mag = np.asarray(T.cooling_envelope_ab_magnitude(t, jnp.zeros(8, dtype=int), W, N, lam,
+                                                     0.05, 7e26, *p, n_time=5000))
+    assert np.allclose(mag, 40.0), f"expected mag_floor, got {mag}"
     fd = np.asarray(T.cooling_envelope_flux_density(t, 6e14, 0.05, 7e26, *p, n_time=5000))
     assert np.all(fd == 0.0), fd
+    # The Gaussian RISE keeps its normaliser, the envelope's first sample (redback's; see
+    # test_gaussian_rise_survives_an_envelope_whose_integration_dies_at_its_first_step), so only
+    # the epochs after the stitch are the floor -- and before it the rise is a Gaussian, not a
+    # plateau. (This asserted the floor at every epoch while the rise needed two samples.)
+    gr = np.asarray(T.gaussianrise_cooling_envelope_ab_magnitude(
+        t, jnp.zeros(8, dtype=int), W, N, lam, 0.05, 7e26, 20.0, 15.0, *p, n_time=5000))
+    after = np.asarray(t) >= float(o["tfb"]) * 1.05 / DAY
+    assert 0 < after.sum() < t.size, after
+    assert np.all(gr[after] == 40.0), gr
+    assert np.all(gr[~after] < 40.0) and np.ptp(gr[~after]) > 0.1, gr
 
 
 def test_zero_flux_outside_the_models_own_time_span():
@@ -648,6 +774,67 @@ def test_gaussian_rise_is_continuous_at_the_stitch():
         t, jnp.zeros(3, dtype=int), W, N, lam, z, dl, 20.0, 15.0, *CASES[0], n_time=500))
     assert np.all(np.isfinite(mag))
     assert np.max(np.abs(np.diff(mag))) < 0.02, f"discontinuous at the stitch: {mag}"
+
+
+#: A ``gaussianrise_cooling_envelope.prior`` draw (redback 1.20; the worst prior draw
+#: after the 0.1.1 fix) whose envelope integration dies after ONE step at n_time=500 -- the first
+#: forward-Euler step drives ``Ee`` through zero -- and lives 2637 steps at 5000. Measured over
+#: 4000 draws of that prior: 4.8% end at ``constraint == 1`` at 500, none at 5000.
+FIRST_STEP_DEATH = (1.2766, 2.741, 0.0602, 0.7035, 4.8821)
+
+
+def test_gaussian_rise_survives_an_envelope_whose_integration_dies_at_its_first_step():
+    """REGRESSION, found against redback: at the 500-point default the rise vanished.
+
+    redback normalises the rise at the envelope's FIRST sample (``photosphere_temperature[0]``,
+    closed form, no integration in it), so its rise exists whenever the envelope is born. The
+    port asked for two live samples before it had a normaliser, so on these draws it returned
+    ``mag_floor`` at EVERY epoch -- 47.7 mag from redback 1.20 on the reference ZTF epochs, which
+    all lie on the rise. Now the rise is the converged curve's (it never depends on the grid)
+    and redback's; after the stitch the envelope is over (CHANGE 3): zero flux, ``mag_floor``.
+    """
+    p = FIRST_STEP_DEATH
+    assert int(T.cooling_envelope(*p, n_time=500)["constraint"]) == 1
+    assert int(T.cooling_envelope(*p, n_time=5000)["constraint"]) > 2000
+    z, dl, nu, rise = 0.05, 7e26, 6e14, (20.0, 15.0)
+    tfb_obs = float(T.calc_tfb(0.8, p[0], p[1])) * (1 + z) / DAY
+    t = np.array([0.1, 0.5, 0.9, 1.5]) * tfb_obs
+    pre = t < tfb_obs
+
+    f = {n: np.asarray(T.gaussianrise_cooling_envelope_flux_density(
+        jnp.asarray(t), nu, z, dl, *rise, *p, n_time=n)) for n in (500, 5000)}
+    assert np.all(f[500][pre] > 0.0), f[500]
+    assert _maxrel_np(f[500][pre], f[5000][pre]) < 1e-12
+    assert np.all(f[500][~pre] == 0.0), f[500]
+    lam, W, N = _flat_filters()
+    m = {n: np.asarray(T.gaussianrise_cooling_envelope_ab_magnitude(
+        jnp.asarray(t), jnp.zeros(t.size, dtype=int), W, N, lam, z, dl, *rise, *p, n_time=n))
+        for n in (500, 5000)}
+    assert np.max(np.abs(m[500][pre] - m[5000][pre])) < 1e-10, m
+    assert np.all(m[500][~pre] == 40.0), m[500]
+    # a stitch PAST the envelope's one sample still has nothing to normalise to
+    late = np.asarray(T.gaussianrise_cooling_envelope_flux_density(
+        jnp.asarray(t), nu, z, dl, *rise, *p, xi=2.0, n_time=500))
+    assert np.all(late == 0.0), late
+
+    pytest.importorskip("redback")
+    from redback.transient_models.tde_models import gaussianrise_cooling_envelope
+    astropy_cosmo = pytest.importorskip("astropy.cosmology")
+
+    dl = astropy_cosmo.Planck18.luminosity_distance(z).cgs.value
+    ours = np.asarray(T.gaussianrise_cooling_envelope_flux_density(
+        jnp.asarray(t[pre]), nu, z, dl, *rise, *p, n_time=500))
+    # redback evaluated at t (1+z): its double time dilation taken out. Its rise is
+    # a linear interpolant through 200 nodes, hence the 1e-3.
+    theirs = gaussianrise_cooling_envelope(t[pre] * (1 + z), z, *rise, *p,
+                                           output_format="flux_density",
+                                           frequency=np.full(pre.sum(), nu))
+    assert _maxrel_np(ours, theirs) < 1e-3, (ours, theirs)
+
+
+def _maxrel_np(a, b):
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    return float(np.max(np.abs(a - b) / np.abs(b)))
 
 
 # ================================================================= the smaller ports

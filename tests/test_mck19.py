@@ -61,6 +61,27 @@ def test_mck19_higher_redshift_is_fainter():
     assert m.predict(near, t, np.array(["g"]))[0] > m.predict(far, t, np.array(["g"]))[0]
 
 
+def test_mck19_unresolvable_band_raises_instead_of_6000_angstrom():
+    """whisper <= 0.1.0 evaluated any band it could not resolve at 6000 A, without a word: a typo
+    or a grouped label gave a plausible r-ish flux. Now a label that names no filter raises."""
+    m = get_model("mck19")
+    t = np.full(2, 6.0)
+    for bad in ("not_a_band", "r-band"):
+        with pytest.raises(ValueError, match=bad):
+            m.predict(TRUE, t, np.array([bad, bad]))
+
+
+def test_mck19_integrates_the_filter():
+    """The blackbodies are integrated over the band, not taken at the effective wavelength:
+    bare letters are LSST's filters, and another survey's filter gives another flux."""
+    m = get_model("mck19")
+    t = np.full(3, 6.0)
+    bare = m.predict(TRUE, t, np.array(["g", "r", "i"]))
+    assert np.array_equal(bare, m.predict(TRUE, t, np.array(["lsstg", "lsstr", "lssti"])))
+    sdss = m.predict(TRUE, t, np.array(["sdssg", "sdssr", "sdssi"]))
+    assert np.all(np.abs(2.5 * np.log10(sdss / bare)) > 1e-3)
+
+
 def test_mck19_no_bands_warns_and_runs():
     m = get_model("mck19")
     t = np.linspace(0, 30, 10)

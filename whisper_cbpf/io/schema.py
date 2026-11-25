@@ -39,9 +39,210 @@ from .units import VALID_DATA_MODES  # noqa: F401  (re-exported by io/__init__)
 #: ``flux`` maps onto ``flux_density``. (Optional physical-model backends such as redback use the same.)
 _OUTPUT_FORMAT = {"flux_density": "flux_density", "magnitude": "magnitude", "flux": "flux_density"}
 
-#: Default prior spec attached when the redshift is unknown (override per object). Sampling lives in
-#: Phase 2; here it is just a serialisable hint.
+#: Default prior spec attached when the redshift is unknown (override per object). A
+#: serialisable hint.
 DEFAULT_REDSHIFT_PRIOR = {"type": "Uniform", "low": 0.001, "high": 1.0, "name": "redshift"}
+
+
+def redshift_distribution(hint):
+    """The prior distribution a redshift hint (:attr:`LightCurve.redshift_prior`) describes.
+
+    The JAX model factories call this when their redshift is free
+    (``supernova_model(..., free=["redshift"], redshift_prior=lc.redshift_prior)``).
+
+    Parameters
+    ----------
+    hint : dict, distribution or None
+        A dict with ``"type"``: ``"Uniform"`` or ``"LogUniform"`` (keys ``low``, ``high``), or
+        ``"Normal"`` / ``"TruncatedNormal"`` (keys ``mu``, ``sigma`` and optionally ``low``,
+        ``high``; ``loc`` / ``scale`` also read). A distribution object (anything with ``sample``
+        and ``bounds``) is returned as it is; ``None`` gives ``None``.
+
+    Returns
+    -------
+    distribution or None
+
+    Raises
+    ------
+    ValueError
+        An unknown ``type``, or missing bounds / width.
+    NotImplementedError
+        A Normal hint when this install's :mod:`whisper_cbpf.priors` has no ``TruncatedNormal``;
+        the message says what to pass instead.
+
+    Examples
+    --------
+    >>> from whisper_cbpf.io.schema import DEFAULT_REDSHIFT_PRIOR, redshift_distribution
+    >>> redshift_distribution(DEFAULT_REDSHIFT_PRIOR)
+    Uniform(0.001, 1.0)
+    >>> redshift_distribution({"type": "LogUniform", "low": 0.01, "high": 0.5})
+    LogUniform(0.01, 0.5)
+    """
+    if hint is None:
+        return None
+    if hasattr(hint, "sample") and hasattr(hint, "bounds"):
+        return hint
+    if not isinstance(hint, dict):
+        raise ValueError(f"a redshift prior hint is a dict such as {DEFAULT_REDSHIFT_PRIOR} or a "
+                         f"prior distribution; got {hint!r}")
+    from .. import priors as P
+
+    kind = str(hint.get("type", "")).replace("_", "").replace(" ", "").lower()
+    if kind in ("uniform", "loguniform"):
+        try:
+            low, high = float(hint["low"]), float(hint["high"])
+        except KeyError as exc:
+            raise ValueError(f"redshift prior hint {hint!r} has no {exc.args[0]!r}; a "
+                             f"{hint['type']} hint needs 'low' and 'high'.") from None
+        return (P.Uniform if kind == "uniform" else P.LogUniform)(low, high)
+    if kind in ("normal", "gaussian", "truncatednormal", "truncnorm"):
+        mu = hint.get("mu", hint.get("loc", hint.get("mean")))
+        sigma = hint.get("sigma", hint.get("scale", hint.get("std")))
+        if mu is None or sigma is None:
+            raise ValueError(f"redshift prior hint {hint!r} needs 'mu' and 'sigma'.")
+        mu, sigma = float(mu), float(sigma)
+        low = float(hint.get("low", max(1e-3, mu - 5.0 * sigma)))
+        high = float(hint.get("high", mu + 5.0 * sigma))
+        cls = getattr(P, "TruncatedNormal", None)
+        if cls is None:
+            raise NotImplementedError(
+                f"redshift prior hint {hint!r} is a Normal, and this install's whisper_cbpf.priors "
+                f"has no TruncatedNormal. Pass a box instead, e.g. prior=Prior({{'redshift': "
+                f"Uniform({low:g}, {high:g})}}), or a hint {{'type': 'Uniform', 'low': {low:g}, "
+                f"'high': {high:g}}}.")
+        return cls(mu, sigma, low, high)
+    raise ValueError(f"redshift prior hint {hint!r}: unknown type {hint.get('type')!r}. Known: "
+                     f"'Uniform', 'LogUniform', 'Normal' / 'TruncatedNormal'.")
+
+#: Width [days] of :meth:`LightCurve.explosion_time_prior` when no non-detection precedes the first
+#: detection: the window then runs from this many days before the first detection to it. 30 d covers
+#: the observer-frame rise of most supernovae; it is too wide for a kilonova and too narrow for some
+#: superluminous supernovae and tidal disruption events -- pass ``fallback_days=`` for those.
+EXPLOSION_FALLBACK_DAYS = 30.0
+
+
+def explosion_window(time, upper_limit=None):
+    """The first detection and the last non-detection before it, on the light curve's own clock.
+
+    The data behind :meth:`LightCurve.explosion_time_prior` and the pre-event rule of the fits
+    (:func:`whisper_cbpf.samplers.base.prepare_lc`).
+
+    Parameters
+    ----------
+    time : array_like
+        Epochs, on the light curve's clock.
+    upper_limit : array_like of bool, optional
+        ``True`` for a non-detection. ``None`` means every row is a detection.
+
+    Returns
+    -------
+    dict
+        ``first_detection`` (float), ``last_non_detection`` (float, or ``None`` when no
+        non-detection precedes the first detection) and ``n_before`` (rows before the first
+        detection, all non-detections).
+
+    Raises
+    ------
+    ValueError
+        No detection ("not enough data").
+
+    Examples
+    --------
+    >>> from whisper_cbpf.io.schema import explosion_window
+    >>> explosion_window([1.0, 2.0, 3.5, 4.0], [True, True, False, False])
+    {'first_detection': 3.5, 'last_non_detection': 2.0, 'n_before': 2}
+    """
+    t = np.asarray(time, dtype=float)
+    ul = np.zeros(t.size, dtype=bool) if upper_limit is None else np.asarray(upper_limit, bool)
+    if not np.any(~ul):
+        raise ValueError(
+            f"not enough data: this light curve has no detection ({int(ul.sum())} upper limit(s)), "
+            f"so there is no first detection to place the explosion before. Wait for a detection.")
+    t_first = float(np.min(t[~ul]))
+    before = ul & (t < t_first)
+    last = float(np.max(t[before])) if np.any(before) else None
+    return {"first_detection": t_first, "last_non_detection": last, "n_before": int(before.sum())}
+
+
+#: Length [days, observer frame, on the light curve's clock] of the default explosion-time window
+#: of :func:`default_t_exp_prior`, the prior a fit gives a free ``t_exp`` when it is given none.
+#: Read at call time: set ``whisper_cbpf.io.schema.T_EXP_WINDOW_DAYS`` to change the default of
+#: every later fit, or pass ``window=`` to :func:`default_t_exp_prior` and give the result to one
+#: fit as ``prior=``.
+T_EXP_WINDOW_DAYS = 30.0
+
+
+def default_t_exp_prior(lc, window=None):
+    """The default explosion-time prior of a fit: ``Uniform(anchor - window, first detection)``.
+
+    A fit of a model with a free ``t_exp`` (:func:`whisper_cbpf.fit`, every sampler's ``fit``,
+    :func:`whisper_cbpf.compare`) uses this prior when the prior passed to it names no ``t_exp``.
+
+    - **Upper bound**: the first detection (the earliest detection in any band).
+    - **Lower bound**: the *anchor* minus ``window`` days. The anchor is the last upper limit
+      (non-detection) before the first detection when the light curve has one, otherwise the
+      first detection itself.
+
+    All times are on the light curve's own clock, which is the clock of the model's ``t_exp``
+    (observer frame; MJD for a raw curve). The window is not divided by ``1 + z``.
+
+    Parameters
+    ----------
+    lc : LightCurve
+        The data: its ``time`` and ``upper_limit`` columns are read (no ``upper_limit`` column means
+        every row is a detection).
+    window : float, optional
+        Days before the anchor where the prior starts. Default :data:`T_EXP_WINDOW_DAYS` (30),
+        read when the function is called.
+
+    Returns
+    -------
+    Uniform
+        Named ``"t_exp"``.
+
+    Raises
+    ------
+    ValueError
+        The light curve has no detection ("not enough data"), or the window is not a finite
+        number of days > 0 (``window`` or, when it is ``None``, :data:`T_EXP_WINDOW_DAYS`).
+
+    Notes
+    -----
+    This is a wider window than :meth:`LightCurve.explosion_time_prior` (last non-detection to
+    first detection), on purpose: a non-detection shallower than the source does not prove that
+    the source had not yet exploded. With ``window`` days the prior allows an explosion up to
+    ``window`` days before the last non-detection. A model whose own ``t_exp`` prior is a
+    ``Uniform`` has it cut to this window in a fit (never widened); a prior passed to the fit is
+    used as given. A posterior that piles against the lower edge says the window is too short
+    (the rise was not observed): pass a wider one. ``ABC_time_prior=True`` in
+    :func:`whisper_cbpf.fit` and :func:`whisper_cbpf.compare` narrows this window first, from a GPU
+    ABC run on the same light curve (:func:`whisper_cbpf.abc_time_prior`); it is never made wider.
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> lc = wp.LightCurve(time=[60000.0, 60002.5, 60003.1, 60005.0],
+    ...                    band=["lsstr", "lsstg", "lsstr", "lsstg"],
+    ...                    magnitude=[24.5, 24.6, 23.2, 22.4],
+    ...                    magnitude_err=[float("nan"), float("nan"), 0.12, 0.06],
+    ...                    upper_limit=[True, True, False, False])
+    >>> wp.default_t_exp_prior(lc)                       # last limit 60002.5, minus 30 d
+    Uniform(59972.5, 60003.1)
+    >>> wp.default_t_exp_prior(lc.where(upper_limit=False), window=20)   # no limit: first - 20 d
+    Uniform(59983.1, 60003.1)
+    """
+    from ..priors import Uniform
+
+    width = T_EXP_WINDOW_DAYS if window is None else window
+    if not (np.isfinite(float(width)) and float(width) > 0.0):
+        # An infinite window would give Uniform(-inf, ...), whose density is -inf everywhere.
+        what = "window" if window is not None else "whisper_cbpf.io.schema.T_EXP_WINDOW_DAYS"
+        raise ValueError(f"window must be > 0 days and finite; got {what} = {width!r}. For a "
+                         f"wider prior pass a larger finite window, or pass prior= to the fit.")
+    w = explosion_window(lc.time, getattr(lc, "upper_limit", None))
+    anchor = w["first_detection"] if w["last_non_detection"] is None else w["last_non_detection"]
+    return Uniform(anchor - float(width), w["first_detection"], name="t_exp")
+
 
 #: Per-point columns Whisper understands (others may be added freely as ordinary columns).
 _FLOAT_COLS = ("time", "magnitude", "magnitude_err", "flux", "flux_err", "lambda_eff", "zero_point")
@@ -53,6 +254,45 @@ class LightCurve(Table):
 
     Construct from arrays (``LightCurve(time=..., band=..., flux=..., ...)``) or from anything
     ``Table`` accepts. See the module docstring for the column / metadata layout.
+    :func:`whisper_cbpf.load_lightcurve` builds one from a file, a table or survey alerts.
+
+    Parameters
+    ----------
+    time : array_like
+        Epochs in days (MJD, or days since a reference once one is set).
+    band : array_like of str
+        One band label per epoch (``"ztfr"``, ``"lsstg"``, ...).
+    magnitude, magnitude_err : array_like, optional
+        AB magnitudes and their errors. Give these or ``flux``.
+    flux, flux_err : array_like, optional
+        Flux densities in Jy and their errors.
+    upper_limit : array_like of bool, optional
+        True for a non-detection; its magnitude or flux is the limit.
+    system, lambda_eff, zero_point : array_like, optional
+        Photometric system, effective wavelength [Angstrom] and zero point [Jy] per epoch.
+    name : str, optional
+    redshift : float, optional
+        Known redshift. Unknown (None) records ``redshift_known=False`` and a default
+        ``redshift_prior`` that fits sample.
+    luminosity_distance : float, optional
+        Mpc; needed when ``redshift == 0``.
+    data_mode : {"magnitude", "flux_density", "flux"}, optional
+        Inferred from the columns when omitted.
+    redshift_prior : dict or Prior, optional
+        The prior a fitted redshift takes when ``redshift`` is unknown.
+    meta : dict, optional
+        Extra metadata.
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> lc = wp.LightCurve(time=[60000.0, 60002.0, 60005.0], band=["ztfg", "ztfr", "ztfg"],
+    ...                    magnitude=[19.1, 18.7, 18.9], magnitude_err=[0.1, 0.08, 0.1],
+    ...                    redshift=0.05, name="SN demo")
+    >>> lc.n_points, lc.bands
+    (3, ['ztfg', 'ztfr'])
+    >>> lc.set_explosion_date(59999.0).time.tolist()
+    [1.0, 3.0, 6.0]
     """
 
     def __init__(self, data=None, *, time=None, band=None, magnitude=None, magnitude_err=None,
@@ -259,8 +499,32 @@ class LightCurve(Table):
         return self[mask]
 
     def select_snr(self, min_snr=5.0):
-        """Keep points with signal-to-noise ratio >= ``min_snr``."""
-        return self[self.snr >= min_snr]
+        """Keep the detections with signal-to-noise ratio >= ``min_snr``, and every upper limit.
+
+        A non-detection has no signal-to-noise (its error is not a measurement error), and a fit
+        uses it as a limit, so the cut applies to detections only.
+
+        Parameters
+        ----------
+        min_snr : float, default 5.0
+
+        Returns
+        -------
+        LightCurve
+
+        Examples
+        --------
+        >>> import numpy as np, whisper_cbpf as wp
+        >>> lc = wp.LightCurve(time=[1.0, 2.0, 3.0], band=["r"] * 3, flux=[0.3, 1.0, 5.0],
+        ...                    flux_err=[np.nan, 0.5, 0.5], upper_limit=[True, False, False])
+        >>> lc.select_snr(5.0).time.tolist()        # the 2-sigma point goes, the limit stays
+        [1.0, 3.0]
+        """
+        ul = self.upper_limit
+        ul = np.zeros(len(self), dtype=bool) if ul is None else np.asarray(ul, dtype=bool)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            keep = ul | (self.snr >= min_snr)
+        return self[keep]
 
     # --- band resolution ---
     def _resolved_zero_point(self, svo_fallback=False):
@@ -318,18 +582,104 @@ class LightCurve(Table):
             out["magnitude"] = flux_density_to_mag(self["flux"].data, None, zeropoint_jy)
         return out
 
-    def set_explosion_date(self, explosion_date):
-        """Copy with ``time`` measured in **days since ``explosion_date`` (MJD)**; day 0 = explosion."""
+    def set_time_reference(self, mjd, label):
+        """Copy with ``time`` measured in **days since ``mjd`` (MJD)**, recording what that date is.
+
+        ``label`` names day 0, e.g. ``"first detection"``, ``"discovery"`` or ``"peak"``. It is kept
+        in ``meta['time_reference']`` (the date in ``meta['time_reference_mjd']``), so plots label
+        the time axis "days since first detection (MJD ...)" and :meth:`calc_phase` counts from it.
+        A model still reads ``time`` as days since its own day 0 (the explosion, for redback's
+        models). A fit therefore leaves out the rows at or before day 0 (pre-event data are never
+        fitted; :func:`whisper_cbpf.samplers.base.prepare_lc`), except for a model that fits its
+        own epoch (a ``t0`` parameter, as ``bazin``) when ``label`` is not ``"explosion"`` or
+        ``"merger"``. For the explosion itself use :meth:`set_explosion_date`.
+        """
         out = self.copy()
-        out["time"] = out["time"].data - float(explosion_date)
+        out["time"] = out["time"].data - float(mjd)
+        out.meta["time_reference"] = str(label)
+        out.meta["time_reference_mjd"] = float(mjd)
+        return out
+
+    def set_explosion_date(self, explosion_date):
+        """Copy with ``time`` measured in **days since ``explosion_date`` (MJD)**; day 0 = explosion.
+
+        :meth:`set_time_reference` with ``label="explosion"``, plus ``meta['explosion_mjd']``. When
+        the date is only a stand-in for the explosion (the first detection, say), use
+        :meth:`set_time_reference` so the plots do not call it the explosion.
+        """
+        out = self.set_time_reference(explosion_date, "explosion")
         out.meta["explosion_mjd"] = float(explosion_date)
         return out
+
+    def explosion_time_prior(self, *, fallback_days=EXPLOSION_FALLBACK_DAYS):
+        """The explosion-time prior the data define: from the last non-detection to the first detection.
+
+        ``Uniform(last non-detection before the first detection, first detection)``, on this
+        light curve's own clock (the clock a model's ``t_exp`` is on: MJD for a raw curve, days
+        since the reference after :meth:`set_time_reference`). This is the narrow window the
+        data alone allow; a fit's default is the wider :func:`default_t_exp_prior`; see Notes.
+
+        Parameters
+        ----------
+        fallback_days : float, default :data:`EXPLOSION_FALLBACK_DAYS` (30)
+            Width of the window when no non-detection precedes the first detection: the prior
+            then runs from ``fallback_days`` before the first detection to it.
+
+        Returns
+        -------
+        Uniform
+
+        Raises
+        ------
+        ValueError
+            The light curve has no detection ("not enough data"), or ``fallback_days <= 0``.
+
+        Notes
+        -----
+        Every band counts: the first detection is the earliest detection in any band, the lower
+        edge the latest non-detection, in any band, before it. A non-detection shallower than the
+        first detection does not prove the source had not yet exploded, only that it was fainter
+        than that limit; with shallow limits pass a wider prior of your own.
+
+        A fit (:func:`whisper_cbpf.fit` and every sampler's ``fit``) does not use this window by
+        default. When the prior passed to the fit names no ``t_exp`` it uses
+        :func:`default_t_exp_prior`, which starts 30 days before this window's lower edge (or
+        before the first detection, when no non-detection precedes it): a model prior that is a
+        ``Uniform`` is cut to that window, a model with no ``t_exp`` prior takes it, any other
+        family is kept as it is. Pass ``prior=Prior({"t_exp": lc.explosion_time_prior()})`` to fit
+        over this narrow window instead. The rows before the first detection are never fitted;
+        ``result.info["t_exp_prior"]`` records the prior used and where it came from.
+
+        Examples
+        --------
+        >>> import whisper_cbpf as wp
+        >>> lc = wp.LightCurve(time=[60000.0, 60002.5, 60003.1, 60005.0],
+        ...                    band=["lsstr", "lsstg", "lsstr", "lsstg"],
+        ...                    magnitude=[24.5, 24.6, 23.2, 22.4],
+        ...                    magnitude_err=[float("nan"), float("nan"), 0.12, 0.06],
+        ...                    upper_limit=[True, True, False, False])
+        >>> lc.explosion_time_prior()
+        Uniform(60002.5, 60003.1)
+        >>> lc.where(upper_limit=False).explosion_time_prior(fallback_days=20)
+        Uniform(59983.1, 60003.1)
+        """
+        from ..priors import Uniform
+
+        if not float(fallback_days) > 0.0:
+            raise ValueError(f"fallback_days must be > 0; got {fallback_days!r}.")
+        w = explosion_window(self.time, self.upper_limit)
+        low = w["last_non_detection"]
+        if low is None:
+            low = w["first_detection"] - float(fallback_days)
+        return Uniform(low, w["first_detection"])
 
     def calc_phase(self, reference=None, redshift=None, peak=False, hours=False):
         """Copy with a rest-frame ``phase`` column: ``(time - reference) / (1 + z)``.
 
         ``reference`` (MJD) defaults to ``meta['explosion_mjd']`` / ``meta['refmjd']`` / the earliest
-        detection. ``redshift`` defaults to the curve's redshift (0 if unknown). With ``peak=True`` the
+        detection; a curve already shifted by :meth:`set_time_reference` or
+        :meth:`set_explosion_date` is phased from its declared day 0 (``reference = 0``).
+        ``redshift`` defaults to the curve's redshift (0 if unknown). With ``peak=True`` the
         reference is the brightest detection (``meta['peakdate']``); ``hours=True`` gives rest-frame
         hours. The reference and redshift used are recorded in ``meta``.
         """
@@ -342,8 +692,8 @@ class LightCurve(Table):
                 det = out.where(upper_limit=False) if "upper_limit" in out.colnames else out
                 reference = float(det["time"].data[np.argmin(det["magnitude"].data)])
                 out.meta["peakdate"] = reference
-            elif "explosion_mjd" in out.meta:
-                reference = 0.0   # set_explosion_date already shifted time to days-since-explosion
+            elif "time_reference_mjd" in out.meta or "explosion_mjd" in out.meta:
+                reference = 0.0   # set_time_reference already shifted time to days since day 0
             else:
                 det = out.where(upper_limit=False) if "upper_limit" in out.colnames else out
                 reference = float(np.min(det["time"].data))

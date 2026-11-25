@@ -43,8 +43,8 @@ CLIGHT = 2.99792458e10
 SIGMA_SB = 5.6703744191844314e-5
 
 #: Observer-frame epochs and the source-frame grid every test shares. Starts at 0.5 d so the
-#: earliest epoch sits inside redback's first dense interval (0.29 d), which is where CHANGE 3
-#: lives; ends at 200 d so the nickel tail is covered.
+#: earliest epoch sits inside the first dense interval (0.29 d) of redback <= 1.15's linear grid,
+#: which is where CHANGE 3 lives; ends at 200 d so the nickel tail is covered.
 Z = 0.05
 T_OBS = np.geomspace(0.5, 200.0, 60)
 T_SRC = T_OBS / (1.0 + Z)
@@ -117,7 +117,9 @@ def _ref_diffusion(time, dense_times, luminosity, kappa, kappa_gamma, mej, vej):
 
 
 def _ref_dense():
-    return np.linspace(0.0, T_SRC[-1] + 100.0, 1000)
+    """redback 1.20's dense grid (``supernova_models.py:961``). <= 1.15 had
+    ``np.linspace(0, time[-1]+100, 1000)``; the CHANGE 3 tests below build that one themselves."""
+    return np.geomspace(1e-5, T_SRC[-1] + 100.0, 1000)
 
 
 def _ref_nico(t, f_ni, mej):
@@ -252,8 +254,13 @@ def test_csm_shock_breakout_matches_reference():
     assert _maxrel(c, tt) < 1e-13
 
 
-def test_csm_arnett_uses_v_min_as_the_diffusion_velocity(grid):
-    """redback passes vej=v_min to the Arnett term; there is no separate vej parameter."""
+def test_csm_arnett_uses_v_min_as_the_diffusion_velocity():
+    """redback passes vej=v_min to the Arnett term; there is no separate vej parameter.
+
+    On the closed-form grid (``csm_interp=False``), so the breakout term is exactly
+    ``csm_shock_breakout`` and only the Arnett velocity is under test.
+    """
+    grid = S.build_sn_grid(T_SRC, csm_interp=False)
     ours = S.csm_shock_and_arnett_bolometric(grid, 2.0, 0.1, 1.0, 1e4, 0.45, 1.0, 0.1, 0.2, 0.03)
     sbo, _, _ = S.csm_shock_breakout(jnp.asarray(T_SRC), 1.0, 1e4, 0.45, 0.2, 1.0, 0.1)
     ref = np.asarray(sbo) + np.asarray(S.arnett_bolometric(grid, 0.1, 2.0, 0.2, 0.03, 1e4))
@@ -300,6 +307,31 @@ def test_cutoff_norm_renormalises_to_lbol(grid):
     assert np.all(np.isfinite(n1)) and np.all(n1 > 0)
     assert _maxrel(n2, 2.0 * n1) < 1e-14
     assert 1e-3 < np.median(n1) < 1e3, "norm should be O(1); check FLUX_CONST_OVER_ANG"
+
+
+def test_cutoff_norm_precision_does_not_depend_on_import_order():
+    """REGRESSION: the cutoff's series constants were a jnp array built AT IMPORT, so a module
+    imported before float64 was enabled -- as this file's own collection does, and as any script
+    that imports first and configures second does -- froze them in float32. ``slsn`` and
+    ``type_1a`` then carried float32's ~7.6e-8 relative error into float64 fits, and the magnetar
+    parity in ``test_redback_adapter.py`` failed for ``slsn`` whenever this file was collected
+    with it. Measured in fresh interpreters, one per import order."""
+    import os
+    import subprocess
+    import sys
+
+    code = ("import sys, jax\n"
+            "if sys.argv[1] == 'after': jax.config.update('jax_enable_x64', True)\n"
+            "from whisper_cbpf.models.jax import supernova as S\n"
+            "jax.config.update('jax_enable_x64', True)\n"
+            "import jax.numpy as jnp\n"
+            "t = jnp.asarray([3000.0, 8000.0, 2e4])\n"
+            "print(repr(S.cutoff_norm(1e43 * jnp.ones(3), t, 1e15 * jnp.ones(3), 3000.0).tolist()))")
+    env = {**os.environ, "JAX_ENABLE_X64": "0", "JAX_PLATFORMS": "cpu"}
+    got = {order: np.array(eval(subprocess.run(
+        [sys.executable, "-c", code, order], capture_output=True, text=True, check=True,
+        env=env).stdout)) for order in ("before", "after")}
+    assert _maxrel(got["before"], got["after"]) < 1e-14, got
 
 
 def test_synchrotron_is_negligible_in_the_optical():
@@ -389,21 +421,33 @@ def test_gradient_finite_at_time_zero():
 # CLAIM 4: the documented deviations are bounded
 # =======================================================================================
 
-def test_csm_deviation_is_the_interpolation_and_nothing_else(grid):
-    """CHANGE 4: we equal redback's CLOSED FORM exactly, and differ from its interp1d."""
-    ours = S.csm_shock_and_arnett_bolometric(grid, 2.0, 0.1, 1.0, 1e4, 0.45, 1.0, 0.1, 0.2, 0.03)
-    exact, _, _ = _ref_csm_sbo(T_SRC, 1.0, 1e4, 0.45, 0.2, 1.0, 0.1)
-    ref = exact + np.asarray(S.arnett_bolometric(grid, 0.1, 2.0, 0.2, 0.03, 1e4))
-    assert _maxrel(ours, ref) < 1e-14
-
-    # redback's own scheme: 300 linear nodes from 0.01 to 200 d, then interp1d
+@pytest.mark.parametrize("preset,nodes", [("1.20", np.geomspace(1e-2, 200.0, 300)),
+                                          ("1.15", np.linspace(1e-2, 200.0, 300))])
+def test_csm_breakout_is_redbacks_interpolation_by_default(preset, nodes):
+    """CHANGE 4: the default reproduces redback's interp1d off its 300 fixed nodes -- geometric in
+    1.20, linear in <= 1.15 -- and ``csm_interp=False`` the closed form. The two differ by a
+    measured amount, so the choice is not a detail."""
     from scipy.interpolate import interp1d
-    tt = np.linspace(1e-2, 200.0, 300)
-    grid_lbol, _, _ = _ref_csm_sbo(tt, 1.0, 1e4, 0.45, 0.2, 1.0, 0.1)
-    interp = interp1d(tt, grid_lbol, fill_value="extrapolate")(T_SRC)
-    dmag = np.abs(2.5 * np.log10(np.maximum(interp, 1e-300) / np.maximum(exact, 1e-300)))
-    assert dmag.max() > 0.05, "if this shrinks, redback changed its grid -- re-measure CHANGE 4"
-    assert np.argmax(dmag) < 5, "the error should live in redback's FIRST grid interval"
+
+    t = np.concatenate([T_SRC, [250.0]])            # one epoch past the last node, 200 d
+    args = (2.0, 0.1, 1.0, 1e4, 0.45, 1.0, 0.1, 0.2, 0.03)
+    grid = S.build_sn_grid(t, **S.REDBACK_GRID_PRESETS[preset])
+    arnett = np.asarray(S.arnett_bolometric(grid, 0.1, 2.0, 0.2, 0.03, 1e4))
+    exact, _, _ = _ref_csm_sbo(t, 1.0, 1e4, 0.45, 0.2, 1.0, 0.1)
+    on_nodes, _, _ = _ref_csm_sbo(nodes, 1.0, 1e4, 0.45, 0.2, 1.0, 0.1)
+    interp = interp1d(nodes, on_nodes, fill_value="extrapolate")(t)
+
+    ours = np.asarray(S.csm_shock_and_arnett_bolometric(grid, *args))
+    inside = t <= 200.0
+    assert _maxrel(ours[inside], (interp + arnett)[inside]) < 1e-13
+    # past the last node redback extrapolates linearly (negative from ~201 d); the
+    # port keeps the closed form there
+    assert ours[~inside] == pytest.approx((exact + arnett)[~inside], rel=1e-13)
+
+    closed = S.build_sn_grid(t, csm_interp=False, **S.REDBACK_GRID_PRESETS[preset])
+    assert _maxrel(S.csm_shock_and_arnett_bolometric(closed, *args), exact + arnett) < 1e-14
+    dmag = np.abs(2.5 * np.log10(np.maximum(interp, 1e-300) / np.maximum(exact, 1e-300)))[inside]
+    assert dmag.max() > 1e-3, "if this shrinks, redback changed its grid -- re-measure CHANGE 4"
 
 
 def test_exponential_powerlaw_deviation_converges_where_the_integral_exists():
@@ -411,7 +455,7 @@ def test_exponential_powerlaw_deviation_converges_where_the_integral_exists():
     assert S.exponential_powerlaw_integrable(2.0, 1.0)
     prev = None
     for n_dense in (1000, 2000, 5000):
-        g = S.build_sn_grid(T_SRC, dense_resolution=n_dense)
+        g = S.build_sn_grid(T_SRC, dense_resolution=n_dense, spacing="linear")   # CHANGE 3's grid
         dense = np.linspace(0.0, T_SRC[-1] + 100.0, n_dense)
         with np.errstate(all="ignore"):
             raw = (1e43 * (1 - np.exp(-dense / 10.0)) ** 2.0 * (dense / 10.0) ** -1.0)
@@ -433,7 +477,7 @@ def test_exponential_powerlaw_divergent_half_does_not_converge():
     assert not S.exponential_powerlaw_integrable(1.0, 5.0)
     vals = []
     for n_dense in (1000, 10000, 100000):
-        g = S.build_sn_grid(T_SRC, dense_resolution=n_dense)
+        g = S.build_sn_grid(T_SRC, dense_resolution=n_dense, spacing="linear")   # CHANGE 3's grid
         lb = np.asarray(S.exponential_powerlaw_bolometric(
             g, 1e43, 1.0, 5.0, 0.1, 0.1, 0.03, 2.0, 1e4))
         assert np.all(np.isfinite(lb))
@@ -441,6 +485,17 @@ def test_exponential_powerlaw_divergent_half_does_not_converge():
     # a 100x refinement must NOT settle: consecutive answers differ by more than 10%
     assert abs(vals[1] - vals[0]) / vals[0] > 0.1
     assert abs(vals[2] - vals[1]) / vals[1] > 0.1
+
+
+def test_exponential_powerlaw_has_no_first_interval_deviation_on_the_geometric_grid(grid):
+    """CHANGE 3 lives on the linear grid only. redback 1.20's grid starts at 1e-5 d, where the
+    formula is finite, so both codes evaluate the same engine at the same nodes and agree."""
+    dense = _ref_dense()
+    raw = 1e43 * (1 - np.exp(-dense / 10.0)) ** 2.0 * (dense / 10.0) ** -1.0
+    assert np.all(np.isfinite(raw))
+    ref = _ref_diffusion(T_SRC, dense, raw, 0.1, 0.03, 2.0, 1e4)
+    ours = S.exponential_powerlaw_bolometric(grid, 1e43, 2.0, 1.0, 10.0, 0.1, 0.03, 2.0, 1e4)
+    assert _maxrel(ours, ref) < 1e-13
 
 
 def test_exponential_powerlaw_gradients_at_the_divergent_corner(grid, bands):
@@ -542,12 +597,71 @@ def test_adapter_builds_and_predicts(bands):
     b = np.array(["a" if i % 2 == 0 else "b" for i in range(T_OBS.size)])
 
     for model in sorted(S.MODELS):
-        m = supernova_model(model, ["a", "b"], Z, 7.09e26, filter_set=fs, times=T_OBS)
+        # constraint=None: DEMO's general_magnetar_slsn breaks redback's rotational-energy
+        # constraint, and predict gives zero flux there (the wall, tests/test_constraints.py).
+        # This test is the physics contract, at any draw.
+        m = supernova_model(model, ["a", "b"], Z, 7.09e26, filter_set=fs, times=T_OBS,
+                            constraint=None)
         flux = m.predict({k: DEMO[k] for k in m.parameters}, T_OBS, b)
         assert flux.shape == T_OBS.shape
         assert np.all(np.isfinite(flux)) and np.all(flux > 0), model
         assert set(m.parameters) <= set(S.PARAMETERS[model]) | {"line_time", "line_duration"}
         assert m.default_prior is not None and set(m.default_prior.names) == set(m.parameters)
+
+
+def _tp_s(p0, bp, mass_ns=1.4, theta_pb=np.pi / 2):
+    return 1.3e5 * bp ** -2 * p0 ** 2 * (mass_ns / 1.4) ** 1.5 * np.sin(theta_pb) ** -2
+
+
+@pytest.mark.parametrize("tp_s,delivered", [(1.43, 0.45), (0.105, 0.057)])
+def test_spin_down_energy_redbacks_own_grid_cannot_place(tp_s, delivered):
+    """CHANGE 1. With redback 1.20's grid the port matches redback -- and redback does not
+    conserve E_rot for a fast spin-down: nothing integrates [0, 1e-5 d] = [0, 0.864 s]. The closed
+    form reproduces the measured 45% (t_p = 1.43 s) and 5.7% (0.105 s) delivered."""
+    bp = np.sqrt(1.3e5 * 4.0 / tp_s)                    # p0 = 2 ms
+    assert _tp_s(2.0, bp) == pytest.approx(tp_s)
+    dense = S.dense_grid(T_SRC)
+    with pytest.warns(RuntimeWarning, match="spin-down unresolved"):
+        missed = S.warn_if_spin_down_unresolved(dense, 2.0, bp, 1.4, np.pi / 2)
+    assert 1.0 - missed == pytest.approx(delivered, abs=0.005)
+
+
+def test_spin_down_warning_is_silent_when_resolved_and_loud_on_the_linear_grid():
+    import warnings
+
+    slow = np.sqrt(1.3e5 * 4.0 / (10.0 * DAY))           # t_p = 10 d
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert S.warn_if_spin_down_unresolved(S.dense_grid(T_SRC), 2.0, slow, 1.4, 1.0) < 1e-5
+    # the linear grid's first cell is (t_last + 100)/999 = 0.29 d: t_p = 1 h is unresolved there
+    hour = np.sqrt(1.3e5 * 4.0 / 3600.0)
+    with pytest.warns(RuntimeWarning, match="spin-down unresolved"):
+        S.warn_if_spin_down_unresolved(S.dense_grid(T_SRC, spacing="linear"), 2.0, hour, 1.4,
+                                       np.pi / 2)
+
+
+def test_adapter_warns_once_when_the_spin_down_is_unresolved(bands):
+    """``predict`` checks the concrete parameters host-side, and says it once per model."""
+    import warnings
+
+    from whisper_cbpf.models.jax import supernova_model
+
+    la = np.asarray(bands[0])
+    trans = np.zeros((1, la.size))
+    trans[0][(la > 4000) & (la < 5500)] = 1.0
+    fs = {"lam": la, "trans": trans, "names": np.array(["a"])}
+    b = np.array(["a"] * T_OBS.size)
+    m = supernova_model("basic_magnetar_powered", ["a"], Z, 7.09e26, filter_set=fs, times=T_OBS)
+    p = {k: DEMO[k] for k in m.parameters}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                  # DEMO's t_p = 0.61 d: resolved
+        m.predict(p, T_OBS, b)
+    fast = dict(p, bp=np.sqrt(1.3e5 * 4.0 / 0.105) / np.sin(p["theta_pb"]))
+    with pytest.warns(RuntimeWarning, match="spin-down unresolved"):
+        m.predict(fast, T_OBS, b)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        m.predict(fast, T_OBS, b)                       # once per model, not per call
 
 
 def test_adapter_pin_removes_a_parameter_without_changing_the_curve(bands):

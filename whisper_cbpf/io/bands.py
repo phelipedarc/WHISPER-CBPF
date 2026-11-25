@@ -25,11 +25,19 @@ DEFAULT_BAND_ALIASES = {
     "ztf_g": "ztfg", "ztf_r": "ztfr", "ztf_i": "ztfi", "ztf_z": "ztfz",
 }
 
+#: The band labels each survey preset of :func:`~whisper_cbpf.io.load_lightcurve` writes
+#: (``survey="ztf"`` / ``"lsst"``), in wavelength order. Always survey-prefixed: a bare ``g`` is read
+#: as LSST g by whisper's models but as SDSS g by redback, so an alert never leaves the loader as one.
+SURVEY_BANDS = {
+    "ztf": ("ztfg", "ztfr", "ztfi"),
+    "lsst": ("lsstu", "lsstg", "lsstr", "lssti", "lsstz", "lssty"),
+}
+
 # Broadband grouping supplied by the user: collapse heterogeneous filters into an effective-band
 # ladder. Comments give the rough wavelength-order index of each group.
 FILTER_LOOKUP = {
     # U-group (+2)
-    'u': 'U-band', 'U': 'U-band', "u'": 'U-band',
+    'u': 'U-band', 'U': 'U-band', "u'": 'U-band', 'lsstu': 'U-band',
     'uvw2': 'U-band', 'uvm2': 'U-band', 'uvw1': 'U-band', 'uvot_u': 'U-band',
     'F336W': 'U-band', 'f336w': 'U-band',
     # g-group (+1)
@@ -55,9 +63,11 @@ FILTER_LOOKUP = {
     'z': 'z-band', 'Z': 'z-band', "z'": 'z-band',
     'ZTF_z': 'z-band', 'ztf_z': 'z-band', 'ztfz': 'z-band',
     'lsstz': 'z-band', 'z-ztf': 'z-band', 'ztfz': 'z-band', 'z-p1': 'z-band',
-    'y': 'z-band', 'Y': 'z-band', 'lssty': 'z-band', 'y-p1': 'z-band',
     'F090W': 'z-band',
     'F850W': 'z-band', 'f850w': 'z-band',
+    # y-group (-2.5). Its own band since whisper 0.1.1: folded into z-band it carried LSST z's
+    # 8679 A for a 9710 A filter.
+    'y': 'y-band', 'Y': 'y-band', 'lssty': 'y-band', 'y-p1': 'y-band',
     # J-group (-3)
     'J': 'J-band', 'j': 'J-band', '2massj': 'J-band',
     'F110W': 'J-band', 'f110w': 'J-band',
@@ -95,8 +105,9 @@ LSST_BAND_INFO = {
     "g-band": {"lambda_eff": 4866.0, "zero_point": _AB_ZP_JY, "filter_id": "LSST/LSST.g", "source": "lsst"},
     "r-band": {"lambda_eff": 6215.0, "zero_point": _AB_ZP_JY, "filter_id": "LSST/LSST.r", "source": "lsst"},
     "i-band": {"lambda_eff": 7545.0, "zero_point": _AB_ZP_JY, "filter_id": "LSST/LSST.i", "source": "lsst"},
-    # the FILTER_LOOKUP 'z-band' group folds in LSST y as well; anchored on LSST z.
     "z-band": {"lambda_eff": 8679.0, "zero_point": _AB_ZP_JY, "filter_id": "LSST/LSST.z", "source": "lsst"},
+    # LSST y: sncosmo's `lssty` photon-weighted mean wavelength (9710.3 A; SVO's LSST/LSST.y 9711.8).
+    "y-band": {"lambda_eff": 9710.0, "zero_point": _AB_ZP_JY, "filter_id": "LSST/LSST.y", "source": "lsst"},
     # NIR -- documented 2MASS effective wavelengths (AB zero point as used internally)
     "J-band": {"lambda_eff": 12350.0, "zero_point": _AB_ZP_JY, "filter_id": "2MASS/2MASS.J", "source": "documented"},
     "H-band": {"lambda_eff": 16620.0, "zero_point": _AB_ZP_JY, "filter_id": "2MASS/2MASS.H", "source": "documented"},
@@ -121,6 +132,31 @@ def resolve_band(band, *, lookup=None, svo_fallback=True, lambda_eff_hint=None, 
        still succeeds; the user can supply values via ``svo.register_manual_band``).
 
     ``source`` is one of ``'lsst'`` / ``'documented'`` / ``'svo'`` / ``'manual'`` / ``'unresolved'``.
+
+    Parameters
+    ----------
+    band : str
+        A band label.
+    lookup : dict, optional
+        ``{label: group}``; default :data:`FILTER_LOOKUP`.
+    svo_fallback : bool, default True
+        Ask the SVO Filter Profile Service for a band with no local match.
+    lambda_eff_hint : float, optional
+        Effective wavelength [Angstrom] to help an SVO search.
+    warn : bool, default True
+        Warn when the band has no local match.
+
+    Returns
+    -------
+    dict
+        ``group``, ``lambda_eff`` [Angstrom], ``zero_point`` [Jy], ``filter_id`` and ``source``.
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> info = wp.resolve_band("lsstg", svo_fallback=False)
+    >>> info["group"], info["lambda_eff"], info["zero_point"], info["source"]
+    ('g-band', 4866.0, 3631.0, 'lsst')
     """
     from . import svo as _svo  # local import keeps astroquery fully optional
 
@@ -172,10 +208,29 @@ def resolve_band(band, *, lookup=None, svo_fallback=True, lambda_eff_hint=None, 
 def resolve_bands(bands, *, lookup=None, svo_fallback=True, warn=True):
     """Vectorized :func:`resolve_band`.
 
-    Returns ``(lambda_eff, zero_point, info)`` where the first two are ``float`` ``ndarray`` (NaN
-    where unresolved) aligned with ``bands``, and ``info`` maps each distinct raw band to its full
-    resolution dict. Each distinct band is resolved once (so SVO/network is hit at most once per
-    band, then cached).
+    Each distinct band is resolved once (so SVO/network is hit at most once per band, then
+    cached).
+
+    Parameters
+    ----------
+    bands : array_like of str
+        Band labels, one per observation.
+    lookup, svo_fallback, warn
+        As :func:`resolve_band`.
+
+    Returns
+    -------
+    lambda_eff, zero_point : numpy.ndarray
+        Float arrays aligned with ``bands`` (NaN where unresolved).
+    info : dict
+        Each distinct raw band mapped to its full :func:`resolve_band` dict.
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> lam, zp, info = wp.resolve_bands(["lsstg", "lsstr", "lsstg"], svo_fallback=False)
+    >>> lam.tolist(), sorted(info)
+    ([4866.0, 6215.0, 4866.0], ['lsstg', 'lsstr'])
     """
     info = {}
     for b in bands:
@@ -223,6 +278,28 @@ def group_bands(bands, lookup=None, default=None, warn_unknown=False):
 
     Labels absent from the lookup are left unchanged (or set to ``default``); set
     ``warn_unknown=True`` to warn about them.
+
+    Parameters
+    ----------
+    bands : array_like of str
+        Band labels.
+    lookup : dict, optional
+        ``{label: group}``; default :data:`FILTER_LOOKUP`.
+    default : str, optional
+        The group of a label absent from the lookup; default: the label itself.
+    warn_unknown : bool, default False
+        Warn about labels absent from the lookup.
+
+    Returns
+    -------
+    numpy.ndarray
+        The group of each band.
+
+    Examples
+    --------
+    >>> import whisper_cbpf as wp
+    >>> wp.group_bands(["B", "ztfg", "V"]).tolist()
+    ['g-band', 'g-band', 'r-band']
     """
     lookup = FILTER_LOOKUP if lookup is None else lookup
     out, unknown = [], []

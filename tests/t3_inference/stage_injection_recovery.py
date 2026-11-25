@@ -11,13 +11,12 @@ any distortion of the posterior SHAPE, this answers the blunter operational ques
 the sampler cost, and its per-injection table doubles as a recovery atlas (which corners
 of the prior the fit loses).
 
-RUNS ON GPU, with the env sourced and CUDA_VISIBLE_DEVICES set::
+RUNS ON GPU, with the env sourced and CUDA_VISIBLE_DEVICES set. From the repo root, with the
+``[gpu,models,dev]`` extras installed::
 
-    docker exec a GPU environment bash -lc '
-      export CUDA_VISIBLE_DEVICES=0
-      cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF
-      source "$(whisper-cbpf-env)"
-      python -u tests/t3_inference/stage_injection_recovery.py --n-injections 100'
+    export CUDA_VISIBLE_DEVICES=0
+    source "$(whisper-cbpf-env)"
+    python -u tests/t3_inference/stage_injection_recovery.py --n-injections 100
 
 The script refuses to start on CPU unless ``--allow-cpu`` is passed; see stage_sbc.py's
 docstring for why CPU is nonetheless a reasonable place to run this, and shard the same

@@ -1,7 +1,7 @@
 """Import, registration and the whisper contract.
 
-These are the tests that fail loudly if whisper-GPU has drifted from whisper's extension API --
-which is the thing most likely to break, because it is an API this package does not own.
+These are the tests that fail loudly if the JAX/GPU half has drifted from the core's extension API
+-- the seam where two formerly separate packages were joined, and so the thing most likely to break.
 """
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def test_tde_factory_names_itself_after_the_rise_it_was_given():
     b = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200, rise="none")
     assert a.name == "tde_gaussianrise_jax" and b.name == "tde_cooling_envelope_jax"
     # The two differ by more than the rise, because redback's two prior files differ: the
-    # gaussianrise one pins nothing, the cooling_envelope one pins four parameters. Compare
+    # gaussianrise one pins nothing, the cooling_envelope one pins four up to redback 1.15. Compare
     # the FULL parameter sets by freeing everything.
     from whisper_cbpf.priors import LogUniform, Prior, Uniform
     free = {k: None for k in ("mbh_6", "eta", "alpha", "beta")}
@@ -117,10 +117,12 @@ def test_tde_factory_uses_redbacks_prior_including_what_redback_pins():
     pytest.importorskip("jax")   # builds a JAX model
     """redback's prior, read from redback -- deltas and all -- not a transcription of it.
 
-    `gaussianrise_cooling_envelope.prior` pins nothing in 1.15.1, so all seven are free.
-    `cooling_envelope.prior` pins four (bilby parses its trailing scalar assignments as
-    DeltaFunction), leaving stellar_mass the only free parameter. whisper has no delta
-    prior, so those are bound at the factory and absent from `parameters`.
+    `gaussianrise_cooling_envelope.prior` pins nothing (1.15.1, 1.20), so all seven are free.
+    redback <= 1.15's `cooling_envelope.prior` pins four (bilby parses its trailing scalar
+    assignments as DeltaFunction), leaving stellar_mass the only free parameter; 1.18 freed
+    them, so under 1.20 all five are free. whisper has no delta prior, so a pinned parameter
+    is bound at the factory and absent from `parameters`. (This test used to assert 1.15's
+    answer whatever redback was installed, and failed under 1.20 for that reason alone.)
     """
     m = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200)
     b = {k: v.bounds for k, v in m.default_prior.distributions.items()}
@@ -131,9 +133,16 @@ def test_tde_factory_uses_redbacks_prior_including_what_redback_pins():
 
     bare = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200, rise="none")
     pytest.importorskip("redback")
-    # redback's own file leaves ONE free parameter here; reproducing that is the point
-    assert bare.parameters == ["stellar_mass"], bare.parameters
-    assert "redback pins" in bare.description
+    from whisper_cbpf.models.redback_adapter import installed_redback_preset
+    pins = installed_redback_preset() in ("1.12", "1.15")
+    # redback's own file decides how many are free here; reproducing that is the point
+    if pins:
+        assert bare.parameters == ["stellar_mass"], bare.parameters
+        assert "redback pins" in bare.description
+    else:
+        assert bare.parameters == ["mbh_6", "stellar_mass", "eta", "alpha", "beta"]
+        assert "redback pins" not in bare.description
+        assert bare.default_prior.distributions["stellar_mass"].bounds == pytest.approx((0.5, 10.0))
 
     # ... and `pin` overrides in both directions
     from whisper_cbpf.priors import LogUniform, Prior, Uniform
@@ -142,10 +151,14 @@ def test_tde_factory_uses_redbacks_prior_including_what_redback_pins():
         pin={"beta": None, "mbh_6": None},
         prior=Prior({"beta": Uniform(1.0, 5.0), "mbh_6": LogUniform(0.1, 20.0)}))
     assert set(freed.parameters) >= {"stellar_mass", "beta", "mbh_6"}
-    # ... and unpinning WITHOUT a distribution must fail loudly, not invent a range
-    with pytest.raises(ValueError, match="no prior"):
-        whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
-                              rise="none", pin={"beta": None})
+    assert "beta" not in whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
+                                                rise="none", pin={"beta": 2.0}).parameters
+    # ... and unpinning WITHOUT a distribution must fail loudly, not invent a range (only a
+    # release whose file pins something has such a parameter)
+    if pins:
+        with pytest.raises(ValueError, match="no prior"):
+            whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
+                                  rise="none", pin={"beta": None})
     fixed = whisper_cbpf.tde_model(["sdssg"], redshift=0.05, dl_cm=7e26, n_wave=200,
                                   pin={"sigma_t": 15.0})
     assert "sigma_t" not in fixed.parameters

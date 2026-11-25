@@ -3,8 +3,10 @@
 Depends on jax only; sncosmo is used once, offline, to export filter curves (see
 :func:`make_filter_set`). This module is also the shared substrate for
 :mod:`whisper_cbpf.models.jax.tde` and :mod:`whisper_cbpf.models.jax.supernova`: the Planck
-function, the AB band integral, the filter export, the diffusion quadrature and the interstellar
-extinction laws all live here.
+function, the AB band integral, the diffusion quadrature and the interstellar extinction laws all
+live here. The filter export (``make_filter_set``, ``ab_weights``) moved to
+:mod:`whisper_cbpf.synphot.grid_rule` in whisper 0.1.1 and is re-exported here unchanged; the
+factories now default to :func:`whisper_cbpf.synphot.gauss_rule` (``docs/PHOTOMETRY.md``).
 
 The physics is redback's. Eight expressions are rewritten using exact algebraic identities that
 remove overflow or catastrophic cancellation present in the original; five of them are what make
@@ -87,6 +89,12 @@ MAG_FLOOR = 40.0
 
 # Same reassociation hazard: (R/dl)**2 can be rewritten as R**2/dl**2, and
 # dl**2 ~ 1e52 overflows float32. Pre-scale both into a literal ratio.
+#: The coldest blackbody temperature the spectrum is evaluated at, K. ``T = 0`` is a legitimate
+#: output of an engine (no photosphere left) and made ``arg = h nu / k T`` infinite and the
+#: prefactor ``arg**3 * T**3`` NaN; redback gives zero flux there. At 1 K the exponent is
+#: ``h nu / k T > 1e3`` at every optical and infrared frequency, so the flux is exactly zero in
+#: float64 and the floor changes nothing for a physical temperature.
+TEMPERATURE_MIN = 1.0
 RSCALE = 1e14                          # cm, typical photosphere radius
 DLSCALE = 1e26                         # cm, ~30 Mpc
 RATIO_CONST = (RSCALE / DLSCALE) ** 2
@@ -145,17 +153,31 @@ T_FLOOR = 1e-3
 # domain the quadrature does not cover. Flux at t = T_FLOOR is ~1e-45 mJy (see `bolometric`),
 # so the discontinuity introduced at the mask edge is numerically exactly zero.
 T_EVAL_MIN = T_FLOOR
+# The nodes, the Barnes-Kasen table and the F99 spline below are float64 NumPy, cast by `_const`
+# where they are used: a jnp array built here takes the dtype in force at IMPORT, and a module
+# imported before x64 is enabled froze them in float32 (up to 1.9e-6 relative in L_bol).
+
+
+def _const(x):
+    """A float64 NumPy constant as a jnp array of the session's float dtype, at trace time.
+
+    The dtype is explicit: a bare ``jnp.asarray`` under ``jit`` can hand back a float64 constant
+    JAX cached while x64 was on, which a float32 session then truncates with a UserWarning.
+    """
+    return jnp.asarray(x, dtype=jnp.result_type(float))
+
+
 _GLX_O, _GLW_O = np.polynomial.legendre.leggauss(128)      # outer, in s
-GL_X = jnp.asarray(0.5 * (_GLX_O + 1.0))
-GL_W = jnp.asarray(0.5 * _GLW_O)
+GL_X = 0.5 * (_GLX_O + 1.0)
+GL_W = 0.5 * _GLW_O
 # Inner order 256, not 96: the residual quadrature error is entirely this panel at
 # t = 0.10-0.30 d, because arctan(0.11/(t'-1.3)) has a branch point 0.0845 off the real axis
 # inside a z-interval of half-length ~7.8. Measured max |dL/L|: 96 -> 2.00e-3, 192 -> 1.37e-4,
 # 256 -> 2.57e-5 (0.03 mmag). Free on a single curve; ~15% at batch 1000, roughly cancelled by
 # the searchsorted removal above. Raising the OUTER order does nothing (128 == 512).
 _GLX_I, _GLW_I = np.polynomial.legendre.leggauss(256)      # inner, in log t'
-GL_XI = jnp.asarray(0.5 * (_GLX_I + 1.0))
-GL_WI = jnp.asarray(0.5 * _GLW_I)
+GL_XI = 0.5 * (_GLX_I + 1.0)
+GL_WI = 0.5 * _GLW_I
 
 # --- diffusion normalisation (redback's, and the standard Arnett one) --------------------
 # redback's kilonova writes the diffusion integral with a prefactor of 1/td^2:
@@ -176,11 +198,11 @@ GL_WI = jnp.asarray(0.5 * _GLW_I)
 # hot branch and R_phot low by sqrt(2) on the floored branch, which biases every inferred mej
 # and kappa. It is not a corner case and no prior excludes it.
 #
-# THE DEFAULT IS REDBACK'S, BY PROJECT RULE: these ports exist so a redback-vs-whisper-GPU
-# comparison is apples to apples, and correcting the physics unilaterally would break parity
-# with every kilonova fit already run. `arnett_prefactor=2.0` selects the standard Arnett
-# normalisation for anyone who wants it, and is threaded through every entry point including
-# the N-component model and the whisper factory.
+# THE DEFAULT IS REDBACK'S, BY PROJECT RULE: these ports exist so a redback-vs-whisper_cbpf
+# (JAX port) comparison is apples to apples, and correcting the physics unilaterally would
+# break parity with every kilonova fit already run. `arnett_prefactor=2.0` selects the standard
+# Arnett normalisation for anyone who wants it, and is threaded through every entry point
+# including the N-component model and the whisper factory.
 #
 # The switch is a PYTHON float compared at TRACE time, not a traced multiply, so the default
 # path compiles to byte-identical HLO -- the same discipline the extinction terms use with
@@ -189,17 +211,17 @@ ARNETT_PREFACTOR = 1.0            # 1.0 = redback; 2.0 = Arnett 1982 / Villar+20
 
 # --- Barnes & Kasen thermalisation table -----------------------------------
 # Verbatim from redback/utils.py:1176-1186. Grid is (mass, velocity) = (5, 4).
-_BK_MEJ = jnp.array([1.0e-3, 5.0e-3, 1.0e-2, 5.0e-2, 1.0e-1])
-_BK_VEJ = jnp.array([0.1, 0.2, 0.3, 0.4])
-_BK_A = jnp.array([[2.01, 4.52, 8.16, 16.3], [0.81, 1.90, 3.20, 5.00],
-                   [0.56, 1.31, 2.19, 3.00], [0.27, 0.55, 0.95, 2.00],
-                   [0.20, 0.39, 0.65, 0.90]])
-_BK_B = jnp.array([[0.28, 0.62, 1.19, 2.40], [0.19, 0.28, 0.45, 0.65],
-                   [0.17, 0.21, 0.31, 0.45], [0.10, 0.13, 0.15, 0.17],
-                   [0.06, 0.11, 0.12, 0.12]])
-_BK_D = jnp.array([[1.12, 1.39, 1.52, 1.65], [0.86, 1.21, 1.39, 1.50],
-                   [0.74, 1.13, 1.32, 1.40], [0.60, 0.90, 1.13, 1.25],
-                   [0.63, 0.79, 1.04, 1.50]])
+_BK_MEJ = np.array([1.0e-3, 5.0e-3, 1.0e-2, 5.0e-2, 1.0e-1])
+_BK_VEJ = np.array([0.1, 0.2, 0.3, 0.4])
+_BK_A = np.array([[2.01, 4.52, 8.16, 16.3], [0.81, 1.90, 3.20, 5.00],
+                  [0.56, 1.31, 2.19, 3.00], [0.27, 0.55, 0.95, 2.00],
+                  [0.20, 0.39, 0.65, 0.90]])
+_BK_B = np.array([[0.28, 0.62, 1.19, 2.40], [0.19, 0.28, 0.45, 0.65],
+                  [0.17, 0.21, 0.31, 0.45], [0.10, 0.13, 0.15, 0.17],
+                  [0.06, 0.11, 0.12, 0.12]])
+_BK_D = np.array([[1.12, 1.39, 1.52, 1.65], [0.86, 1.21, 1.39, 1.50],
+                  [0.74, 1.13, 1.32, 1.40], [0.60, 0.90, 1.13, 1.25],
+                  [0.63, 0.79, 1.04, 1.50]])
 
 
 def _bilinear_extrap(table, xg, yg, x, y):
@@ -229,9 +251,9 @@ def _bilinear_extrap(table, xg, yg, x, y):
 
 def thermalisation_coeffs(mej, vej):
     """Barnes+2016 (a, b, d). redback/utils.py:1168."""
-    return (_bilinear_extrap(_BK_A, _BK_MEJ, _BK_VEJ, mej, vej),
-            _bilinear_extrap(_BK_B, _BK_MEJ, _BK_VEJ, mej, vej),
-            _bilinear_extrap(_BK_D, _BK_MEJ, _BK_VEJ, mej, vej))
+    xg, yg = _const(_BK_MEJ), _const(_BK_VEJ)
+    return tuple(_bilinear_extrap(_const(table), xg, yg, mej, vej)
+                 for table in (_BK_A, _BK_B, _BK_D))
 
 
 def _inverse_expm1(arg):
@@ -291,92 +313,56 @@ def build_time_grid(t_obs_days, redshift, t_min=1e-2, n_dense=300):
     return jnp.asarray(grid), jnp.asarray(row)
 
 
-def _cell_widths(lam):
-    """Trapezoid cell widths for a (possibly non-uniform) 1-D grid.
+def redback_time_grid(t_src_s, t_min=1e-2, t_max=7e6, dense_resolution=500):
+    """The source-frame grid [s] redback 1.20's ``one_component_kilonova_model`` solves on. NumPy.
 
-    np.gradient(lam) is the CENTRAL difference (lam[i+1]-lam[i-1])/2, which is
-    exactly the trapezoid weight for INTERIOR nodes -- but at the two ends it
-    returns the FULL first/last spacing instead of half of it, i.e. 2x too much.
-    That is harmless while T == 0 at both grid edges (true for every sncosmo
-    bandpass inside the default 1000-30000 A window: measured max |T| at the
-    edges over 33 real filters is exactly 0.0), but it silently biases any band
-    the caller clips by narrowing lam_min/lam_max -- measured up to 3.7 mmag for
-    uvot::uvw2 on a 1700 A lower edge, 0.85 mmag for 2massks on a 22000 A upper
-    edge. Cheap to get right, so get it right.
+    Transcribes ``get_optimal_time_array(1e-2, 7e6, dense_resolution, user_times=t_src_s)``
+    (``redback/utils.py:114``, the ``user_times`` branch): 15% of the nodes geometric below the
+    epochs, 70% geometric from half the first epoch to twice the last, 15% above, deduplicated.
+    It depends on the epochs only through their minimum and maximum. Pass it to
+    :func:`bolometric` (and everything that calls it) as ``time_grid=`` to reproduce redback's
+    discretisation instead of the converged quadrature (identity 6); see ``time_grid`` there
+    for what that costs at late times.
+
+    Epochs past ``t_max`` (81 d at z = 0) are outside redback's grid -- redback raises there --
+    and this warns: the model then holds the last node's photosphere. Epochs at or before the
+    explosion enter as ``T_EVAL_MIN``: the model masks them anyway, the grid is the one redback
+    builds from the same raw epochs, and a light curve with none still gets a finite grid (redback
+    has no answer). Any such epoch is the earliest, so it sets the lower edge and moves every
+    node; the factories therefore clip days at the CPU adapter's ``MIN_TIME_DAY`` before calling
+    this, as the adapter does before calling redback (``_factories._kilonova_time_grid``).
     """
-    lam = np.asarray(lam, dtype=np.float64)
-    d = np.empty_like(lam)
-    d[1:-1] = 0.5 * (lam[2:] - lam[:-2])
-    d[0] = 0.5 * (lam[1] - lam[0])
-    d[-1] = 0.5 * (lam[-1] - lam[-2])
-    return d
+    t = np.maximum(np.asarray(t_src_s, dtype=np.float64), T_EVAL_MIN)
+    eval_min = max(t_min, float(t.min()) * 0.5)
+    eval_max = min(t_max, float(t.max()) * 2.0)
+    n_before = int(dense_resolution * 0.15)
+    n_user = int(dense_resolution * 0.70)
+    n_after = dense_resolution - n_before - n_user
+    if eval_min > t_min:
+        before = np.geomspace(t_min, eval_min, n_before)
+    else:
+        before = np.array([t_min])
+        n_user += n_before
+    user = np.geomspace(eval_min, eval_max, n_user)
+    if eval_max < t_max:
+        after = np.geomspace(eval_max, t_max, n_after)
+    else:
+        after = np.array([t_max])
+        n_user += n_after
+        user = np.geomspace(eval_min, eval_max, n_user)
+    if t.max() > t_max:
+        warnings.warn(
+            f"{int((t > t_max).sum())} epochs lie past redback's kilonova grid (t_src > {t_max:g} "
+            f"s); redback raises there, and the model holds the last node's photosphere.",
+            RuntimeWarning, stacklevel=2)
+    return np.unique(np.concatenate([before, user, after]))
 
 
-def make_filter_set(band_names, lam_min=1000.0, lam_max=30000.0, n_wave=5000):
-    """Export sncosmo bandpasses to plain arrays. Run ONCE, offline, then save.
-
-    `trans` is the CELL-AVERAGED transmission, not a point sample: it is defined
-    so that ab_weights' w = trans/lam*dlam equals the EXACT integral of
-    T(lam)/lam over that cell, T being the piecewise-linear interpolant of the
-    tabulated bandpass (which is precisely what sncosmo integrates). Point
-    sampling a filter tabulated at 1 A (LSST, ZTF) onto a ~20 A log grid aliases
-    its edges: the error is not smooth in n_wave, it is quasi-random, and it
-    reaches 2.1 mmag at n_wave=1000 (uvot::uvw2, 3000 K source). The closed-form
-    cell integral removes it -- 0.13 mmag at n_wave=1000, 0.005 mmag at 5000.
-
-    NOTE the semantic change: `trans[k, i]` is no longer T(lam[i]). Plot it against
-    a point sample of the bandpass and the two agree to the cell width, but they are
-    not the same array, and only this one integrates exactly.
-
-    >>> fs = make_filter_set(['lsstg', 'lsstr', 'lssti'])
-    >>> np.savez('filters.npz', **fs)
-    """
-    import sncosmo
-    lam = np.geomspace(lam_min, lam_max, n_wave)
-    dlam = _cell_widths(lam)
-    # cell edges: geometric midpoints, half-cells at the two ends.
-    edges = np.empty(n_wave + 1)
-    edges[1:-1] = np.sqrt(lam[:-1] * lam[1:])
-    edges[0] = lam[0] ** 2 / edges[1]
-    edges[-1] = lam[-1] ** 2 / edges[-2]
-
-    trans = np.zeros((len(band_names), n_wave))
-    for k, name in enumerate(band_names):
-        bp = sncosmo.get_bandpass(name)
-        wb = np.asarray(bp.wave, dtype=np.float64)
-        tb = np.asarray(bp.trans, dtype=np.float64)
-        if wb[0] < lam_min or wb[-1] > lam_max:
-            raise ValueError(
-                f"bandpass {name!r} spans {wb[0]:.1f}-{wb[-1]:.1f} A but the grid is "
-                f"{lam_min:.1f}-{lam_max:.1f} A. Widen lam_min/lam_max: silently "
-                f"truncating a filter moves its AB zeropoint (np.interp would have "
-                f"zero-filled the missing wings without a word).")
-        # T is piecewise linear on wb, so the cell integral is closed-form:
-        # int (icpt + slope*l)/l dl = icpt*ln l + slope*l.
-        slope = np.diff(tb) / np.diff(wb)
-        icpt = tb[:-1] - slope * wb[:-1]
-        cum = np.concatenate([[0.0], np.cumsum(
-            icpt * np.log(wb[1:] / wb[:-1]) + slope * (wb[1:] - wb[:-1]))])
-        x = np.clip(edges, wb[0], wb[-1])
-        j = np.clip(np.searchsorted(wb, x, side='right') - 1, 0, wb.size - 2)
-        cell = np.diff(cum[j] + icpt[j] * np.log(x / wb[j]) + slope[j] * (x - wb[j]))
-        trans[k] = cell * lam / dlam        # so that trans/lam*dlam == cell, exactly
-    return {'lam': lam, 'trans': trans, 'names': np.array(band_names)}
-
-
-def ab_weights(lam, trans):
-    """Photon-counting AB weights: w = T(lam)/lam * dlam, norm = 3631Jy*sum(w).
-
-    sncosmo bandpasses are photon-counting, so counts ~ int f_lam T lam dlam
-    = c int f_nu T dlam/lam. Precompute once; the model then needs one matmul.
-    """
-    lam = np.asarray(lam, dtype=np.float64)
-    trans = np.atleast_2d(np.asarray(trans, dtype=np.float64))
-    # _cell_widths, not np.gradient: they differ only in the two END cells, where
-    # np.gradient is 2x too wide (see _cell_widths). Identical for any bandpass that
-    # is zero at the grid edges, which is why the change is invisible in regression.
-    w = trans / lam[None, :] * _cell_widths(lam)[None, :]
-    return jnp.asarray(w), jnp.asarray(AB_ZEROPOINT * w.sum(axis=1))
+# --- the grid-rule band integral: moved VERBATIM to whisper_cbpf.synphot.grid_rule ----------
+# (whisper 0.1.1: one photometry module for the CPU and GPU paths). Re-exported here so
+# `kilonova.make_filter_set` / `kilonova.ab_weights` -- and `tde.` / `supernova.`, which re-export
+# them from this module -- keep working and keep reproducing every stored filter set bit for bit.
+from ...synphot.grid_rule import _cell_widths, ab_weights, make_filter_set  # noqa: E402,F401
 
 
 # --- interstellar extinction ------------------------------------------------
@@ -438,9 +424,8 @@ def _natural_spline_matrix(xk):
     return np.linalg.solve(amat, bmat)
 
 
-_F99_S = jnp.asarray(_natural_spline_matrix(_F99_XK))    # (9, 9)
-_F99_XKJ = jnp.asarray(_F99_XK)
-_F99_H = jnp.asarray(np.diff(_F99_XK))
+_F99_S = _natural_spline_matrix(_F99_XK)                  # (9, 9), float64 NumPy (see GL_X)
+_F99_H = np.diff(_F99_XK)
 
 
 def _f99_uv_k(x, r_v):
@@ -493,7 +478,7 @@ def f99_a_over_ebv(lam_aa, r_v=3.1):
     """
     x = 1e4 / jnp.asarray(lam_aa)                        # inverse microns
     kk = _f99_knot_k(r_v)
-    mm = _F99_S @ kk                                     # second derivatives at the anchors
+    mm = _const(_F99_S) @ kk                             # second derivatives at the anchors
     xs = jnp.minimum(x, _F99_XSPLIT)                     # keep the spline branch in range
     # Comparison count, not jnp.searchsorted -- the same substitution as in _bilinear_extrap
     # and for the same reason: searchsorted lowers to a sequential scan whose ptxas time
@@ -501,9 +486,10 @@ def f99_a_over_ebv(lam_aa, r_v=3.1):
     # Exactly identical: searchsorted(side='left') IS the count of knots strictly below xs.
     # This branch only runs when R_V is SAMPLED (otherwise pass a precomputed xi_*), but that
     # is precisely the case that gets vmapped over a batch of parameter draws.
-    i = jnp.clip(jnp.sum(xs[..., None] > _F99_XKJ, axis=-1) - 1, 0, _F99_XK.size - 2)
-    h = _F99_H[i]
-    a = (_F99_XKJ[i + 1] - xs) / h
+    xk = _const(_F99_XK)
+    i = jnp.clip(jnp.sum(xs[..., None] > xk, axis=-1) - 1, 0, _F99_XK.size - 2)
+    h = _const(_F99_H)[i]
+    a = (xk[i + 1] - xs) / h
     b = 1.0 - a
     k_spl = (a * kk[i] + b * kk[i + 1]
              + ((a ** 3 - a) * mm[i] + (b ** 3 - b) * mm[i + 1]) * (h * h / 6.0))
@@ -766,7 +752,7 @@ def _heating(t_s, m0, av, bv, dv):
 
 
 def bolometric(t_src_s, mej, vej, kappa, temperature_floor=4000.0, *,
-               arnett_prefactor=ARNETT_PREFACTOR):
+               arnett_prefactor=ARNETT_PREFACTOR, time_grid=None):
     """Bolometric luminosity, temperature, photosphere radius at t_src_s.
 
     t_src_s : source-frame times in SECONDS SINCE EXPLOSION, any shape, need not be
@@ -782,6 +768,13 @@ def bolometric(t_src_s, mej, vej, kappa, temperature_floor=4000.0, *,
               redback's diffusion kernel integrates to 1/2, so its L is a uniform factor 2
               -- 0.7526 mag -- below the standard Arnett solution. See ARNETT_PREFACTOR for
               the measurement. Must be a PYTHON float: it is compared at trace time.
+    time_grid : None (default here) or a source-frame grid in seconds, from
+              :func:`redback_time_grid`. None evaluates the diffusion integral with identity 6's
+              quadrature, converged at every epoch. A grid reproduces redback 1.20 instead: its
+              trapezoid on that grid, then T and R interpolated to t_src_s -- equal to redback to
+              ~1e-9, and as under-resolved as redback past ~2.66 t_diff (redback's
+              ``dense_resolution=500`` is 1.19 mag too bright at 20 d). The whisper
+              kilonova factories default to the grid, for parity with redback.
 
     Returns (L_bol / LSCALE, T [K], R_phot [cm]), each with t_src_s.shape.
     Luminosity is returned in units of LSCALE = 1e40 erg/s: the cgs value is
@@ -807,6 +800,9 @@ def bolometric(t_src_s, mej, vej, kappa, temperature_floor=4000.0, *,
     4 to 5004 points, for t_min in {1e-6,1e-2,1e3}, and with NaN/inf in every unselected grid
     entry, in both precisions. The old signature still works -- see _grid_row_shim.
     """
+    if time_grid is not None:
+        return _bolometric_on_grid(time_grid, t_src_s, mej, vej, kappa, temperature_floor,
+                                   arnett_prefactor)
     v0 = vej * SPEED_OF_LIGHT
     m0 = mej * SOLAR_MASS
     t_src_s = jnp.asarray(t_src_s)
@@ -831,31 +827,45 @@ def bolometric(t_src_s, mej, vej, kappa, temperature_floor=4000.0, *,
     # fixed domain. s runs to A(1 - SPLIT_FRAC^2) (which lands exactly on t_split), capped at
     # S_MAX beyond which exp(-s) is below float resolution anyway.
     s_hi = jnp.minimum(amp_a * (1.0 - SPLIT_FRAC ** 2), S_MAX)
-    s = s_hi * GL_X                                      # (..., 1)*(128,) -> (..., 128)
+    s = s_hi * _const(GL_X)                              # (..., 1)*(128,) -> (..., 128)
     tp_o = jnp.sqrt(jnp.maximum(t_eval ** 2 - s * tdiff ** 2, 0.0))
     lum_o = 0.5 * s_hi[..., 0] * jnp.sum(
-        GL_W * _heating(tp_o, m0, av, bv, dv) * jnp.exp(-s), axis=-1)
+        _const(GL_W) * _heating(tp_o, m0, av, bv, dv) * jnp.exp(-s), axis=-1)
 
     # INNER, t' in [T_FLOOR, t_split], in z = log t'. With t' = e^z, dt' = t' dz, so
     #   L_inner = (1/td^2) int f(t') t'^2 exp(-(t^2 - t'^2)/td^2) dz
     # and the t'^-1.3 heating divergence becomes a smooth exponential in z, which GL resolves.
     z_lo = jnp.log(jnp.asarray(T_FLOOR, dtype=t_eval.dtype))
     z_hi = jnp.maximum(jnp.log(t_split), z_lo)           # empty if t_split <= t_min
-    tp_i = jnp.exp(z_lo + (z_hi - z_lo) * GL_XI)
+    tp_i = jnp.exp(z_lo + (z_hi - z_lo) * _const(GL_XI))
     expo_i = jnp.minimum(-(t_eval ** 2 - tp_i ** 2) / tdiff ** 2, 0.0)
     lum_i = (z_hi - z_lo)[..., 0] / tdiff ** 2 * jnp.sum(
-        GL_WI * _heating(tp_i, m0, av, bv, dv) * tp_i ** 2 * jnp.exp(expo_i), axis=-1)
+        _const(GL_WI) * _heating(tp_i, m0, av, bv, dv) * tp_i ** 2 * jnp.exp(expo_i), axis=-1)
 
-    lum = lum_o + lum_i
+    lum = _arnett_rescaled(lum_o + lum_i, arnett_prefactor)
+
+    temperature, r_photosphere = _photosphere(lum, t_live, v0, temperature_floor)
+    valid = (mej > 0.0) & live                           # redback line 1864, plus t_exp mask
+    return (jnp.where(valid, lum, 0.0),
+            jnp.where(valid, temperature, temperature_floor),
+            jnp.where(valid, r_photosphere, 0.0))
+
+
+def _arnett_rescaled(lum, arnett_prefactor):
+    """``L`` times ``arnett_prefactor``, shared by both diffusion paths of :func:`bolometric`."""
     # See ARNETT_PREFACTOR. Compared at trace time: at the default the multiply is not emitted
     # and the graph is byte-identical to the version that had no flag.
     if arnett_prefactor != 1.0:
         lum = arnett_prefactor * lum
+    return lum
 
+
+def _photosphere(lum, t_s, v0, temperature_floor):
+    """redback's temperature-floor photosphere ``(T [K], R [cm])`` from ``L/LSCALE`` at ``t_s``."""
     # L is ~1e41 erg/s and CANNOT be represented in float32 (max 3.4e38), so it
     # stays in LSCALE units and the constants absorb the factor.
     lum_safe = jnp.maximum(lum, 1e-30)                   # keeps d/dL of L^0.25 finite
-    r_free = v0 * t_live
+    r_free = v0 * t_s
     # identity 5b: (L/(4 pi sigma R^2))^0.25 * S^0.25 == (S/(4 pi sigma))^0.25 * L^0.25 / sqrt(R).
     # Same value, but the differentiated divisor becomes sqrt(r_free) ~ 1e7 rather than
     # 4*pi*sigma*r_free**2 ~ 1e23..1e30, which float32 cannot square in the backward pass.
@@ -871,13 +881,44 @@ def bolometric(t_src_s, mej, vej, kappa, temperature_floor=4000.0, *,
     # it. Only the DERIVATIVE w.r.t. temperature_floor jumps (0 on the hot side, nonzero on the
     # floored side).
     hot = t_free > temperature_floor
-    temperature = jnp.where(hot, t_free, temperature_floor)
-    r_photosphere = jnp.where(hot, r_free, r_floor)
+    return jnp.where(hot, t_free, temperature_floor), jnp.where(hot, r_free, r_floor)
 
-    valid = (mej > 0.0) & live                           # redback line 1864, plus t_exp mask
-    return (jnp.where(valid, lum, 0.0),
-            jnp.where(valid, temperature, temperature_floor),
-            jnp.where(valid, r_photosphere, 0.0))
+
+def _bolometric_on_grid(time_grid, t_src_s, mej, vej, kappa, temperature_floor, arnett_prefactor):
+    """``bolometric`` with redback 1.20's discretisation. See ``time_grid`` in :func:`bolometric`.
+
+    ORIGINAL (kilonova_models.py:1628, ``_kilonova_diffusion_luminosity``, on ``time_temp``):
+        decay = np.exp(-np.diff(t**2/td**2))
+        L[1:] = 0.5*np.diff(t)/td**2 * (decay*L_in[:-1]*t[:-1] + L_in[1:]*t[1:])
+        L = solve_banded((1, 0), [[1...], [-decay...]], L)     # L[i] += decay[i-1]*L[i-1]
+        L[0] = L[1]*np.exp(s[1] - s[0])
+    then ``T`` and ``R`` on the grid, and ``interp1d`` of each to the epochs.
+
+    CHANGES: the first-order recursion is a ``lax.associative_scan`` rather than a sequential
+    solve (the same sums, reassociated: ~1e-16 per step, and log-depth on a GPU); redback's
+    non-finite-prefix guard is dropped, as nothing here produces a non-finite value (identities
+    1-8); the pre-explosion mask is :func:`bolometric`'s. ``e_th`` goes through identity 7's
+    series, which is where the ~1e-9 residual against redback comes from.
+    """
+    v0 = vej * SPEED_OF_LIGHT
+    t_src_s = jnp.asarray(t_src_s)
+    grid = jnp.asarray(time_grid, dtype=t_src_s.dtype)
+    tdiff = jnp.sqrt(TDIFF_CONST * kappa * mej / vej)
+    av, bv, dv = thermalisation_coeffs(mej, vej)
+    f = _heating(grid, mej * SOLAR_MASS, av, bv, dv) * grid        # L_in e_th t, LSCALE units
+    s = grid ** 2 / tdiff ** 2
+    decay = jnp.exp(-jnp.diff(s))                                  # <= 1: nothing overflows
+    rhs = 0.5 * jnp.diff(grid) / tdiff ** 2 * (decay * f[:-1] + f[1:])
+    _, tail = jax.lax.associative_scan(lambda a, b: (a[0] * b[0], b[0] * a[1] + b[1]),
+                                       (decay, rhs))
+    lum = _arnett_rescaled(jnp.concatenate([tail[:1] * jnp.exp(s[1] - s[0]), tail]),
+                           arnett_prefactor)
+    temperature, r_photosphere = _photosphere(lum, grid, v0, temperature_floor)
+
+    valid = (mej > 0.0) & (t_src_s > T_EVAL_MIN)
+    return (jnp.where(valid, jnp.interp(t_src_s, grid, lum), 0.0),
+            jnp.where(valid, jnp.interp(t_src_s, grid, temperature), temperature_floor),
+            jnp.where(valid, jnp.interp(t_src_s, grid, r_photosphere), 0.0))
 
 
 bolometric = _grid_row_shim(bolometric, probe=1)
@@ -900,7 +941,12 @@ def _flux_nu(temperature, r_photosphere, dl_cm, nu_source, redshift,
     pref_const selects the OUTPUT UNIT: PLANCK_T3 (default) gives cgs, PLANCK_T3_AB
     gives the same spectrum divided by the AB zero point (identity 8).
     """
-    ratio = RATIO_CONST * ((r_photosphere / RSCALE) / (dl_cm / DLSCALE)) ** 2
+    temperature = jnp.maximum(temperature, TEMPERATURE_MIN)
+    # The scaled distance is pinned like the frequency below: left alone, XLA reassociates
+    # (R/dl)^2 into R^2/dl^2 and the backward pass cubes dl (1e78, past float32's 3.4e38), so the
+    # float32 gradient with respect to a free redshift, which moves dl, is NaN. Value unchanged.
+    dl_scaled = jax.lax.optimization_barrier(dl_cm / DLSCALE)
+    ratio = RATIO_CONST * ((r_photosphere / RSCALE) / dl_scaled) ** 2
     # The barrier stops XLA hoisting 1/NUSCALE back out of the cube below. Without it the
     # scalar-nu path (flux_density_mjy) returns NaN under jit while the array-nu path
     # (ab_magnitude) happens to survive -- i.e. correctness by compiler heuristic. Identity
@@ -919,21 +965,22 @@ def _flux_nu(temperature, r_photosphere, dl_cm, nu_source, redshift,
 
 def flux_density_mjy(t_src_s, nu_obs_hz, redshift, dl_cm,
                      mej, vej, kappa, temperature_floor=4000.0, *,
-                     arnett_prefactor=ARNETT_PREFACTOR,
+                     arnett_prefactor=ARNETT_PREFACTOR, time_grid=None,
                      ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None,
                      r_v_mw=3.1, r_v_host=3.1, law='f99'):
     """Flux density in mJy at observer-frame frequencies nu_obs_hz.
 
     nu_obs_hz must broadcast against t_src_s: one frequency per observation, or a scalar.
     Extinction arguments are documented on ab_magnitude; they default to None, in which
-    case not a single extinction op enters the traced graph.
+    case not a single extinction op enters the traced graph. ``time_grid`` is
+    :func:`bolometric`'s.
 
     Pre-explosion epochs return EXACTLY 0.0 mJy with exactly zero gradient. This is the
     interface to fit through: zero is a perfectly good flux, it is C^1 in t_exp, and it needs
     no floor constant. Magnitudes cannot do any of that (see ab_magnitude).
     """
     _, temp, rad = bolometric(t_src_s, mej, vej, kappa, temperature_floor,
-                              arnett_prefactor=arnett_prefactor)
+                              arnett_prefactor=arnett_prefactor, time_grid=time_grid)
     nu_src = nu_obs_hz * (1.0 + redshift)               # k-correction
     fd = _flux_nu(temp, rad, dl_cm, nu_src, redshift) / MJY
     # c in Angstrom/s, folded into one literal (2.99792458e18) so nothing intermediate
@@ -949,12 +996,13 @@ flux_density_mjy = _grid_row_shim(flux_density_mjy, probe=1)
 
 def ab_magnitude(t_src_s, band_idx, weights, norms, lam_obs_ang,
                  redshift, dl_cm, mej, vej, kappa, temperature_floor=4000.0, *,
-                 mag_floor=MAG_FLOOR, arnett_prefactor=ARNETT_PREFACTOR,
+                 mag_floor=MAG_FLOOR, arnett_prefactor=ARNETT_PREFACTOR, time_grid=None,
                  ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None,
                  r_v_mw=3.1, r_v_host=3.1, law='f99'):
     """AB magnitude in the band given by band_idx, for each observation.
 
-    weights, norms : from ab_weights(). lam_obs_ang : the wavelength grid.
+    weights, norms : from ab_weights(). lam_obs_ang : the wavelength grid. time_grid : see
+    :func:`bolometric`.
 
     mag_floor (default MAG_FLOOR = 40.0, USER-TUNABLE) caps the returned magnitude at
     min(mag, mag_floor), which is what keeps a zero flux -- a pre-explosion epoch, or a
@@ -986,7 +1034,7 @@ def ab_magnitude(t_src_s, band_idx, weights, norms, lam_obs_ang,
     pre_explosion() to route those epochs to an upper-limit term instead.
     """
     _, temp, rad = bolometric(t_src_s, mej, vej, kappa, temperature_floor,
-                              arnett_prefactor=arnett_prefactor)
+                              arnett_prefactor=arnett_prefactor, time_grid=time_grid)
     nu_obs = SPEED_OF_LIGHT / (lam_obs_ang * 1e-8)      # Hz, observer frame
     nu_src = nu_obs[None, :] * (1.0 + redshift)
 
@@ -994,6 +1042,11 @@ def ab_magnitude(t_src_s, band_idx, weights, norms, lam_obs_ang,
     # what keeps d(mag)/d(flux) inside float32 (identity 8). Forward-identical to the cgs
     # form -- norms is rescaled by the same literal five lines below.
     f_ab = _flux_nu(temp[:, None], rad[:, None], dl_cm, nu_src, redshift, PLANCK_T3_AB)
+    # Keep the Planck exp/expm1 out of the band reduction below. Fused into it, XLA's GPU fusion
+    # autotuner compiles several emitter configurations of a reduce over (batch, n_obs, n_wave) just
+    # to find the plain one fastest: minutes at batch 480 x 480 observations. The barrier is the
+    # identity in value and in both derivatives.
+    f_ab = jax.lax.optimization_barrier(f_ab)
     tau = _ext_transmission(lam_obs_ang, redshift, ebv_mw, ebv_host,
                             xi_mw, xi_host, r_v_mw, r_v_host, law)
     # Redden the WEIGHTS, not the spectrum: weights is (n_band, n_wave) and f_nu is

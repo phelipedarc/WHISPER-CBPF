@@ -24,7 +24,6 @@ accepted population (and the final resample) is identical for any ``n_jobs``.
 from __future__ import annotations
 
 import time
-import warnings
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 
@@ -50,6 +49,7 @@ _MP_CONTEXT = multiprocessing.get_context("spawn")
 from ..distance import chi2_distance, get_distance
 from ..likelihood import make_likelihood
 from ..models import get_model
+from .jax import _diagnostics as _dg                                # numpy-only; no JAX import
 from .base import (
     aic_bic,
     BaseSampler,
@@ -57,6 +57,7 @@ from .base import (
     attach_band_metrics,
     attach_predictive_metrics,
     summarize_posterior,
+    _warn_user,
 )
 
 #: Floor on a parameter's perturbation std so a fixed/zero-variance parameter still has a valid kernel.
@@ -80,18 +81,21 @@ def _smc_batch(args):
     """
     (round_idx, parents_arr, parent_weights, param_names, kernel_std, prior,
      predict, distance, times, bands, obs_y, obs_err, epsilon, indices, seed,
-     simulate_noise, model_in_space, scatter_name) = args
+     simulate_noise, model_in_space, scatter_name, fixed) = args
     accepted = []
     for a in indices:
         rng = np.random.default_rng([int(seed), int(round_idx), int(a)])
         if round_idx == 0:
             theta = prior.sample(rng)
         else:
+            # `param_names` / `parents_arr` / `prior` cover the FREE parameters only: a Fixed one is
+            # never perturbed, it is put back at its value.
             j = int(rng.choice(len(parent_weights), p=parent_weights))   # weighted resample
             vec = parents_arr[j] + rng.normal(0.0, kernel_std)           # diagonal Gaussian perturb
             theta = {nm: float(v) for nm, v in zip(param_names, vec)}
             if not np.isfinite(prior.log_prob(theta)):                   # outside prior support -> reject
                 continue
+            theta.update(fixed)
         sim = np.asarray(model_in_space(predict(theta, times, bands)), dtype=float)
         if simulate_noise:                       # generative match: same per-point noise as the data
             err = obs_err if scatter_name is None else np.sqrt(
@@ -104,6 +108,21 @@ def _smc_batch(args):
             rec["_attempt"] = int(a)
             accepted.append(rec)
     return accepted, len(indices)
+
+
+def _warn_auto_floor_scale(distance_name, floor_c):
+    """``min_epsilon="auto"`` adds ``2 (k + 2)`` to the best distance, a width derived for chi2.
+
+    On another distance's scale that number means something else -- for ``max_abs_z`` it is
+    ``2 (k + 2)`` SIGMA above the best draw's worst point, so epsilon stops tightening long before
+    the posterior does. Shared by ``abc_smc`` and ``abc_smc_gpu``.
+    """
+    _warn_user(
+        f"min_epsilon='auto' floors epsilon at the best distance + {floor_c:g}, a width derived "
+        f"for the chi2 distance; distance {distance_name!r} is on another scale (for max_abs_z it "
+        f"is {floor_c:g} sigma above the best draw's worst point, so epsilon stops tightening "
+        f"early). Pass min_epsilon as a number on this distance's scale, or min_epsilon=None.",
+        UserWarning)
 
 
 def _importance_log_weights(theta_new, param_names, parents_arr, parent_log_weights, kernel_std, prior):
@@ -127,7 +146,7 @@ class ABCSMCSampler(BaseSampler):
     def fit(self, lc, model, prior=None, *, n_particles=500, n_rounds=5, epsilon_schedule=None,
             quantile=0.5, min_epsilon=None, simulate_noise=True, space="auto", scatter_param=None,
             perturbation_scale=0.1, distance=chi2_distance, n_jobs=None, seed=0,
-            max_attempts_per_round=None):
+            max_attempts_per_round=None, max_logl_scan=None):
         """Fit ``lc`` with ``model`` via importance-weighted ABC-SMC, returning a :class:`SamplerResult`.
 
         Parameters
@@ -138,6 +157,9 @@ class ABCSMCSampler(BaseSampler):
             Registered model name or a :class:`~whisper_cbpf.models.Model`.
         prior : Prior, optional
             Parameter prior; defaults to the model's ``default_prior`` (``ValueError`` if neither).
+            ``Normal`` and ``TruncatedNormal`` work like the boxes. A ``Fixed`` parameter is drawn
+            as its value and never perturbed: a constant column in ``samples``, listed in
+            ``info["fixed"]``, and not counted in AIC/BIC (``n_params``) nor in the kernel.
         n_particles : int, default 500
             Accepted-particle population size kept each round.
         n_rounds : int, default 5
@@ -159,6 +181,8 @@ class ABCSMCSampler(BaseSampler):
             ``"auto"`` (recommended) floors epsilon at ``chi2_min + 2·(k+2)`` (``k`` = #parameters),
             which reproduces the Gaussian posterior width; a float sets a fixed floor. Ignored when
             ``epsilon_schedule`` is given (default ``None`` = no floor, epsilon → ``chi2_min``).
+            ``"auto"`` is derived for the ``chi2`` distance and warns with any other one (on the
+            ``max_abs_z`` scale it would sit ``2·(k+2)`` sigma above the best draw).
             With ``simulate_noise=True`` the distances carry an irreducible noise floor (E[χ²] ≈ 2N at
             the truth), so epsilon self-regulates and the floor is a harmless extra guard.
         simulate_noise : bool, default True
@@ -177,8 +201,10 @@ class ABCSMCSampler(BaseSampler):
         perturbation_scale : float, default 0.1
             Retained for backward compatibility; the kernel covariance is now set adaptively from the
             weighted population (Toni 2009), so this value is unused.
-        distance : callable, default :func:`chi2_distance`
-            ``f(obs_flux, obs_err, sim_flux, bands) -> float``; picklable for ``n_jobs > 1``.
+        distance : callable or str, default :func:`chi2_distance`
+            ``f(obs_flux, obs_err, sim_flux, bands) -> float``, or a registered name such as
+            ``"max_abs_z"`` (every point within epsilon sigma; see
+            :func:`whisper_cbpf.distance.max_abs_z_distance`); picklable for ``n_jobs > 1``.
         n_jobs : int, optional
             Worker processes. **Default 1 (serial), deliberately** — workers are started with
             ``spawn``, which pays a fresh interpreter, a JAX import and an XLA compile each, and at
@@ -193,6 +219,11 @@ class ABCSMCSampler(BaseSampler):
         max_attempts_per_round : int, optional
             Safety cap on proposals per round (default ``max(200*n_particles, 200000)``); a round that
             hits it warns and proceeds with however many particles it accepted.
+        max_logl_scan : int, optional
+            Cap on the final-population particles re-scored by exact log-likelihood to pick
+            ``best_params`` (serially, one forward-model call each). **Default ``None`` scores the
+            whole population.** When a cap binds, the particles with the LOWEST distance are
+            scored. ``info['logl_scan_n']`` and ``info['logl_scan_capped']`` record what was done.
 
         Returns
         -------
@@ -214,7 +245,10 @@ class ABCSMCSampler(BaseSampler):
         obs_y = np.asarray(lik_space.y, dtype=float)
         obs_err = np.asarray(lik_space.sigma, dtype=float)
         predict = model.predict
-        params = list(prior.names)              # particle dimensions (may include a scatter nuisance)
+        params = list(prior.names)              # every parameter (may include a scatter nuisance)
+        # The particle dimensions are the FREE parameters: a Fixed one is drawn as its value in
+        # round 0, never perturbed, and not counted in AIC/BIC.
+        free_prior, free, fixed = _dg.split_fixed(prior, params, "abc_smc")
         if scatter_param is not None:
             if scatter_param not in params:
                 raise ValueError(f"scatter_param {scatter_param!r} is not in the prior ({params}).")
@@ -229,7 +263,9 @@ class ABCSMCSampler(BaseSampler):
         # (running best distance) + 2·(k+2); a float sets a fixed floor.
         auto_floor = min_epsilon == "auto"
         eps_floor = None if (auto_floor or min_epsilon is None) else float(min_epsilon)
-        floor_c = 2.0 * (len(params) + 2)
+        floor_c = 2.0 * (len(free) + 2)
+        if auto_floor and epsilon_schedule is None and distance is not chi2_distance:
+            _warn_auto_floor_scale(getattr(distance, "__name__", str(distance)), floor_c)
         if epsilon_schedule is not None:
             epsilon_schedule = [float(e) for e in epsilon_schedule]
             n_rounds = len(epsilon_schedule)
@@ -272,9 +308,12 @@ class ABCSMCSampler(BaseSampler):
                 while len(accepted) < n_particles and next_attempt < max_attempts_per_round:
                     block = np.arange(next_attempt, next_attempt + n_jobs * batch)
                     idx_chunks = [c for c in np.array_split(block, n_jobs) if len(c)]
-                    args = [(round_idx, parents_arr, parent_weights, params, kernel_std, prior,
+                    # round 0 draws every parameter from `prior`; later rounds perturb the free
+                    # ones and test them against `free_prior`
+                    args = [(round_idx, parents_arr, parent_weights, free, kernel_std,
+                             prior if round_idx == 0 else free_prior,
                              predict, distance, times, bands, obs_y, obs_err, epsilon, idx, seed,
-                             simulate_noise, lik_space.model_in_space, scatter_param)
+                             simulate_noise, lik_space.model_in_space, scatter_param, fixed)
                             for idx in idx_chunks]
                     results = [_smc_batch(args[0])] if pool is None else list(pool.map(_smc_batch, args))
                     for acc, _ in results:
@@ -285,21 +324,21 @@ class ABCSMCSampler(BaseSampler):
                 # Order by global attempt index so the kept population is identical for any n_jobs.
                 accepted.sort(key=lambda r: r["_attempt"])
                 if len(accepted) < n_particles:
-                    warnings.warn(
+                    _warn_user(
                         f"ABC-SMC round {round_idx + 1}: only {len(accepted)}/{n_particles} accepted "
-                        f"after {attempts} attempts (epsilon={epsilon:g}).", stacklevel=2)
+                        f"after {attempts} attempts (epsilon={epsilon:g}).")
                 population = [{k: v for k, v in r.items() if k != "_attempt"}
                              for r in accepted[:n_particles]]
                 theta_pop = [{k: p[k] for k in params} for p in population]
-                pop_arr = np.array([[t[p] for p in params] for t in theta_pop], dtype=float) \
-                    if theta_pop else np.empty((0, len(params)))
+                pop_arr = np.array([[t[p] for p in free] for t in theta_pop], dtype=float) \
+                    if theta_pop else np.empty((0, len(free)))
 
                 # Importance weights: uniform at round 0, otherwise the SMC recursion (corrects the kernel).
                 if round_idx == 0 or parents_arr is None or len(theta_pop) == 0:
                     log_w = np.full(len(theta_pop), -np.log(max(len(theta_pop), 1)))
                 else:
-                    log_w = _importance_log_weights(theta_pop, params, parents_arr,
-                                                    parent_log_weights, kernel_std, prior)
+                    log_w = _importance_log_weights(theta_pop, free, parents_arr,
+                                                    parent_log_weights, kernel_std, free_prior)
                 weights = np.exp(log_w - logsumexp(log_w)) if len(log_w) else np.array([])
 
                 dists = (np.array([p["distance"] for p in population]) if population
@@ -342,12 +381,12 @@ class ABCSMCSampler(BaseSampler):
         distances = (np.array([p["distance"] for p in population], dtype=float)
                      if population else np.array([np.inf]))
         chi2_min = float(distances.min())
-        k, n = len(params), lc.n_points
+        k, n = len(free), lc.n_points
         # Best fit by the exact Gaussian log-likelihood over the final population — scatter-augmented
         # (with each particle's own scatter value) when a scatter parameter is fitted — so AIC/BIC are
         # COMPARABLE ACROSS SAMPLERS. (With simulate_noise the noisy-distance argmin is the luckiest
         # simulation-noise draw, not the best theta — never select by it.)
-        best, max_log_likelihood = {}, float("nan")
+        best, max_log_likelihood, scan = {}, float("nan"), []
         if population:
             lik = (make_likelihood(lc, kind="gaussian_scatter", space=space,
                                    scatter_param=scatter_param) if scatter_param
@@ -359,9 +398,16 @@ class ABCSMCSampler(BaseSampler):
                     return lik.log_likelihood(mf, sigma_extra=float(pt[scatter_param]))
                 return lik.log_likelihood(mf)
 
-            logls = np.array([_logl(pt) for pt in population[:2000]], dtype=float)
+            # The WHOLE population by default; it used to be the first 2000 particles in attempt
+            # order, an arbitrary subset once n_particles > 2000. A cap keeps the lowest distances.
+            scan = population
+            cap = len(population) if max_logl_scan is None else max(int(max_logl_scan), 1)
+            if len(population) > cap:
+                order = np.argsort([pt["distance"] for pt in population], kind="stable")[:cap]
+                scan = [population[i] for i in order]
+            logls = np.array([_logl(pt) for pt in scan], dtype=float)
             bi = int(np.nanargmax(logls)) if np.any(np.isfinite(logls)) else 0
-            best = {p: float(population[bi][p]) for p in params}
+            best = {p: float(scan[bi][p]) for p in params}
             max_log_likelihood = float(logls[bi])
         info = {
             "n_particles": int(n_particles), "n_rounds": int(n_rounds),
@@ -374,8 +420,10 @@ class ABCSMCSampler(BaseSampler):
             "scatter_param": scatter_param,
             "n_jobs": int(n_jobs), "distance": getattr(distance, "__name__", str(distance)),
             "likelihood_space": lik_space.space,
+            "logl_scan_n": len(scan), "logl_scan_capped": bool(len(scan) < len(population)),
+            "fixed": dict(fixed),
         }
-        attach_band_metrics(info, lc, model.name, best, space)
+        attach_band_metrics(info, lc, model, best, space)
         aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
             sampler="abc_smc", model=model.name, parameters=params,
@@ -384,10 +432,37 @@ class ABCSMCSampler(BaseSampler):
             min_distance=chi2_min, max_log_likelihood=max_log_likelihood,
             aic=aic, bic=bic,
         )
-        attach_predictive_metrics(result, lc, space)
+        attach_predictive_metrics(result, lc, space, model=model)
         return result
 
 
 def fit_ABC_SMC(lc, model="flare", prior=None, **kwargs) -> SamplerResult:
-    """Fit ``lc`` with ``model`` via ABC-SMC. See :meth:`ABCSMCSampler.fit` for options."""
+    """Fit ``lc`` with ``model`` via ABC-SMC. See :meth:`ABCSMCSampler.fit` for options.
+
+    Parameters
+    ----------
+    lc : LightCurve
+        The data (detections only: ABC cannot use an upper limit).
+    model : str or Model, default "flare"
+    prior : Prior, optional
+        Default: the model's.
+    **kwargs
+        The sampler's settings (``n_particles``, ``n_rounds``, ``distance``, ``seed``, ...).
+
+    Returns
+    -------
+    SamplerResult
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import whisper_cbpf as wp
+    >>> from whisper_cbpf.models.flare import flare_flux
+    >>> t, b = np.linspace(0.5, 30.0, 30), np.array(["r"] * 30)
+    >>> flux = flare_flux({"amplitude": 5.0, "rise_time": 3.0, "decay_time": 15.0}, t, b)
+    >>> lc = wp.LightCurve(time=t, band=b, flux=flux, flux_err=np.full(30, 0.25))
+    >>> res = wp.fit_ABC_SMC(lc, "flare", n_particles=100, n_rounds=3, seed=0)
+    >>> res.n_samples, len(res.info["rounds"])
+    (100, 3)
+    """
     return ABCSMCSampler().fit(lc, model, prior=prior, **kwargs)

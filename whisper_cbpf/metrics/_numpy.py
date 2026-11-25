@@ -33,15 +33,34 @@ def _resolve_samples(posterior, model):
     return np.asarray(posterior, dtype=float), None, model_name   # ndarray -> names from the model
 
 
+def _model_and_rows(posterior, model, model_name, lc):
+    """The model to score with and the rows to score: for a fit, its own Model object (a factory
+    model is not registered by name) and its own rows (the pre-event rows it left out removed)."""
+    if hasattr(posterior, "fitted_lc"):                       # a SamplerResult
+        from ..samplers.base import fitted_model
+        return fitted_model(posterior, model), posterior.fitted_lc(lc)
+    if model is None and model_name is None:
+        raise ValueError("No model given and the posterior has no .model; pass model=...")
+    return get_model(model if model is not None else model_name), lc
+
+
+#: Posterior columns a sampler writes as per-draw diagnostics, never as parameters, so ``"auto"``
+#: must not take one for a scatter term. ABC's ``distance`` was taken: read as a sigma it gave a
+#: predictive sd of ~1e4 mag per point and coverage 1.00 at every level on every ABC fit.
+_DIAGNOSTIC_COLUMNS = ("distance",)
+
+
 def _resolve_scatter(names, model, fixed, scatter_param):
     """Resolve the free extra-scatter column -> ``(name, column index)``, either ``None`` if absent.
 
-    ``"auto"`` takes the **single** posterior column that is not a model parameter (the fitted
-    nuisance sigma); an explicit name forces it; ``None`` disables scatter. Shared by :func:`waic`
-    and :func:`predictive_metrics` so both score under the same density — see :func:`waic`.
+    ``"auto"`` takes the **single** posterior column that is neither a model parameter nor a
+    diagnostic (``_DIAGNOSTIC_COLUMNS``) -- the fitted nuisance sigma; an explicit name forces it;
+    ``None`` disables scatter. Shared by :func:`waic` and :func:`predictive_metrics` so both score
+    under the same density — see :func:`waic`.
     """
     if scatter_param == "auto":
-        extra = [c for c in names if c not in set(model.parameters) and c not in (fixed or {})]
+        extra = [c for c in names if c not in set(model.parameters) and c not in (fixed or {})
+                 and c not in _DIAGNOSTIC_COLUMNS]
         sp = extra[0] if len(extra) == 1 else None
     elif scatter_param and scatter_param in names:
         sp = scatter_param
@@ -80,7 +99,7 @@ def _score_draws(model, lik, names, samples, sp_idx, fixed, times, bands):
     return np.vstack(preds), np.vstack(lls), np.asarray(sig, float)
 
 
-def _waic_from_ll(ll, *, stacklevel=3):
+def _waic_from_ll(ll):
     """WAIC from a ``(draws, data)`` pointwise log-likelihood matrix — the one implementation.
 
     ``lppd_i = log mean_s p(y_i|θ_s)``, ``p_waic_i = Var_s log p(y_i|θ_s)``,
@@ -90,7 +109,10 @@ def _waic_from_ll(ll, *, stacklevel=3):
     ``p_waic`` is this one times ``(S-1)/S``.
 
     ``p_waic`` is returned with a reliability flag; see :func:`_loo_waic` for what it catches.
+    Its warning points at the user's own line (a fit, or a call of :func:`waic`).
     """
+    from ..samplers.base import _user_stacklevel
+
     n_samp, n_data = ll.shape
     lppd_i = logsumexp(ll, axis=0) - np.log(n_samp)            # log mean-likelihood per point
     p_waic_i = np.var(ll, axis=0, ddof=1)                      # posterior var of log-lik per point
@@ -105,7 +127,7 @@ def _waic_from_ll(ll, *, stacklevel=3):
             f"OR MORE STRANDED CHAINS -- a single walker parked in a bad region contributes a huge "
             f"per-point variance -- so check the chains before blaming the model. Do NOT compare "
             f"this WAIC against another model's, and do not read it on the same scale as AIC/BIC.",
-            stacklevel=stacklevel)
+            stacklevel=_user_stacklevel())
     return {"waic": float(-2.0 * np.sum(elpd_i)), "elpd_waic": float(np.sum(elpd_i)),
             "lppd": float(np.sum(lppd_i)), "p_waic": p_waic, "p_waic_reliable": reliable,
             "n_data": int(n_data),
@@ -152,9 +174,11 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", scatter_
         is omitted); a ``DataFrame`` uses its columns as parameter names; a bare array takes names from
         the model's ``parameters`` (so the column order must match).
     lc : LightCurve
-        Data the model is scored against.
+        Data the model is scored against. For a fit, the rows it left out as pre-event data
+        (:meth:`SamplerResult.fitted_lc`) are left out here too, so the fit's light curve can be
+        passed as it was.
     model : str | Model, optional
-        Model name/object; defaults to ``posterior.model``.
+        Model name/object; defaults to the fit's own model (``posterior.model``).
     space, likelihood : str
         Forwarded to :func:`~whisper_cbpf.likelihood.make_likelihood` (data space + likelihood kind).
     scatter_param : str | None
@@ -174,11 +198,22 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", scatter_
     dict
         ``waic`` (lower is better), ``elpd_waic``, ``lppd``, ``p_waic`` (effective #parameters),
         ``p_waic_reliable``, ``se`` (standard error of WAIC), ``n_samples``, ``n_data``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import whisper_cbpf as wp
+    >>> t = np.linspace(0.5, 30.0, 30)
+    >>> truth = {"amplitude": 5.0, "rise_time": 3.0, "decay_time": 15.0}
+    >>> flux = wp.get_model("flare").predict(truth, t) + np.random.default_rng(1).normal(0, 0.2, 30)
+    >>> lc = wp.LightCurve(time=t, band=["r"] * 30, flux=flux, flux_err=np.full(30, 0.2))
+    >>> res = wp.fit(lc, "flare", sampler="nested", nlive=100, seed=0)
+    >>> w = wp.waic(res, lc)
+    >>> w["n_data"], w["p_waic_reliable"], w["waic"] == res.waic   # the fit's own number
+    (30, True, True)
     """
     samples, names, model_name = _resolve_samples(posterior, model)
-    model = get_model(model if model is not None else model_name)
-    if model is None:
-        raise ValueError("No model given and the posterior has no .model; pass model=...")
+    model, lc = _model_and_rows(posterior, model, model_name, lc)
     names = list(model.parameters) if names is None else names
 
     cfg = _fit_scoring_config(posterior)
@@ -217,7 +252,7 @@ def waic(posterior, lc, model=None, *, space="auto", likelihood="auto", scatter_
         raise ValueError("WAIC needs >= 2 posterior draws with finite pointwise log-likelihoods; "
                          f"only {ll.shape[0]} of {good.size} qualified.")
 
-    out = _waic_from_ll(ll, stacklevel=3)
+    out = _waic_from_ll(ll)
     out.update({"n_samples": int(ll.shape[0]), "scatter_param": sp,
                 "n_draws_dropped": n_dropped, "subsampled": bool(subsampled)})
     return out
@@ -262,6 +297,19 @@ def per_band_metrics(lc, model, params, *, space="auto", fixed=None):
         ``{"space", "unit", "n_upper_limits_excluded", "bands": {band: {"mse","rmse","mae","n"}},
         "overall": {...}}``. ``unit`` is ``"Jy"`` (flux) or ``"mag"`` (magnitude), and every ``n``
         counts detections only.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import whisper_cbpf as wp
+    >>> t = np.linspace(0.5, 30.0, 20)
+    >>> truth = {"amplitude": 5.0, "rise_time": 3.0, "decay_time": 15.0}
+    >>> lc = wp.LightCurve(time=t, band=["r", "g"] * 10,
+    ...                    flux=wp.get_model("flare").predict(truth, t) + 0.1,
+    ...                    flux_err=np.full(20, 0.2))
+    >>> m = wp.per_band_metrics(lc, "flare", truth)
+    >>> m["unit"], sorted(m["bands"]), round(m["overall"]["rmse"], 3)
+    ('Jy', ['g', 'r'], 0.1)
     """
     from ..likelihood import flux_to_space, resolve_space
 
@@ -367,6 +415,45 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
     posterior (DataFrame/array) also works but then ``aic`` / ``bic`` are omitted. LOO/WAIC use ``arviz``
     when installed and fall back to a plug-in WAIC otherwise.
 
+    Parameters
+    ----------
+    result : SamplerResult or pandas.DataFrame or numpy.ndarray
+        The fit (its rows and its own model are used), or bare posterior draws.
+    lc : LightCurve
+        The data; for a fit, the rows it left out as pre-event data are left out here too.
+    model : str or Model, optional
+        Default: the fit's own model.
+    space, likelihood : str
+        The comparison space and likelihood kind (``"auto"``: the data's).
+    scatter_param : str or None, default "auto"
+        The free-scatter column (see above).
+    fixed : dict, optional
+        Values of parameters held fixed and absent from the draws.
+    levels : sequence of float
+        Nominal levels of the coverage curve.
+    n_draws : int, default 400
+        Posterior draws evaluated.
+    seed : int, default 0
+
+    Returns
+    -------
+    dict
+        ``rmse``, ``lpd``, ``elpd_loo``, ``waic``, ``aic``, ``bic``, ``coverage``, and how they were
+        scored (``space``, ``likelihood``, ``scatter_param``, ``n_draws``, ...).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import whisper_cbpf as wp
+    >>> t = np.linspace(0.5, 30.0, 30)
+    >>> truth = {"amplitude": 5.0, "rise_time": 3.0, "decay_time": 15.0}
+    >>> flux = wp.get_model("flare").predict(truth, t) + np.random.default_rng(1).normal(0, 0.2, 30)
+    >>> lc = wp.LightCurve(time=t, band=["r"] * 30, flux=flux, flux_err=np.full(30, 0.2))
+    >>> res = wp.fit(lc, "flare", sampler="nested", nlive=100, seed=0)
+    >>> m = wp.predictive_metrics(res, lc, n_draws=200)
+    >>> m["unit"], [c["nominal"] for c in m["coverage"]["overall"]][:3]
+    ('Jy', [0.5, 0.68, 0.8])
+
     References
     ----------
     * Villar et al. 2017, ApJL 851, L21 — the free extra-scatter term (Eq. 4, MOSFiT form).
@@ -376,9 +463,7 @@ def predictive_metrics(result, lc, model=None, *, space="auto", likelihood="auto
       predictive density; Watanabe 2010, *JMLR* 11, 3571 — WAIC.
     """
     samples, names, model_name = _resolve_samples(result, model)
-    m = get_model(model if model is not None else model_name)
-    if m is None:
-        raise ValueError("No model given and the posterior has no .model; pass model=...")
+    m, lc = _model_and_rows(result, model, model_name, lc)
     names = list(m.parameters) if names is None else names
 
     sp, sp_idx = _resolve_scatter(names, m, fixed, scatter_param)
@@ -504,20 +589,36 @@ def _loo_waic(ll):
     with ``converged=True`` -- traced to 3.12% of draws (one emcee walker x 300 thinned steps) at
     logL -15950.8 against a posterior median of +112.6. Conversely the badly misspecified redback
     kilonova gives ``p_waic = 11.73``, flagged reliable, under ABC on the same 88 points.
+
+    **Both arviz APIs.** arviz 1.0 moved ``from_dict`` to one dict of groups and renamed the LOO
+    result's ``elpd_loo`` / ``p_loo`` to ``elpd`` / ``p``. Written for 0.x only, every fit on arviz
+    1.3.0 carried ``elpd_loo_error = "TypeError: from_dict() got an unexpected keyword argument
+    'posterior'"`` and no ELPD; :func:`_idata_from_ll` and the attribute fallbacks cover both.
     """
-    n_samp = ll.shape[0]
-    waic_out = _waic_from_ll(ll, stacklevel=4)
+    waic_out = _waic_from_ll(ll)
     loo_out, loo_error = None, None
     try:
         import arviz as az
     except ImportError:
         return loo_out, waic_out, loo_error        # documented degraded mode, not a failure
     try:
-        loo = az.loo(az.from_dict(posterior={"_": np.zeros((1, n_samp))},
-                                  log_likelihood={"y": ll[None]}), pointwise=True)
-        loo_out = {"elpd_loo": float(loo.elpd_loo), "p_loo": float(loo.p_loo), "se": float(loo.se),
-                   "looic": float(-2.0 * float(loo.elpd_loo)),
+        loo = az.loo(_idata_from_ll(az, ll), pointwise=True)
+        elpd = float(loo.elpd if hasattr(loo, "elpd") else loo.elpd_loo)       # 1.x : 0.x
+        p = float(loo.p if hasattr(loo, "p") else loo.p_loo)
+        loo_out = {"elpd_loo": elpd, "p_loo": p, "se": float(loo.se),
+                   "looic": float(-2.0 * elpd),
                    "pareto_k_max": float(np.nanmax(np.asarray(loo.pareto_k)))}
     except Exception as exc:                       # noqa: BLE001 - arviz is installed and broke
         loo_error = f"arviz {getattr(az, '__version__', '?')}: {type(exc).__name__}: {exc}"
     return loo_out, waic_out, loo_error
+
+
+def _idata_from_ll(az, ll):
+    """A (draws, data) log-likelihood matrix as the object ``az.loo`` takes, on arviz 0.x or >= 1.0.
+
+    One chain; the posterior group holds a dummy variable because arviz needs one to exist.
+    """
+    groups = {"posterior": {"_": np.zeros((1, ll.shape[0]))}, "log_likelihood": {"y": ll[None]}}
+    if int(str(az.__version__).split(".")[0]) >= 1:
+        return az.from_dict(groups)                # 1.x: one dict of groups
+    return az.from_dict(**groups)                  # 0.x: one keyword per group

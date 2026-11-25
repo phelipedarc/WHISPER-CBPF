@@ -6,8 +6,8 @@ error**: an auto-built density that quietly adds the prior on top of what NumPyr
 contributes, and a parameter order taken from the prior being fed to a model that expects its own.
 Both are tested first and directly.
 
-Most of these need JAX but **not a GPU** — they run on CPU-JAX in ``a GPU environment``. The three at the
-top need no JAX at all and run on the minimal install (``a CPU environment``) and in CI.
+Most of these need JAX but **not a GPU** — they run on CPU-JAX with the ``[gpu]`` extra installed.
+The three at the top need no JAX at all and run on the minimal install and in CI.
 """
 from __future__ import annotations
 
@@ -176,6 +176,43 @@ def test_chunked_batches_equal_unchunked_including_the_padded_tail():
     for width in (1, 2, 3, 7, 8):                                     # 7 is not a multiple of most
         chunked = np.asarray(make_batched_predict_jax(lc, m, chunk=width)(theta))
         assert np.allclose(plain, chunked, rtol=0, atol=0), f"chunk={width} changed the answer"
+
+
+def test_chunked_forward_map_compiles_once_not_on_every_call():
+    """The chunked path ran ``lax.map`` outside ``jit``, so every call
+    traced and compiled the scan again: ``snpe_gpu`` (which always chunks) paid 0.6-7.1 s per
+    simulation round on one GPU (float64, B = 1000, arnett / kilonova / TDE) for a kernel it had
+    already built. Built once inside ``jax.jit``, a second call of the same shape compiles nothing,
+    and a new batch size compiles once."""
+    import jax.monitoring as monitoring
+
+    from whisper_cbpf.samplers.jax._adapters import make_batched_predict_jax
+
+    lc, m = _toy_lc(), _toy_model()
+    rng = np.random.default_rng(2)
+    rows = [rng.uniform([0.5, 4.0], [5.0, 30.0], size=(n, 2)) for n in (7, 7, 5, 5)]
+    f = make_batched_predict_jax(lc, m, chunk=3)
+    first = np.asarray(f(jnp.asarray(rows[0])))              # compiles
+    compiles = []
+
+    def listener(event, duration, **kw):
+        if event == "/jax/core/compile/backend_compile_duration":
+            compiles[-1] += 1
+
+    monitoring.register_event_duration_secs_listener(listener)
+    try:
+        out = []
+        for r in rows[1:]:
+            compiles.append(0)
+            out.append(np.asarray(f(jnp.asarray(r))))
+    finally:
+        monitoring.unregister_event_duration_listener(listener)
+    assert compiles[0] == 0, f"{compiles[0]} XLA compile(s) on a repeated call of the same shape"
+    assert compiles[2] == 0, "the new batch size compiled again on its second call"
+    plain = make_batched_predict_jax(lc, m)
+    for r, o in zip(rows[1:], out):
+        assert np.array_equal(o, np.asarray(plain(jnp.asarray(r)))), "chunking changed the answer"
+    assert first.shape == (7, lc.time.size)
 
 
 def test_unbounded_vmap_guard_fires_and_names_the_knob():

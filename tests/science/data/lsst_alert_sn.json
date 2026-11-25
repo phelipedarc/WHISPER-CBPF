@@ -1,0 +1,1275 @@
+{
+ "diaObject": {
+  "diaObjectId": 20260928
+ },
+ "diaSource": {
+  "diaSourceId": 2026092800073,
+  "diaObjectId": 20260928,
+  "visit": 73,
+  "midpointMjdTai": 61087.64612951464,
+  "band": "r",
+  "psfFlux": 19743.40369048993,
+  "psfFluxErr": 182.3937586109655,
+  "isNegative": false
+ },
+ "prvDiaSources": [
+  {
+   "diaSourceId": 2026092800014,
+   "diaObjectId": 20260928,
+   "visit": 14,
+   "midpointMjdTai": 61004.095203135825,
+   "band": "g",
+   "psfFlux": 6759.32042536012,
+   "psfFluxErr": 114.84667916043936,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800015,
+   "diaObjectId": 20260928,
+   "visit": 15,
+   "midpointMjdTai": 61004.116203135825,
+   "band": "i",
+   "psfFlux": 5121.500201395576,
+   "psfFluxErr": 194.01390087423522,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800016,
+   "diaObjectId": 20260928,
+   "visit": 16,
+   "midpointMjdTai": 61007.422725910496,
+   "band": "r",
+   "psfFlux": 17531.499682373702,
+   "psfFluxErr": 168.6823781628198,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800017,
+   "diaObjectId": 20260928,
+   "visit": 17,
+   "midpointMjdTai": 61007.443725910496,
+   "band": "i",
+   "psfFlux": 15363.861242564499,
+   "psfFluxErr": 254.1210596590586,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800018,
+   "diaObjectId": 20260928,
+   "visit": 18,
+   "midpointMjdTai": 61011.32453152891,
+   "band": "z",
+   "psfFlux": 26444.996958714313,
+   "psfFluxErr": 432.22162458746186,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800019,
+   "diaObjectId": 20260928,
+   "visit": 19,
+   "midpointMjdTai": 61011.34553152891,
+   "band": "g",
+   "psfFlux": 33403.113567572414,
+   "psfFluxErr": 218.39617404443865,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800020,
+   "diaObjectId": 20260928,
+   "visit": 20,
+   "midpointMjdTai": 61014.15102640873,
+   "band": "z",
+   "psfFlux": 36289.19942320576,
+   "psfFluxErr": 377.4295444328874,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800021,
+   "diaObjectId": 20260928,
+   "visit": 21,
+   "midpointMjdTai": 61014.17202640873,
+   "band": "i",
+   "psfFlux": 40288.002425001294,
+   "psfFluxErr": 328.4066003690838,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800022,
+   "diaObjectId": 20260928,
+   "visit": 22,
+   "midpointMjdTai": 61018.01314158002,
+   "band": "i",
+   "psfFlux": 51749.362445870305,
+   "psfFluxErr": 359.93935082147954,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800023,
+   "diaObjectId": 20260928,
+   "visit": 23,
+   "midpointMjdTai": 61018.03414158002,
+   "band": "r",
+   "psfFlux": 54206.32156001321,
+   "psfFluxErr": 351.308378106035,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800024,
+   "diaObjectId": 20260928,
+   "visit": 24,
+   "midpointMjdTai": 61021.276207889015,
+   "band": "i",
+   "psfFlux": 58411.5217225091,
+   "psfFluxErr": 379.75147197192246,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800025,
+   "diaObjectId": 20260928,
+   "visit": 25,
+   "midpointMjdTai": 61021.297207889016,
+   "band": "r",
+   "psfFlux": 58228.30110108796,
+   "psfFluxErr": 328.97482324250075,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800026,
+   "diaObjectId": 20260928,
+   "visit": 26,
+   "midpointMjdTai": 61023.50695240433,
+   "band": "z",
+   "psfFlux": 58945.68913271002,
+   "psfFluxErr": 489.5434196766377,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800027,
+   "diaObjectId": 20260928,
+   "visit": 27,
+   "midpointMjdTai": 61023.52795240433,
+   "band": "g",
+   "psfFlux": 47445.03318801413,
+   "psfFluxErr": 260.7378493056262,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800028,
+   "diaObjectId": 20260928,
+   "visit": 28,
+   "midpointMjdTai": 61026.17771673935,
+   "band": "i",
+   "psfFlux": 61237.36782790298,
+   "psfFluxErr": 435.272204824644,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800029,
+   "diaObjectId": 20260928,
+   "visit": 29,
+   "midpointMjdTai": 61026.19871673935,
+   "band": "z",
+   "psfFlux": 59642.56428269851,
+   "psfFluxErr": 541.8437151537233,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800030,
+   "diaObjectId": 20260928,
+   "visit": 30,
+   "midpointMjdTai": 61028.44297117349,
+   "band": "g",
+   "psfFlux": 39031.32473691749,
+   "psfFluxErr": 208.82955679182416,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800031,
+   "diaObjectId": 20260928,
+   "visit": 31,
+   "midpointMjdTai": 61028.46397117349,
+   "band": "r",
+   "psfFlux": 54976.312251712196,
+   "psfFluxErr": 332.53487967429714,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800032,
+   "diaObjectId": 20260928,
+   "visit": 32,
+   "midpointMjdTai": 61032.395169387346,
+   "band": "g",
+   "psfFlux": 31719.904712955456,
+   "psfFluxErr": 190.29784342802984,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800033,
+   "diaObjectId": 20260928,
+   "visit": 33,
+   "midpointMjdTai": 61032.41616938735,
+   "band": "i",
+   "psfFlux": 56776.51852537714,
+   "psfFluxErr": 400.79206431207473,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800034,
+   "diaObjectId": 20260928,
+   "visit": 34,
+   "midpointMjdTai": 61035.762717215155,
+   "band": "r",
+   "psfFlux": 43235.38828347083,
+   "psfFluxErr": 264.3579538147594,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800035,
+   "diaObjectId": 20260928,
+   "visit": 35,
+   "midpointMjdTai": 61035.78371721515,
+   "band": "i",
+   "psfFlux": 53254.57268778462,
+   "psfFluxErr": 365.7032349370936,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800036,
+   "diaObjectId": 20260928,
+   "visit": 36,
+   "midpointMjdTai": 61038.121879945174,
+   "band": "z",
+   "psfFlux": 55256.225285028246,
+   "psfFluxErr": 439.1611712407715,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800037,
+   "diaObjectId": 20260928,
+   "visit": 37,
+   "midpointMjdTai": 61038.142879945175,
+   "band": "r",
+   "psfFlux": 39725.95045058252,
+   "psfFluxErr": 260.4650152666793,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800038,
+   "diaObjectId": 20260928,
+   "visit": 38,
+   "midpointMjdTai": 61041.2935764039,
+   "band": "z",
+   "psfFlux": 52447.776768541036,
+   "psfFluxErr": 433.2593677058032,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800039,
+   "diaObjectId": 20260928,
+   "visit": 39,
+   "midpointMjdTai": 61041.3145764039,
+   "band": "i",
+   "psfFlux": 46842.47653876436,
+   "psfFluxErr": 352.33682349990335,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800040,
+   "diaObjectId": 20260928,
+   "visit": 40,
+   "midpointMjdTai": 61044.18802428618,
+   "band": "i",
+   "psfFlux": 43841.39556252799,
+   "psfFluxErr": 315.47728600547407,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800041,
+   "diaObjectId": 20260928,
+   "visit": 41,
+   "midpointMjdTai": 61044.209024286174,
+   "band": "g",
+   "psfFlux": 15366.936934727344,
+   "psfFluxErr": 114.134615280051,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800042,
+   "diaObjectId": 20260928,
+   "visit": 42,
+   "midpointMjdTai": 61047.19433675511,
+   "band": "r",
+   "psfFlux": 29562.264883666667,
+   "psfFluxErr": 213.16548899625164,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800043,
+   "diaObjectId": 20260928,
+   "visit": 43,
+   "midpointMjdTai": 61047.21533675511,
+   "band": "z",
+   "psfFlux": 47915.11200467368,
+   "psfFluxErr": 380.1388134124432,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800044,
+   "diaObjectId": 20260928,
+   "visit": 44,
+   "midpointMjdTai": 61049.40368042653,
+   "band": "i",
+   "psfFlux": 40578.02488869028,
+   "psfFluxErr": 347.0915101452642,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800045,
+   "diaObjectId": 20260928,
+   "visit": 45,
+   "midpointMjdTai": 61049.42468042653,
+   "band": "z",
+   "psfFlux": 46502.5018235799,
+   "psfFluxErr": 630.29121842266,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800046,
+   "diaObjectId": 20260928,
+   "visit": 46,
+   "midpointMjdTai": 61051.48711586207,
+   "band": "g",
+   "psfFlux": 13663.333144777509,
+   "psfFluxErr": 99.24193086734053,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800047,
+   "diaObjectId": 20260928,
+   "visit": 47,
+   "midpointMjdTai": 61051.508115862074,
+   "band": "r",
+   "psfFlux": 28303.33553195446,
+   "psfFluxErr": 220.6729581805459,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800048,
+   "diaObjectId": 20260928,
+   "visit": 48,
+   "midpointMjdTai": 61054.774357820934,
+   "band": "g",
+   "psfFlux": 13047.77490924728,
+   "psfFluxErr": 111.6112888282762,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800049,
+   "diaObjectId": 20260928,
+   "visit": 49,
+   "midpointMjdTai": 61054.795357820934,
+   "band": "i",
+   "psfFlux": 36787.2378778966,
+   "psfFluxErr": 288.40376156186807,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800050,
+   "diaObjectId": 20260928,
+   "visit": 50,
+   "midpointMjdTai": 61057.04752202461,
+   "band": "g",
+   "psfFlux": 12734.587721387039,
+   "psfFluxErr": 121.7235890610413,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800051,
+   "diaObjectId": 20260928,
+   "visit": 51,
+   "midpointMjdTai": 61057.06852202461,
+   "band": "z",
+   "psfFlux": 41486.96384280426,
+   "psfFluxErr": 442.9681041488452,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800052,
+   "diaObjectId": 20260928,
+   "visit": 52,
+   "midpointMjdTai": 61060.80715341504,
+   "band": "g",
+   "psfFlux": 12264.121882688745,
+   "psfFluxErr": 146.1233016867016,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800053,
+   "diaObjectId": 20260928,
+   "visit": 53,
+   "midpointMjdTai": 61060.82815341504,
+   "band": "z",
+   "psfFlux": 39880.369699576615,
+   "psfFluxErr": 530.6500823559079,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800054,
+   "diaObjectId": 20260928,
+   "visit": 54,
+   "midpointMjdTai": 61063.218693702205,
+   "band": "z",
+   "psfFlux": 38822.1693588018,
+   "psfFluxErr": 551.3363247226075,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800055,
+   "diaObjectId": 20260928,
+   "visit": 55,
+   "midpointMjdTai": 61063.239693702206,
+   "band": "r",
+   "psfFlux": 24706.54521125409,
+   "psfFluxErr": 185.6142994031656,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800056,
+   "diaObjectId": 20260928,
+   "visit": 56,
+   "midpointMjdTai": 61065.380839074816,
+   "band": "r",
+   "psfFlux": 24097.846869347963,
+   "psfFluxErr": 171.0657454191182,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800057,
+   "diaObjectId": 20260928,
+   "visit": 57,
+   "midpointMjdTai": 61065.40183907482,
+   "band": "g",
+   "psfFlux": 11771.484297596622,
+   "psfFluxErr": 105.2066672706152,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800058,
+   "diaObjectId": 20260928,
+   "visit": 58,
+   "midpointMjdTai": 61068.06084616043,
+   "band": "g",
+   "psfFlux": 11418.39940452677,
+   "psfFluxErr": 108.34134781370712,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800059,
+   "diaObjectId": 20260928,
+   "visit": 59,
+   "midpointMjdTai": 61068.08184616043,
+   "band": "z",
+   "psfFlux": 37391.28943015176,
+   "psfFluxErr": 349.071536826214,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800060,
+   "diaObjectId": 20260928,
+   "visit": 60,
+   "midpointMjdTai": 61070.11454150297,
+   "band": "i",
+   "psfFlux": 31965.0829288257,
+   "psfFluxErr": 241.97628991082178,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800061,
+   "diaObjectId": 20260928,
+   "visit": 61,
+   "midpointMjdTai": 61070.13554150297,
+   "band": "g",
+   "psfFlux": 11119.198155152026,
+   "psfFluxErr": 134.57643411502693,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800062,
+   "diaObjectId": 20260928,
+   "visit": 62,
+   "midpointMjdTai": 61072.51286009683,
+   "band": "z",
+   "psfFlux": 36056.87088822456,
+   "psfFluxErr": 440.6778249309431,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800063,
+   "diaObjectId": 20260928,
+   "visit": 63,
+   "midpointMjdTai": 61072.53386009683,
+   "band": "i",
+   "psfFlux": 31500.568370128425,
+   "psfFluxErr": 293.04526516238116,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800064,
+   "diaObjectId": 20260928,
+   "visit": 64,
+   "midpointMjdTai": 61075.51836459856,
+   "band": "i",
+   "psfFlux": 30256.745013089905,
+   "psfFluxErr": 238.7758286749797,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800065,
+   "diaObjectId": 20260928,
+   "visit": 65,
+   "midpointMjdTai": 61075.53936459856,
+   "band": "r",
+   "psfFlux": 21838.236096206132,
+   "psfFluxErr": 179.38185267821711,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800066,
+   "diaObjectId": 20260928,
+   "visit": 66,
+   "midpointMjdTai": 61078.31531712913,
+   "band": "z",
+   "psfFlux": 34300.44597539119,
+   "psfFluxErr": 486.9868242426809,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800067,
+   "diaObjectId": 20260928,
+   "visit": 67,
+   "midpointMjdTai": 61078.33631712913,
+   "band": "i",
+   "psfFlux": 29257.48021536952,
+   "psfFluxErr": 256.8445346454746,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800068,
+   "diaObjectId": 20260928,
+   "visit": 68,
+   "midpointMjdTai": 61081.86447112241,
+   "band": "z",
+   "psfFlux": 33737.642809268655,
+   "psfFluxErr": 483.83879094308975,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800069,
+   "diaObjectId": 20260928,
+   "visit": 69,
+   "midpointMjdTai": 61081.88547112241,
+   "band": "g",
+   "psfFlux": 10130.951191637598,
+   "psfFluxErr": 118.21139367108222,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800070,
+   "diaObjectId": 20260928,
+   "visit": 70,
+   "midpointMjdTai": 61084.350979770024,
+   "band": "z",
+   "psfFlux": 32439.36190608543,
+   "psfFluxErr": 495.5541436728353,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800071,
+   "diaObjectId": 20260928,
+   "visit": 71,
+   "midpointMjdTai": 61084.371979770025,
+   "band": "g",
+   "psfFlux": 10113.622854489919,
+   "psfFluxErr": 105.4150899281495,
+   "isNegative": false
+  },
+  {
+   "diaSourceId": 2026092800072,
+   "diaObjectId": 20260928,
+   "visit": 72,
+   "midpointMjdTai": 61087.625129514636,
+   "band": "i",
+   "psfFlux": 27581.600585685912,
+   "psfFluxErr": 216.12325037190615,
+   "isNegative": false
+  }
+ ],
+ "prvDiaForcedSources": [
+  {
+   "diaForcedSourceId": 2026092800000,
+   "diaObjectId": 20260928,
+   "visit": 0,
+   "midpointMjdTai": 60982.12163479086,
+   "band": "i",
+   "psfFlux": 30.812129376065148,
+   "psfFluxErr": 207.5656458387069
+  },
+  {
+   "diaForcedSourceId": 2026092800001,
+   "diaObjectId": 20260928,
+   "visit": 1,
+   "midpointMjdTai": 60982.142634790864,
+   "band": "g",
+   "psfFlux": 34.837997072152056,
+   "psfFluxErr": 88.38003944885928
+  },
+  {
+   "diaForcedSourceId": 2026092800002,
+   "diaObjectId": 20260928,
+   "visit": 2,
+   "midpointMjdTai": 60984.74415827677,
+   "band": "z",
+   "psfFlux": 135.53143378591076,
+   "psfFluxErr": 386.557488198595
+  },
+  {
+   "diaForcedSourceId": 2026092800003,
+   "diaObjectId": 20260928,
+   "visit": 3,
+   "midpointMjdTai": 60984.76515827677,
+   "band": "g",
+   "psfFlux": 63.988159301015735,
+   "psfFluxErr": 71.57681677366024
+  },
+  {
+   "diaForcedSourceId": 2026092800004,
+   "diaObjectId": 20260928,
+   "visit": 4,
+   "midpointMjdTai": 60986.7488808065,
+   "band": "i",
+   "psfFlux": 82.33954589544199,
+   "psfFluxErr": 213.98622301255068
+  },
+  {
+   "diaForcedSourceId": 2026092800005,
+   "diaObjectId": 20260928,
+   "visit": 5,
+   "midpointMjdTai": 60986.769880806496,
+   "band": "g",
+   "psfFlux": -29.36591385253023,
+   "psfFluxErr": 112.3324290214137
+  },
+  {
+   "diaForcedSourceId": 2026092800006,
+   "diaObjectId": 20260928,
+   "visit": 6,
+   "midpointMjdTai": 60989.92862483411,
+   "band": "z",
+   "psfFlux": -296.6718267889725,
+   "psfFluxErr": 298.87578556986546
+  },
+  {
+   "diaForcedSourceId": 2026092800007,
+   "diaObjectId": 20260928,
+   "visit": 7,
+   "midpointMjdTai": 60989.94962483411,
+   "band": "i",
+   "psfFlux": 47.59199586880427,
+   "psfFluxErr": 165.52119829918493
+  },
+  {
+   "diaForcedSourceId": 2026092800008,
+   "diaObjectId": 20260928,
+   "visit": 8,
+   "midpointMjdTai": 60993.73340237776,
+   "band": "z",
+   "psfFlux": 231.64063083533767,
+   "psfFluxErr": 223.82864533296953
+  },
+  {
+   "diaForcedSourceId": 2026092800009,
+   "diaObjectId": 20260928,
+   "visit": 9,
+   "midpointMjdTai": 60993.75440237776,
+   "band": "g",
+   "psfFlux": 77.46839779527676,
+   "psfFluxErr": 82.7275214786365
+  },
+  {
+   "diaForcedSourceId": 2026092800010,
+   "diaObjectId": 20260928,
+   "visit": 10,
+   "midpointMjdTai": 60997.11818149218,
+   "band": "g",
+   "psfFlux": 27.605125351440467,
+   "psfFluxErr": 93.84122556914505
+  },
+  {
+   "diaForcedSourceId": 2026092800011,
+   "diaObjectId": 20260928,
+   "visit": 11,
+   "midpointMjdTai": 60997.13918149218,
+   "band": "z",
+   "psfFlux": 389.17858430884655,
+   "psfFluxErr": 327.81883574614227
+  },
+  {
+   "diaForcedSourceId": 2026092800012,
+   "diaObjectId": 20260928,
+   "visit": 12,
+   "midpointMjdTai": 61000.638297467194,
+   "band": "g",
+   "psfFlux": 193.43482936310096,
+   "psfFluxErr": 71.94056038603046
+  },
+  {
+   "diaForcedSourceId": 2026092800013,
+   "diaObjectId": 20260928,
+   "visit": 13,
+   "midpointMjdTai": 61000.659297467195,
+   "band": "z",
+   "psfFlux": 269.8549269492423,
+   "psfFluxErr": 274.96329684952593
+  },
+  {
+   "diaForcedSourceId": 2026092800014,
+   "diaObjectId": 20260928,
+   "visit": 14,
+   "midpointMjdTai": 61004.095203135825,
+   "band": "g",
+   "psfFlux": 6759.32042536012,
+   "psfFluxErr": 114.84667916043936
+  },
+  {
+   "diaForcedSourceId": 2026092800015,
+   "diaObjectId": 20260928,
+   "visit": 15,
+   "midpointMjdTai": 61004.116203135825,
+   "band": "i",
+   "psfFlux": 5121.500201395576,
+   "psfFluxErr": 194.01390087423522
+  },
+  {
+   "diaForcedSourceId": 2026092800016,
+   "diaObjectId": 20260928,
+   "visit": 16,
+   "midpointMjdTai": 61007.422725910496,
+   "band": "r",
+   "psfFlux": 17531.499682373702,
+   "psfFluxErr": 168.6823781628198
+  },
+  {
+   "diaForcedSourceId": 2026092800017,
+   "diaObjectId": 20260928,
+   "visit": 17,
+   "midpointMjdTai": 61007.443725910496,
+   "band": "i",
+   "psfFlux": 15363.861242564499,
+   "psfFluxErr": 254.1210596590586
+  },
+  {
+   "diaForcedSourceId": 2026092800018,
+   "diaObjectId": 20260928,
+   "visit": 18,
+   "midpointMjdTai": 61011.32453152891,
+   "band": "z",
+   "psfFlux": 26444.996958714313,
+   "psfFluxErr": 432.22162458746186
+  },
+  {
+   "diaForcedSourceId": 2026092800019,
+   "diaObjectId": 20260928,
+   "visit": 19,
+   "midpointMjdTai": 61011.34553152891,
+   "band": "g",
+   "psfFlux": 33403.113567572414,
+   "psfFluxErr": 218.39617404443865
+  },
+  {
+   "diaForcedSourceId": 2026092800020,
+   "diaObjectId": 20260928,
+   "visit": 20,
+   "midpointMjdTai": 61014.15102640873,
+   "band": "z",
+   "psfFlux": 36289.19942320576,
+   "psfFluxErr": 377.4295444328874
+  },
+  {
+   "diaForcedSourceId": 2026092800021,
+   "diaObjectId": 20260928,
+   "visit": 21,
+   "midpointMjdTai": 61014.17202640873,
+   "band": "i",
+   "psfFlux": 40288.002425001294,
+   "psfFluxErr": 328.4066003690838
+  },
+  {
+   "diaForcedSourceId": 2026092800022,
+   "diaObjectId": 20260928,
+   "visit": 22,
+   "midpointMjdTai": 61018.01314158002,
+   "band": "i",
+   "psfFlux": 51749.362445870305,
+   "psfFluxErr": 359.93935082147954
+  },
+  {
+   "diaForcedSourceId": 2026092800023,
+   "diaObjectId": 20260928,
+   "visit": 23,
+   "midpointMjdTai": 61018.03414158002,
+   "band": "r",
+   "psfFlux": 54206.32156001321,
+   "psfFluxErr": 351.308378106035
+  },
+  {
+   "diaForcedSourceId": 2026092800024,
+   "diaObjectId": 20260928,
+   "visit": 24,
+   "midpointMjdTai": 61021.276207889015,
+   "band": "i",
+   "psfFlux": 58411.5217225091,
+   "psfFluxErr": 379.75147197192246
+  },
+  {
+   "diaForcedSourceId": 2026092800025,
+   "diaObjectId": 20260928,
+   "visit": 25,
+   "midpointMjdTai": 61021.297207889016,
+   "band": "r",
+   "psfFlux": 58228.30110108796,
+   "psfFluxErr": 328.97482324250075
+  },
+  {
+   "diaForcedSourceId": 2026092800026,
+   "diaObjectId": 20260928,
+   "visit": 26,
+   "midpointMjdTai": 61023.50695240433,
+   "band": "z",
+   "psfFlux": 58945.68913271002,
+   "psfFluxErr": 489.5434196766377
+  },
+  {
+   "diaForcedSourceId": 2026092800027,
+   "diaObjectId": 20260928,
+   "visit": 27,
+   "midpointMjdTai": 61023.52795240433,
+   "band": "g",
+   "psfFlux": 47445.03318801413,
+   "psfFluxErr": 260.7378493056262
+  },
+  {
+   "diaForcedSourceId": 2026092800028,
+   "diaObjectId": 20260928,
+   "visit": 28,
+   "midpointMjdTai": 61026.17771673935,
+   "band": "i",
+   "psfFlux": 61237.36782790298,
+   "psfFluxErr": 435.272204824644
+  },
+  {
+   "diaForcedSourceId": 2026092800029,
+   "diaObjectId": 20260928,
+   "visit": 29,
+   "midpointMjdTai": 61026.19871673935,
+   "band": "z",
+   "psfFlux": 59642.56428269851,
+   "psfFluxErr": 541.8437151537233
+  },
+  {
+   "diaForcedSourceId": 2026092800030,
+   "diaObjectId": 20260928,
+   "visit": 30,
+   "midpointMjdTai": 61028.44297117349,
+   "band": "g",
+   "psfFlux": 39031.32473691749,
+   "psfFluxErr": 208.82955679182416
+  },
+  {
+   "diaForcedSourceId": 2026092800031,
+   "diaObjectId": 20260928,
+   "visit": 31,
+   "midpointMjdTai": 61028.46397117349,
+   "band": "r",
+   "psfFlux": 54976.312251712196,
+   "psfFluxErr": 332.53487967429714
+  },
+  {
+   "diaForcedSourceId": 2026092800032,
+   "diaObjectId": 20260928,
+   "visit": 32,
+   "midpointMjdTai": 61032.395169387346,
+   "band": "g",
+   "psfFlux": 31719.904712955456,
+   "psfFluxErr": 190.29784342802984
+  },
+  {
+   "diaForcedSourceId": 2026092800033,
+   "diaObjectId": 20260928,
+   "visit": 33,
+   "midpointMjdTai": 61032.41616938735,
+   "band": "i",
+   "psfFlux": 56776.51852537714,
+   "psfFluxErr": 400.79206431207473
+  },
+  {
+   "diaForcedSourceId": 2026092800034,
+   "diaObjectId": 20260928,
+   "visit": 34,
+   "midpointMjdTai": 61035.762717215155,
+   "band": "r",
+   "psfFlux": 43235.38828347083,
+   "psfFluxErr": 264.3579538147594
+  },
+  {
+   "diaForcedSourceId": 2026092800035,
+   "diaObjectId": 20260928,
+   "visit": 35,
+   "midpointMjdTai": 61035.78371721515,
+   "band": "i",
+   "psfFlux": 53254.57268778462,
+   "psfFluxErr": 365.7032349370936
+  },
+  {
+   "diaForcedSourceId": 2026092800036,
+   "diaObjectId": 20260928,
+   "visit": 36,
+   "midpointMjdTai": 61038.121879945174,
+   "band": "z",
+   "psfFlux": 55256.225285028246,
+   "psfFluxErr": 439.1611712407715
+  },
+  {
+   "diaForcedSourceId": 2026092800037,
+   "diaObjectId": 20260928,
+   "visit": 37,
+   "midpointMjdTai": 61038.142879945175,
+   "band": "r",
+   "psfFlux": 39725.95045058252,
+   "psfFluxErr": 260.4650152666793
+  },
+  {
+   "diaForcedSourceId": 2026092800038,
+   "diaObjectId": 20260928,
+   "visit": 38,
+   "midpointMjdTai": 61041.2935764039,
+   "band": "z",
+   "psfFlux": 52447.776768541036,
+   "psfFluxErr": 433.2593677058032
+  },
+  {
+   "diaForcedSourceId": 2026092800039,
+   "diaObjectId": 20260928,
+   "visit": 39,
+   "midpointMjdTai": 61041.3145764039,
+   "band": "i",
+   "psfFlux": 46842.47653876436,
+   "psfFluxErr": 352.33682349990335
+  },
+  {
+   "diaForcedSourceId": 2026092800040,
+   "diaObjectId": 20260928,
+   "visit": 40,
+   "midpointMjdTai": 61044.18802428618,
+   "band": "i",
+   "psfFlux": 43841.39556252799,
+   "psfFluxErr": 315.47728600547407
+  },
+  {
+   "diaForcedSourceId": 2026092800041,
+   "diaObjectId": 20260928,
+   "visit": 41,
+   "midpointMjdTai": 61044.209024286174,
+   "band": "g",
+   "psfFlux": 15366.936934727344,
+   "psfFluxErr": 114.134615280051
+  },
+  {
+   "diaForcedSourceId": 2026092800042,
+   "diaObjectId": 20260928,
+   "visit": 42,
+   "midpointMjdTai": 61047.19433675511,
+   "band": "r",
+   "psfFlux": 29562.264883666667,
+   "psfFluxErr": 213.16548899625164
+  },
+  {
+   "diaForcedSourceId": 2026092800043,
+   "diaObjectId": 20260928,
+   "visit": 43,
+   "midpointMjdTai": 61047.21533675511,
+   "band": "z",
+   "psfFlux": 47915.11200467368,
+   "psfFluxErr": 380.1388134124432
+  },
+  {
+   "diaForcedSourceId": 2026092800044,
+   "diaObjectId": 20260928,
+   "visit": 44,
+   "midpointMjdTai": 61049.40368042653,
+   "band": "i",
+   "psfFlux": 40578.02488869028,
+   "psfFluxErr": 347.0915101452642
+  },
+  {
+   "diaForcedSourceId": 2026092800045,
+   "diaObjectId": 20260928,
+   "visit": 45,
+   "midpointMjdTai": 61049.42468042653,
+   "band": "z",
+   "psfFlux": 46502.5018235799,
+   "psfFluxErr": 630.29121842266
+  },
+  {
+   "diaForcedSourceId": 2026092800046,
+   "diaObjectId": 20260928,
+   "visit": 46,
+   "midpointMjdTai": 61051.48711586207,
+   "band": "g",
+   "psfFlux": 13663.333144777509,
+   "psfFluxErr": 99.24193086734053
+  },
+  {
+   "diaForcedSourceId": 2026092800047,
+   "diaObjectId": 20260928,
+   "visit": 47,
+   "midpointMjdTai": 61051.508115862074,
+   "band": "r",
+   "psfFlux": 28303.33553195446,
+   "psfFluxErr": 220.6729581805459
+  },
+  {
+   "diaForcedSourceId": 2026092800048,
+   "diaObjectId": 20260928,
+   "visit": 48,
+   "midpointMjdTai": 61054.774357820934,
+   "band": "g",
+   "psfFlux": 13047.77490924728,
+   "psfFluxErr": 111.6112888282762
+  },
+  {
+   "diaForcedSourceId": 2026092800049,
+   "diaObjectId": 20260928,
+   "visit": 49,
+   "midpointMjdTai": 61054.795357820934,
+   "band": "i",
+   "psfFlux": 36787.2378778966,
+   "psfFluxErr": 288.40376156186807
+  },
+  {
+   "diaForcedSourceId": 2026092800050,
+   "diaObjectId": 20260928,
+   "visit": 50,
+   "midpointMjdTai": 61057.04752202461,
+   "band": "g",
+   "psfFlux": 12734.587721387039,
+   "psfFluxErr": 121.7235890610413
+  },
+  {
+   "diaForcedSourceId": 2026092800051,
+   "diaObjectId": 20260928,
+   "visit": 51,
+   "midpointMjdTai": 61057.06852202461,
+   "band": "z",
+   "psfFlux": 41486.96384280426,
+   "psfFluxErr": 442.9681041488452
+  },
+  {
+   "diaForcedSourceId": 2026092800052,
+   "diaObjectId": 20260928,
+   "visit": 52,
+   "midpointMjdTai": 61060.80715341504,
+   "band": "g",
+   "psfFlux": 12264.121882688745,
+   "psfFluxErr": 146.1233016867016
+  },
+  {
+   "diaForcedSourceId": 2026092800053,
+   "diaObjectId": 20260928,
+   "visit": 53,
+   "midpointMjdTai": 61060.82815341504,
+   "band": "z",
+   "psfFlux": 39880.369699576615,
+   "psfFluxErr": 530.6500823559079
+  },
+  {
+   "diaForcedSourceId": 2026092800054,
+   "diaObjectId": 20260928,
+   "visit": 54,
+   "midpointMjdTai": 61063.218693702205,
+   "band": "z",
+   "psfFlux": 38822.1693588018,
+   "psfFluxErr": 551.3363247226075
+  },
+  {
+   "diaForcedSourceId": 2026092800055,
+   "diaObjectId": 20260928,
+   "visit": 55,
+   "midpointMjdTai": 61063.239693702206,
+   "band": "r",
+   "psfFlux": 24706.54521125409,
+   "psfFluxErr": 185.6142994031656
+  },
+  {
+   "diaForcedSourceId": 2026092800056,
+   "diaObjectId": 20260928,
+   "visit": 56,
+   "midpointMjdTai": 61065.380839074816,
+   "band": "r",
+   "psfFlux": 24097.846869347963,
+   "psfFluxErr": 171.0657454191182
+  },
+  {
+   "diaForcedSourceId": 2026092800057,
+   "diaObjectId": 20260928,
+   "visit": 57,
+   "midpointMjdTai": 61065.40183907482,
+   "band": "g",
+   "psfFlux": 11771.484297596622,
+   "psfFluxErr": 105.2066672706152
+  },
+  {
+   "diaForcedSourceId": 2026092800058,
+   "diaObjectId": 20260928,
+   "visit": 58,
+   "midpointMjdTai": 61068.06084616043,
+   "band": "g",
+   "psfFlux": 11418.39940452677,
+   "psfFluxErr": 108.34134781370712
+  },
+  {
+   "diaForcedSourceId": 2026092800059,
+   "diaObjectId": 20260928,
+   "visit": 59,
+   "midpointMjdTai": 61068.08184616043,
+   "band": "z",
+   "psfFlux": 37391.28943015176,
+   "psfFluxErr": 349.071536826214
+  },
+  {
+   "diaForcedSourceId": 2026092800060,
+   "diaObjectId": 20260928,
+   "visit": 60,
+   "midpointMjdTai": 61070.11454150297,
+   "band": "i",
+   "psfFlux": 31965.0829288257,
+   "psfFluxErr": 241.97628991082178
+  },
+  {
+   "diaForcedSourceId": 2026092800061,
+   "diaObjectId": 20260928,
+   "visit": 61,
+   "midpointMjdTai": 61070.13554150297,
+   "band": "g",
+   "psfFlux": 11119.198155152026,
+   "psfFluxErr": 134.57643411502693
+  },
+  {
+   "diaForcedSourceId": 2026092800062,
+   "diaObjectId": 20260928,
+   "visit": 62,
+   "midpointMjdTai": 61072.51286009683,
+   "band": "z",
+   "psfFlux": 36056.87088822456,
+   "psfFluxErr": 440.6778249309431
+  },
+  {
+   "diaForcedSourceId": 2026092800063,
+   "diaObjectId": 20260928,
+   "visit": 63,
+   "midpointMjdTai": 61072.53386009683,
+   "band": "i",
+   "psfFlux": 31500.568370128425,
+   "psfFluxErr": 293.04526516238116
+  },
+  {
+   "diaForcedSourceId": 2026092800064,
+   "diaObjectId": 20260928,
+   "visit": 64,
+   "midpointMjdTai": 61075.51836459856,
+   "band": "i",
+   "psfFlux": 30256.745013089905,
+   "psfFluxErr": 238.7758286749797
+  },
+  {
+   "diaForcedSourceId": 2026092800065,
+   "diaObjectId": 20260928,
+   "visit": 65,
+   "midpointMjdTai": 61075.53936459856,
+   "band": "r",
+   "psfFlux": 21838.236096206132,
+   "psfFluxErr": 179.38185267821711
+  },
+  {
+   "diaForcedSourceId": 2026092800066,
+   "diaObjectId": 20260928,
+   "visit": 66,
+   "midpointMjdTai": 61078.31531712913,
+   "band": "z",
+   "psfFlux": 34300.44597539119,
+   "psfFluxErr": 486.9868242426809
+  },
+  {
+   "diaForcedSourceId": 2026092800067,
+   "diaObjectId": 20260928,
+   "visit": 67,
+   "midpointMjdTai": 61078.33631712913,
+   "band": "i",
+   "psfFlux": 29257.48021536952,
+   "psfFluxErr": 256.8445346454746
+  },
+  {
+   "diaForcedSourceId": 2026092800068,
+   "diaObjectId": 20260928,
+   "visit": 68,
+   "midpointMjdTai": 61081.86447112241,
+   "band": "z",
+   "psfFlux": 33737.642809268655,
+   "psfFluxErr": 483.83879094308975
+  },
+  {
+   "diaForcedSourceId": 2026092800069,
+   "diaObjectId": 20260928,
+   "visit": 69,
+   "midpointMjdTai": 61081.88547112241,
+   "band": "g",
+   "psfFlux": 10130.951191637598,
+   "psfFluxErr": 118.21139367108222
+  },
+  {
+   "diaForcedSourceId": 2026092800070,
+   "diaObjectId": 20260928,
+   "visit": 70,
+   "midpointMjdTai": 61084.350979770024,
+   "band": "z",
+   "psfFlux": 32439.36190608543,
+   "psfFluxErr": 495.5541436728353
+  },
+  {
+   "diaForcedSourceId": 2026092800071,
+   "diaObjectId": 20260928,
+   "visit": 71,
+   "midpointMjdTai": 61084.371979770025,
+   "band": "g",
+   "psfFlux": 10113.622854489919,
+   "psfFluxErr": 105.4150899281495
+  },
+  {
+   "diaForcedSourceId": 2026092800072,
+   "diaObjectId": 20260928,
+   "visit": 72,
+   "midpointMjdTai": 61087.625129514636,
+   "band": "i",
+   "psfFlux": 27581.600585685912,
+   "psfFluxErr": 216.12325037190615
+  },
+  {
+   "diaForcedSourceId": 2026092800073,
+   "diaObjectId": 20260928,
+   "visit": 73,
+   "midpointMjdTai": 61087.64612951464,
+   "band": "r",
+   "psfFlux": 19743.40369048993,
+   "psfFluxErr": 182.3937586109655
+  }
+ ]
+}

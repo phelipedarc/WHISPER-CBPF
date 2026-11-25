@@ -11,8 +11,19 @@ Twelve model names over nine engines. Engines: ``_nickelcobalt_engine``, ``basic
 ``general_magnetar_slsn``, ``type_1a`` (== ``arnett``) and ``type_1c`` (== ``arnett``). SEDs:
 blackbody, cutoff blackbody, line, synchrotron.
 
-Everything here is vectorised arithmetic -- no ODE, no sequential loop, no root-find -- so the
-family is cheap, batches perfectly, and differentiates end to end.
+Four further models adapted from redback-jax and redback are in :data:`ADOPTED_MODELS`:
+``csm_interaction`` (:mod:`~whisper_cbpf.models.jax.csm_interaction`), ``shock_cooling`` (the Piro
+engine below, standalone, with its own photosphere), ``shocked_cocoon``
+(:mod:`~whisper_cbpf.models.jax.shock_models`) and ``general_magnetar_driven``
+(:mod:`~whisper_cbpf.models.jax.magnetar_ode`, an ODE). The last three carry their own photosphere
+(``photosphere="model"``) and, like ``csm_interaction``, are evaluated at the epochs themselves
+(``at_epochs``). :data:`ALL_MODELS` is both tables. Those four are adapted from redback-jax (Nikhil
+Sarin et al.), https://github.com/nikhil-sarin/redback-jax, commit 3431e2e, GPL-3.0, and from
+redback (Sarin et al.), https://github.com/nikhil-sarin/redback, GPL-3.0; corrected and modified for
+whisper_cbpf (the shock-cooling one reuses the engine below, which already reproduced redback).
+
+Everything in :data:`MODELS` is vectorised arithmetic -- no ODE, no sequential loop, no
+root-find -- so the family is cheap, batches perfectly, and differentiates end to end.
 
 **float64 is required**, for a different reason than the TDE's: these are bolometric luminosities
 in cgs, and float32 stops at 3.403e38. :func:`build_sn_grid` raises rather than returning a light
@@ -21,10 +32,13 @@ curve of exactly ``mag_floor``::
     import jax; jax.config.update("jax_enable_x64", True)   # before the first array exists
 
 ``magnetar_convention`` and ``interaction`` select between redback releases that disagree by a
-magnitude or more; ``dilation`` selects the ``(1+z)`` flux factor. Those, the closed-form CSM shock
-breakout, and every other deviation are in ``docs/PORTING_NOTES.md``.
+magnitude or more; ``dilation`` selects the ``(1+z)`` flux factor; ``build_sn_grid``'s ``spacing``
+selects redback 1.20's geometric dense grids (default) or the linear ones of redback <= 1.15
+(:data:`REDBACK_GRID_PRESETS`). Those, the CSM breakout's interpolation, and every other deviation
+are in ``docs/PORTING_NOTES.md``.
 """
 
+import warnings
 from functools import partial
 
 import jax
@@ -57,13 +71,20 @@ from .tde import (
     flux_density_mjy,
     temperature_floor_photosphere,
 )
+from .csm_interaction import csm_interaction_bolometric
+from .magnetar_ode import general_magnetar_driven_model
+from .shock_models import shocked_cocoon_model
 
 __all__ = [
-    "build_sn_grid", "DENSE_RESOLUTION", "TIME_PAD",
+    "build_sn_grid", "dense_grid", "DENSE_RESOLUTION", "TIME_PAD", "GRID_START", "CSM_NODES",
+    "REDBACK_GRID_PRESETS", "warn_if_spin_down_unresolved", "SPIN_DOWN_UNRESOLVED_LIMIT",
     # engines
     "nickelcobalt_engine", "basic_magnetar", "magnetar_only", "exponential_powerlaw_engine",
     "fallback_lbol", "shock_cooling", "csm_shock_breakout",
     "exponential_powerlaw_integrable",
+    # adopted models: standalone shock cooling, and the three engines imported above
+    "shock_cooling_model", "csm_interaction_bolometric", "shocked_cocoon_model",
+    "general_magnetar_driven_model", "check_engine_options",
     # bolometric
     "arnett_bolometric", "shock_cooling_and_arnett_bolometric",
     "basic_magnetar_powered_bolometric", "slsn_bolometric", "magnetar_nickel_bolometric",
@@ -74,14 +95,37 @@ __all__ = [
     "cutoff_norm", "cutoff_shape", "line_band_term", "synchrotron_f_nu",
     # photometry
     "photosphere", "sn_flux_density", "sn_ab_magnitude",
+    # observed-epoch path on a fixed-resolution grid
+    "FixedGrid", "build_fixed_grid", "bolometric_at", "ab_magnitude_at",
+    "FIXED_GRID_EPOCHS_PER_DECADE", "FIXED_GRID_FIRST", "FIXED_GRID_MARGIN_EPOCHS",
+    "DEFAULT_MAX_PHASE_DAYS",
     # registry / priors
-    "MODELS", "PARAMETERS", "model_names", "bolometric", "flux_density", "ab_magnitude_of",
+    "MODELS", "ADOPTED_MODELS", "ALL_MODELS", "PARAMETERS", "model_names", "bolometric",
+    "flux_density", "ab_magnitude_of",
     "redback_prior", "fallback_prior", "default_prior",
 ]
 
 #: redback's ``dense_resolution`` kwarg default, and the ``+100`` padding on the last epoch.
 DENSE_RESOLUTION = 1000
 TIME_PAD = 100.0
+#: First node of redback 1.20's geometric ``ip.Diffusion`` grid, days (CHANGE 1).
+GRID_START = 1e-5
+#: redback's CSM shock-breakout nodes, ``(first [d], last [d], count)``, fixed and independent of
+#: the data (``shock_powered_models.py:544``; CHANGE 4).
+CSM_NODES = (1e-2, 200.0, 300)
+
+#: The dense grids of each redback release (CHANGE 1, CHANGE 4). Pass as
+#: ``build_sn_grid(t, **REDBACK_GRID_PRESETS["1.15"])``. 1.20 (from 1.18) spaces both grids
+#: geometrically; 1.12 and 1.15 space both linearly. The default is 1.20's.
+REDBACK_GRID_PRESETS = {
+    "1.12": dict(spacing="linear"),
+    "1.15": dict(spacing="linear"),
+    "1.20": dict(spacing="geometric"),
+}
+
+#: :func:`warn_if_spin_down_unresolved` warns once the spin-down releases more than this
+#: fraction of ``E_rot`` before the dense grid's first resolved node. See CHANGE 1.
+SPIN_DOWN_UNRESOLVED_LIMIT = 0.1
 
 #: Floor for a quantity about to be raised to a fractional power. Mirrors ``tde._L_FLOOR``:
 #: ``0 ** 0.25`` is 0 in the forward pass but its derivative is infinite, so an unfloored
@@ -97,7 +141,9 @@ ANGSTROM_CGS = 1e-8
 #: ``FLUX_CONST / angstrom_cgs`` == 8 pi^2 h c^2, folded so the 1e-8 is never a divide.
 FLUX_CONST_OVER_ANG = 8.0 * np.pi ** 2 * PLANCK * SPEED_OF_LIGHT ** 2
 #: The n = 1..10 term of redback's geometric expansion of 1/(e^u - 1), pre-multiplied by X_CONST.
-_NXCS = jnp.asarray(X_CONST * np.arange(1, 11), dtype=jnp.result_type(float))
+#: NumPy float64, not a jnp array: one built here would take the dtype in force at IMPORT, and a
+#: module imported before x64 is enabled froze it in float32 (7.6e-8 relative in the cutoff SED).
+_NXCS = X_CONST * np.arange(1, 11)
 
 #: Scale for the additive Line term, folded so that nothing intermediate can overflow float32
 #: (CHANGE 8). The quantity wanted is
@@ -114,24 +160,46 @@ def _require_x64(what):
     """CHANGE 8. Fail at trace time with the fix, rather than returning 40.0 mag later."""
     if not jax.config.jax_enable_x64:
         raise RuntimeError(
-            f"{what} requires float64. These engines are bolometric luminosities in cgs -- "
-            f"1e43 to 1e46 erg/s -- and float32 stops at 3.4e38. Measured: EVERY engine in "
-            f"the family returns inf, including at the faintest corner of redback's prior "
-            f"(f_nickel=1e-3, mej=1e-4, L = 7.9e36), because ni56_lum = 6.45e43 is formed "
-            f"before the nickel mass multiplies it. The guards then turn inf into 0 and every "
-            f"band comes back at mag_floor. Enable it BEFORE the first jax array is created:\n"
+            f"{what} requires float64. The luminosities it evolves are in cgs, 1e43 to 1e46 "
+            f"erg/s for the supernova engines and far more for a fall-back normalisation, and "
+            f"float32 stops at 3.4e38: the arithmetic overflows to inf, the guards turn that "
+            f"into 0, and every band comes back at mag_floor. For the supernova engines this "
+            f"holds even at the faintest corner of redback's prior (f_nickel=1e-3, mej=1e-4, "
+            f"L = 7.9e36), because the nickel luminosity, 6.45e43, is formed before the nickel "
+            f"mass multiplies it. Enable it BEFORE the first jax array is created:\n"
             f"    import jax; jax.config.update('jax_enable_x64', True)\n"
             f"or set JAX_ENABLE_X64=1 in the environment.")
 
 
-def build_sn_grid(time_days, dense_resolution=DENSE_RESOLUTION, t_pad=TIME_PAD):
+def _grid_nodes(first, last, n, spacing):
+    """``np.geomspace`` (redback 1.20) or ``np.linspace`` (redback <= 1.15) from first to last."""
+    if spacing == "geometric":
+        return np.geomspace(first, last, n)
+    if spacing == "linear":
+        return np.linspace(first, last, n)
+    raise ValueError(f"spacing must be 'geometric' or 'linear', got {spacing!r}")
+
+
+def dense_grid(time_days, dense_resolution=DENSE_RESOLUTION, t_pad=TIME_PAD, spacing="geometric"):
+    """The NumPy ``ip.Diffusion`` dense grid in days: ``geomspace(1e-5, time[-1] + t_pad, n)``
+    (redback 1.20) or ``linspace(0, time[-1] + t_pad, n)`` (``spacing="linear"``, <= 1.15)."""
+    first = GRID_START if spacing == "geometric" else 0.0
+    return _grid_nodes(first, np.asarray(time_days, dtype=np.float64)[-1] + t_pad,
+                       dense_resolution, spacing)
+
+
+def build_sn_grid(time_days, dense_resolution=DENSE_RESOLUTION, t_pad=TIME_PAD,
+                  spacing="geometric", csm_interp=True):
     """Setup-time (NumPy) companion to every model here. Build once per dataset, reuse.
 
-    Reproduces redback's
+    Reproduces redback 1.20's
 
-        dense_times = np.linspace(0, time[-1] + 100, dense_resolution)
+        dense_times = np.geomspace(1e-5, time[-1] + 100, dense_resolution)
 
-    plus the ``uniq_times`` / ``searchsorted`` bookkeeping ``ip.Diffusion`` needs (CHANGE 1).
+    plus the ``uniq_times`` / ``searchsorted`` bookkeeping ``ip.Diffusion`` needs (CHANGE 1), and
+    the CSM breakout's fixed ``np.geomspace(1e-2, 200, 300)`` nodes (CHANGE 4).
+    ``spacing="linear"`` gives redback <= 1.15's ``np.linspace(0, time[-1] + 100, ...)`` and
+    ``np.linspace(1e-2, 200, 300)`` instead -- or use :data:`REDBACK_GRID_PRESETS`.
     The shapes here set the compiled kernel size, so a change of ``dense_resolution`` or of
     the number of observations triggers one recompile and nothing else.
 
@@ -141,19 +209,67 @@ def build_sn_grid(time_days, dense_resolution=DENSE_RESOLUTION, t_pad=TIME_PAD):
         to size the grid, so the order matters even though nothing else here depends on it;
         this function does not sort for you, precisely so that a caller passing unsorted
         times gets redback's answer rather than a quietly different one.
+    spacing : ``"geometric"`` (default, redback 1.20) or ``"linear"`` (redback <= 1.15).
+    csm_interp : ``True`` (default) interpolates the CSM breakout off redback's 300 nodes, as
+        redback does. ``False`` evaluates its closed form at the epochs, which is exact and was
+        this module's only behaviour up to whisper 0.1.0 (CHANGE 4).
 
     Returns
     -------
-    dict with ``time``, ``dense_times``, ``uniq_times``, ``gather_idx``, ``tb``.
+    dict with ``time``, ``dense_times``, ``uniq_times``, ``gather_idx``, ``tb``, and
+    ``csm_times`` when ``csm_interp``.
     """
     _require_x64("whisper_cbpf.models.jax.supernova")
     time_days = np.asarray(time_days, dtype=np.float64)
     if time_days.ndim != 1 or time_days.size == 0:
         raise ValueError(f"time_days must be a non-empty 1-D array, got shape {time_days.shape}")
-    dense_times = np.linspace(0.0, time_days[-1] + t_pad, dense_resolution)
+    dense_times = dense_grid(time_days, dense_resolution, t_pad, spacing)
     uniq_times, gather_idx, tb = build_interaction_grid(time_days, dense_times)
-    return dict(time=jnp.asarray(time_days), dense_times=jnp.asarray(dense_times),
+    grid = dict(time=jnp.asarray(time_days), dense_times=jnp.asarray(dense_times),
                 uniq_times=uniq_times, gather_idx=gather_idx, tb=tb)
+    if csm_interp:
+        grid["csm_times"] = jnp.asarray(_grid_nodes(*CSM_NODES, spacing))
+    return grid
+
+
+def warn_if_spin_down_unresolved(dense_times, p0, bp, mass_ns, theta_pb, convention="1.15",
+                                 limit=SPIN_DOWN_UNRESOLVED_LIMIT):
+    """Warn when the magnetar spin-down is too fast for the dense grid. Host-side NumPy.
+
+    Returns the fraction of ``E_rot`` released before the grid's first resolved node --
+    ``dense_times[0]``, or ``dense_times[1]`` when the grid starts at 0 -- and warns when it
+    exceeds ``limit``. ``basic_magnetar`` releases ``E(<t) = E_rot x/(1+x)`` with ``x = 2t/t_p``
+    (``"1.15"``) or ``t/t_p`` (``"1.12"``). No quadrature on the grid places that energy right:
+    redback 1.20's geometric grid never integrates ``[0, 1e-5 d]``, so it is lost (too FAINT: 45%
+    of ``E_rot`` delivered at ``t_p = 1.43 s``, 5.7% at 0.105 s), and the linear grid of redback
+    <= 1.15 draws one straight line from ``L(0)`` across its first cell, delivering ``~dt/t_p``
+    times ``E_rot`` (too BRIGHT). Matching redback does not make these curves right, so it is
+    said rather than refined away (CHANGE 1). Under ``jit`` the parameters are traced and there
+    is nothing to test.
+
+    **Where it runs: only in the supernova factory's host ``predict``** (``supernova_model`` /
+    ``register_supernova``), once per model -- the entry point the CPU samplers call. Nothing else
+    calls it: ``predict_jax``, which every GPU sampler runs, is traced; and the CPU redback adapter
+    (``register_redback("basic_magnetar_powered")``, ``"slsn"``, ...), which has the same limit
+    because it IS redback's grid, does not import this module. To check a GPU or a redback fit,
+    call it on the fitted parameters: ``warn_if_spin_down_unresolved(dense_grid(t_src_days),
+    p0, bp, mass_ns, theta_pb)``, with the source-frame days ``(t - t_exp) / (1 + z)``.
+    """
+    dense_times = np.asarray(dense_times, dtype=float)
+    t_first = dense_times[0] if dense_times[0] > 0 else dense_times[1]
+    tp = (1.3e5 * bp ** -2 * p0 ** 2 * (mass_ns / 1.4) ** 1.5
+          * max(abs(np.sin(theta_pb)), 1e-8) ** -2)             # basic_magnetar's, CHANGE 3
+    x = (2.0 if convention == "1.15" else 1.0) * t_first * DAY_TO_S / tp
+    frac = float(x / (1.0 + x))
+    if frac > limit:
+        warnings.warn(
+            f"magnetar spin-down unresolved: {100 * frac:.1f}% of E_rot is released before the "
+            f"dense grid's first resolved node ({t_first * DAY_TO_S:.3g} s; p0={p0:g}, bp={bp:g}, "
+            f"mass_ns={mass_ns:g}, theta_pb={theta_pb:g}). redback's grid mishandles that energy "
+            f"the same way -- lost on 1.20's geometric grid (too faint), smeared over the first "
+            f"cell on the linear one (too bright) -- so this light curve does not conserve E_rot.",
+            RuntimeWarning, stacklevel=2)
+    return frac
 
 
 def _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej):
@@ -164,8 +280,10 @@ def _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej):
     branch on a config flag, so it resolves at TRACE time and costs nothing at run time.
     """
     _require_x64("whisper_cbpf.models.jax.supernova")
+    # the observed-epoch path marks its geometric engine grid; key presence is static under jit
     return diffusion(grid['uniq_times'], grid['gather_idx'], grid['tb'],
-                     grid['dense_times'], dense_lbols, kappa, kappa_gamma, mej, vej)
+                     grid['dense_times'], dense_lbols, kappa, kappa_gamma, mej, vej,
+                     geometric='dense_is_geometric' in grid)
 
 
 # --- 1. ARNETT -----------------------------------------------------------------------------
@@ -184,21 +302,24 @@ def _diffuse(grid, dense_lbols, kappa, kappa_gamma, mej, vej):
 #                               + co56_lum*np.exp(-time/co56_life))
 #         return lbol
 #
-#     def arnett_bolometric(time, f_nickel, mej, **kwargs):
+#     def arnett_bolometric(time, f_nickel, mej, **kwargs):      # redback 1.20, :946
 #         _interaction_process = kwargs.get("interaction_process", ip.Diffusion)
 #         lbol = _nickelcobalt_engine(time=time, f_nickel=f_nickel, mej=mej)
 #         if _interaction_process is not None:
 #             dense_resolution = kwargs.get("dense_resolution", 1000)
-#             dense_times = np.linspace(0, time[-1]+100, dense_resolution)
+#             dense_times = np.geomspace(1e-5, time[-1]+100, dense_resolution)
 #             dense_lbols = _nickelcobalt_engine(time=dense_times, f_nickel=f_nickel, mej=mej)
 #             interaction_class = _interaction_process(time=time, dense_times=dense_times,
 #                                                      luminosity=dense_lbols, mej=mej, **kwargs)
 #             lbol = interaction_class.new_luminosity
 #         return lbol
 #
+# (redback <= 1.15 built ``np.linspace(0, time[-1]+100, dense_resolution)`` here; see
+# REDBACK_GRID_PRESETS.)
+#
 # CHANGES: CHANGE 1 (the grid) only. Nothing else moves -- two exponentials of a NEGATIVE
-# argument have nothing to overflow and nothing to cancel, and they are finite at t = 0, which
-# is where redback's dense grid starts. `if _interaction_process is not None` is Python
+# argument have nothing to overflow and nothing to cancel, and they are finite at t = 0, where
+# the linear grid of redback <= 1.15 starts. `if _interaction_process is not None` is Python
 # CONFIGURATION branching resolved at trace time, so the no-interaction variant is simply
 # `nickelcobalt_engine` called directly.
 
@@ -327,6 +448,44 @@ def shock_cooling_and_arnett_bolometric(grid, log10_mass, log10_radius, log10_en
     return lbol_1 + lbol_2
 
 
+# ADOPTED, STANDALONE (redback ``shock_cooling``). The same Piro engine, alone, with the
+# photosphere it computes: radius ``R_ph = (t_ph/t)^(2/(n-1)) vt t + [...]^(-1/(delta+1)) vt t`` and
+# ``T = (L / 4 pi sigma R^2)^(1/4)``, with no temperature floor, into a black body. redback fixes
+# kappa at 0.2 and takes ``nn``, ``delta`` from its prior (U(8, 12), U(1, 1.5)). Evaluated at the
+# epochs: nothing is diffused.
+#
+# This function is the engine above, which reproduces redback.
+
+@jax.jit
+def shock_cooling_model(grid, log10_mass, log10_radius, log10_energy, nn=10.0, delta=1.1):
+    """Piro+2021 shock cooling at ``grid['time']`` (days), with its own photosphere.
+
+    ``log10_mass`` (Msun), ``log10_radius`` (cm) and ``log10_energy`` (erg) of the extended
+    envelope; ``nn``, ``delta`` the outer and inner density slopes. kappa is 0.2 cm^2/g, as in
+    redback. Returns ``(lbol [erg/s], T [K], R_photosphere [cm])``.
+
+    References
+    ----------
+    Piro 2021.
+
+    Examples
+    --------
+    >>> import jax; jax.config.update("jax_enable_x64", True)
+    >>> import jax.numpy as jnp
+    >>> from whisper_cbpf.models.jax.supernova import shock_cooling_model
+    >>> t = jnp.array([0.2, 1.0, 5.0])
+    >>> L, T, R = shock_cooling_model({"time": t}, -1.0, 13.0, 47.0, 10.0, 1.1)
+    >>> bool(L[0] > L[1] > L[2] > 0), bool(jnp.all(T > 1e3))
+    (True, True)
+    """
+    lbol, r_photosphere, temperature, _ = shock_cooling(
+        grid["time"] * DAY_TO_S, 10.0 ** log10_mass, 10.0 ** log10_radius, 10.0 ** log10_energy,
+        nn, delta)
+    # Past ~13 td the luminosity underflows to exactly 0 and so does T; a black body at T = 0 is
+    # inf * 0 = NaN in the band integral, where redback's gives zero flux.
+    return lbol, jnp.maximum(temperature, _FLOOR), r_photosphere
+
+
 # --- 3. MAGNETAR-POWERED     and     4. SLSN -----------------------------------------------
 #
 # PHYSICS. A rapidly spinning, highly magnetised neutron star injects its rotational energy
@@ -362,13 +521,17 @@ def basic_magnetar(time_s, p0, bp, mass_ns, theta_pb, convention="1.15"):
     return 2. * erot / tp / (1. + 2. * time_s / tp) ** 2
 
 
-# ORIGINAL (supernova_models.py:735):
+# ORIGINAL (supernova_models.py:1444, redback 1.20):
 #     lbol = basic_magnetar(time=time*day_to_s, p0=p0, bp=bp, mass_ns=mass_ns, theta_pb=theta_pb)
-#     dense_times = np.linspace(0, time[-1]+100, dense_resolution)
+#     dense_times = np.geomspace(1e-5, time[-1]+100, dense_resolution)   # <= 1.15: linspace(0, ...)
 #     dense_lbols = basic_magnetar(time=dense_times*day_to_s, ...)
 #     interaction_class = _interaction_process(time=time, dense_times=dense_times,
 #                                              luminosity=dense_lbols, **kwargs)
 #     lbol = interaction_class.new_luminosity
+#
+# t_p spans decades inside the prior, and when it is shorter than the grid's first node neither
+# grid conserves E_rot: :func:`warn_if_spin_down_unresolved` says so. The linear grid was worse
+# by far -- the port delivered up to 2.3e5 E_rot and was up to 21 mag too bright against 1.20.
 #
 # ON slsn_bolometric. In redback it reads, in full (supernova_models.py:821):
 #     def slsn_bolometric(time, p0, bp, mass_ns, theta_pb, **kwargs):
@@ -448,9 +611,8 @@ def magnetar_nickel_bolometric(grid, f_nickel, mej, p0, bp, mass_ns, theta_pb,
 #     teff = (lbol/(4*np.pi*rphotosphere**2*cc.sigma_sb))**0.25
 #
 # CHANGES:
-#  1. CHANGE 4 -- evaluated at the observation times, not interpolated off a 300-node grid.
-#     See the module docstring for the measurement; the whole of this function is exactly
-#     what redback evaluates, only at the epochs that were asked for.
+#  1. CHANGE 4 -- none to this function: it is exactly what redback evaluates, at whatever
+#     times it is given. What redback does with it is in ``csm_shock_and_arnett_bolometric``.
 #  2. term3 is a power whose EXPONENT depends on the parameters and can be large and negative;
 #     the base is > 1 for beta < 1, so the result underflows to 0 rather than overflowing.
 #     Safe as written; the base is nonetheless floored against beta -> 1, where
@@ -510,7 +672,7 @@ def csm_shock_breakout(time_days, csm_mass, v_min, beta, kappa,
     return lbol, rphot, teff
 
 
-# ORIGINAL (supernova_models.py:1880):
+# ORIGINAL (supernova_models.py:2646, redback 1.20):
 #     nickel_lbol = arnett_bolometric(time=time, f_nickel=f_nickel, mej=mej,
 #                       interaction_process=ip.Diffusion, kappa=kappa, vej=v_min, **kwargs)
 #     sbo_output  = csm_shock_breakout_bolometric(time=time, v_min=v_min, beta=beta,
@@ -518,10 +680,23 @@ def csm_shock_breakout(time_days, csm_mass, v_min, beta, kappa,
 #                       shell_width_ratio=shell_width_ratio, **kwargs)
 #     lbol = nickel_lbol + sbo_output
 #
-# CHANGE: CHANGE 4 only. Note that redback passes ``vej=v_min`` to the Arnett term, so the
-# ejecta velocity used for DIFFUSION is the CSM minimum velocity and there is no separate
-# ``vej`` parameter in this model. Preserved -- and it is why ``csm_shock_and_arnett.prior``
-# names its velocity ``v_min`` while labelling it $v_{ej}$.
+# and csm_shock_breakout_bolometric (shock_powered_models.py:529) evaluates the closed form on
+# fixed nodes and interpolates:
+#     time_temp = get_optimal_time_array(1e-2, 200, 300)   # == np.geomspace(1e-2, 200, 300)
+#     func = interp1d(time_temp, outputs.lbol, fill_value='extrapolate')  # <= 1.15: linspace
+#
+# CHANGE 4: the interpolation is redback's and is reproduced (``grid['csm_times']``), because it
+# is not small: against the closed form it moves the curve by up to 0.12 mag at t >= 1 d and
+# 0.42 mag at t < 1 d. ``build_sn_grid(..., csm_interp=False)`` evaluates the closed form at the
+# epochs instead, which is exact. OUTSIDE the nodes, [0.01 d, 200 d], the closed form is used
+# either way: redback extrapolates linearly there, and past 200 d that goes NEGATIVE (from
+# 201.09 d; reported upstream) where the light curve decays
+# exponentially.
+#
+# Note also that redback passes ``vej=v_min`` to the Arnett term, so the ejecta velocity used
+# for DIFFUSION is the CSM minimum velocity and there is no separate ``vej`` parameter in this
+# model. Preserved -- and it is why ``csm_shock_and_arnett.prior`` names its velocity ``v_min``
+# while labelling it $v_{ej}$.
 
 @jax.jit
 def csm_shock_and_arnett_bolometric(grid, mej, f_nickel, csm_mass, v_min, beta,
@@ -530,6 +705,12 @@ def csm_shock_and_arnett_bolometric(grid, mej, f_nickel, csm_mass, v_min, beta,
     nickel_lbol = arnett_bolometric(grid, f_nickel, mej, kappa, kappa_gamma, v_min)
     sbo, _, _ = csm_shock_breakout(grid['time'], csm_mass, v_min, beta, kappa,
                                    shell_radius, shell_width_ratio)
+    if "csm_times" in grid:                   # static: the grid's structure, not its values
+        nodes = grid["csm_times"]
+        on_nodes, _, _ = csm_shock_breakout(nodes, csm_mass, v_min, beta, kappa,
+                                            shell_radius, shell_width_ratio)
+        inside = (grid["time"] >= nodes[0]) & (grid["time"] <= nodes[-1])
+        sbo = jnp.where(inside, jnp.interp(grid["time"], nodes, on_nodes), sbo)
     return nickel_lbol + sbo
 
 
@@ -546,12 +727,14 @@ def csm_shock_and_arnett_bolometric(grid, mej, f_nickel, csm_mass, v_min, beta,
 #         total = a_1*(1 - np.exp(-time/tpeak))**alpha_1 * (time/tpeak)**(-alpha_2)
 #         return total
 #
-# CHANGE 3, and this one has a MEASURED consequence rather than a hypothetical one. redback's
-# dense grid starts at exactly t = 0 (CHANGE 1), where this engine is
-# ``0**alpha_1 * inf**alpha_2`` = NaN -- verified: 1 non-finite entry at index 0 of
-# ``linspace(0, 300, 1000)``. That NaN then propagates through ``interp1d`` to every quadrature
-# node in the FIRST dense interval, and ``ip.Diffusion``'s ``int_args[np.isnan(int_args)] = 0.``
-# zeroes the integrand there. So redback's effective engine is "0 on [0, dt), the formula
+# CHANGE 3, and on the LINEAR grid of redback <= 1.15 it has a MEASURED consequence. (On redback
+# 1.20's geometric grid, the default, there is none: its first node is 1e-5 d, where the formula
+# is finite, both codes evaluate it there, and they agree exactly -- and a divergent integral is
+# then cut off at 1e-5 d by both.) The linear dense grid starts at exactly t = 0 (CHANGE 1),
+# where this engine is ``0**alpha_1 * inf**alpha_2`` = NaN -- verified: 1 non-finite entry at
+# index 0 of ``linspace(0, 300, 1000)``. That NaN then propagates through ``interp1d`` to every
+# quadrature node in the FIRST dense interval, and ``ip.Diffusion``'s
+# ``int_args[np.isnan(int_args)] = 0.`` zeroes the integrand there. So redback's effective engine is "0 on [0, dt), the formula
 # after", where dt = (t_last + 100)/999 ~ 0.3 d.
 #
 # This module cannot use a NaN for that: a NaN in the forward pass poisons the gradient through
@@ -584,8 +767,8 @@ def csm_shock_and_arnett_bolometric(grid, mej, f_nickel, csm_mass, v_min, beta,
 #
 # ``sn_exponential_powerlaw.prior`` draws BOTH exponents from ``Uniform(0, 10)`` independently,
 # so that condition fails on ~32% of draws, and on those draws the integral simply does not
-# exist. MEASURED over 400 prior draws (``_scratch/sn_07_exppl_prior.py``), peak-normalised
-# difference from redback:
+# exist. MEASURED on the linear grid over 400 prior draws (``_scratch/sn_07_exppl_prior.py``),
+# peak-normalised difference from redback:
 #
 #     n_dense    median      p90       p99       max     > 1% of peak
 #       1000    3.5e-01   5.7e-01   6.2e-01   6.5e-01       74.5%
@@ -628,8 +811,9 @@ def exponential_powerlaw_integrable(alpha_1, alpha_2):
     The engine goes as ``(t/tpeak)**(alpha_1 - alpha_2)`` at the origin, so the diffusion
     integrand ``L(t') t'`` goes as ``t'**(alpha_1 - alpha_2 + 1)`` and the integral converges
     exactly when ``alpha_2 - alpha_1 < 2``. Outside that, no quadrature has a limit to converge
-    to: redback truncates the divergence at its first dense node and this module ramps to it,
-    and both answers move with the grid rather than with the parameters.
+    to: both codes truncate the divergence at the first dense node (1e-5 d on redback 1.20's
+    grid; on the linear grid of <= 1.15 this module ramps to it instead), and the answer moves
+    with the grid rather than with the parameters.
 
     redback's ``sn_exponential_powerlaw.prior`` draws both exponents from ``Uniform(0, 10)``
     independently, so this fails on ~32% of it -- measured 74.5% of draws disagreeing with
@@ -956,7 +1140,7 @@ def sn_flux_density(grid, lbol, vej, temperature_floor, nu_obs_hz, redshift, dl_
                     line_duration=25.0, line_amplitude=0.3,
                     pp=3.0, nu_max=1e9, source_radius=1e13, f0=1e-26,
                     dilation=True, ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None,
-                    r_v_mw=3.1, r_v_host=3.1, law='f99'):
+                    r_v_mw=3.1, r_v_host=3.1, law='f99', phot=None):
     """Flux density in mJy from a bolometric light curve. ``nu_obs_hz`` OBSERVER frame.
 
     ``grid['time']`` must already be the SOURCE-frame epochs (redback's
@@ -969,8 +1153,11 @@ def sn_flux_density(grid, lbol, vej, temperature_floor, nu_obs_hz, redshift, dl_
     alone: dust attenuates whatever reaches it, line and synchrotron included. redback applies
     none here at all (its extinction lives in a separate wrapper model), so this only matters
     if you ask for it.
+
+    ``phot`` is a model's own photosphere ``(T [K], R [cm])`` at the epochs: when given, ``vej`` and
+    ``temperature_floor`` are not read (pass ``None``).
     """
-    temp, rad = photosphere(grid, lbol, vej, temperature_floor)
+    temp, rad = photosphere(grid, lbol, vej, temperature_floor) if phot is None else phot
     out = flux_density_mjy(temp, rad, nu_obs_hz, redshift, dl_cm, dilation=dilation)
     lam_obs = 2.99792458e18 / jnp.asarray(nu_obs_hz)          # c in Angstrom/s, one literal
 
@@ -1008,7 +1195,7 @@ def sn_ab_magnitude(grid, lbol, vej, temperature_floor, band_idx, weights, norms
                     pp=3.0, nu_max=1e9, source_radius=1e13, f0=1e-26,
                     mag_floor=40.0, dilation=True,
                     ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None,
-                    r_v_mw=3.1, r_v_host=3.1, law='f99'):
+                    r_v_mw=3.1, r_v_host=3.1, law='f99', phot=None):
     """AB magnitude per observation from a bolometric light curve.
 
     ``weights, norms`` come from :func:`kilonova.ab_weights`; ``lam_obs_ang`` is its grid.
@@ -1019,8 +1206,12 @@ def sn_ab_magnitude(grid, lbol, vej, temperature_floor, band_idx, weights, norms
     The three non-blackbody SEDs enter as three factors on ONE band integral -- a per-epoch
     renormalisation, a per-wavelength shape, and an additive per-band term -- rather than as
     three separate spectrum evaluations. See the SED-layer block above for why that is exact.
+
+    ``phot`` is a model's own photosphere ``(T [K], R [cm])`` at the epochs, for the models whose
+    photosphere is not the temperature-floor one: ``vej`` and ``temperature_floor`` are then not
+    read (pass ``None``).
     """
-    temp, rad = photosphere(grid, lbol, vej, temperature_floor)
+    temp, rad = photosphere(grid, lbol, vej, temperature_floor) if phot is None else phot
     ext = dict(ebv_mw=ebv_mw, ebv_host=ebv_host, xi_mw=xi_mw, xi_host=xi_host,
                r_v_mw=r_v_mw, r_v_host=r_v_host, law=law)
 
@@ -1041,8 +1232,10 @@ def sn_ab_magnitude(grid, lbol, vej, temperature_floor, band_idx, weights, norms
     if sed_kind == "blackbody_synchrotron":
         syn = synchrotron_f_nu(nu_src, pp, nu_max, source_radius, f0, dl_cm) * INV_AB_ZEROPOINT
         f_ab = f_ab + (syn * (1.0 + redshift) if dilation else syn)
+        f_ab = jax.lax.optimization_barrier(f_ab)         # as below, for the sum with the Planck array
         num = jnp.sum(f_ab * w[band_idx], axis=1)
     else:
+        f_ab = jax.lax.optimization_barrier(f_ab)         # keep the Planck array out of the reduce
         w_cut = w * cutoff_shape(lam_obs_ang, redshift, cutoff_wavelength)[None, :]
         num = (jnp.sum(f_ab * w_cut[band_idx], axis=1)
                * cutoff_norm(lbol, temp, rad, cutoff_wavelength))
@@ -1097,6 +1290,13 @@ _ENGINE_ARGS = {
     "general_magnetar_slsn": ("l0", "tsd", "nn", "kappa", "kappa_gamma", "mej", "vej"),
     "type_1a": ("f_nickel", "mej", "kappa", "kappa_gamma", "vej"),
     "type_1c": ("f_nickel", "mej", "kappa", "kappa_gamma", "vej"),
+    "csm_interaction": ("mej", "csm_mass", "vej", "eta", "rho", "kappa", "r0", "nn", "delta",
+                        "efficiency"),
+    "shock_cooling": ("log10_mass", "log10_radius", "log10_energy", "nn", "delta"),
+    "shocked_cocoon": ("mej", "vej", "eta", "tshock", "shocked_fraction", "cos_theta_cocoon",
+                       "kappa"),
+    "general_magnetar_driven": ("mej", "E_sn", "kappa", "l0", "tau_sd", "nn", "kappa_gamma",
+                                "f_nickel", "temperature_floor"),
 }
 
 _PHOTOMETRY_ONLY = {
@@ -1104,6 +1304,17 @@ _PHOTOMETRY_ONLY = {
     "type_1a": ("line_wavelength", "line_width", "line_time", "line_duration",
                 "line_amplitude", "cutoff_wavelength"),
     "type_1c": ("pp", "nu_max", "source_radius", "f0"),
+    "general_magnetar_driven": ("cutoff_wavelength",),
+}
+
+#: Engine settings ``supernova_model(engine_options=)`` can change, per model. Static under jit.
+#: ``csm_diffusion_method``: ``"cumulative"`` (redback 1.20's) or ``"quadrature"`` (its legacy
+#: integral); ``dense_resolution`` the engine nodes. ``solver``: ``"auto"``, ``"diffrax"``,
+#: ``"rk4"`` or ``"euler"``, with ``n_grid``, ``rtol``, ``atol``, ``max_steps``
+#: (:mod:`whisper_cbpf.models.jax.magnetar_ode`).
+_ENGINE_OPTIONS = {
+    "csm_interaction": ("csm_diffusion_method", "dense_resolution"),
+    "general_magnetar_driven": ("solver", "n_grid", "rtol", "atol", "max_steps"),
 }
 
 MODELS = {
@@ -1159,22 +1370,56 @@ MODELS = {
         prior="type_1c",
         params=("f_nickel", "mej", "vej", "kappa", "kappa_gamma", "temperature_floor", "pp")),
 }
-for _name, _spec in MODELS.items():
+
+#: The four models adapted from redback-jax and redback, in their own table so that the twelve
+#: above keep the one shape every consumer of :data:`MODELS` assumes (an ejecta ``vej`` and a
+#: ``temperature_floor`` among the parameters, an engine that returns a luminosity). Everything
+#: that dispatches on a name (:func:`model_names`, :func:`bolometric`, :func:`ab_magnitude_of`,
+#: ``supernova_model``) reads :data:`ALL_MODELS`. ``at_epochs``: the engine is evaluated at the
+#: epochs themselves (its own grid, or none), so the fixed diffusion epochs and ``spacing`` do not
+#: apply. ``photosphere="model"``: it also returns ``(lbol, T, R_photosphere)``, and no temperature
+#: floor or ``vej`` is read.
+ADOPTED_MODELS = {
+    "csm_interaction": dict(
+        engine=csm_interaction_bolometric, sed="blackbody", vej_name="vej", prior="csm_interaction",
+        at_epochs=True,
+        params=("mej", "csm_mass", "vej", "eta", "rho", "r0", "kappa", "temperature_floor")),
+    "shock_cooling": dict(
+        engine=shock_cooling_model, sed="blackbody", vej_name=None, photosphere="model",
+        prior="shock_cooling",
+        params=("log10_mass", "log10_radius", "log10_energy", "nn", "delta")),
+    "shocked_cocoon": dict(
+        engine=shocked_cocoon_model, sed="blackbody", vej_name=None, photosphere="model",
+        prior="shocked_cocoon",
+        params=("mej", "vej", "eta", "tshock", "shocked_fraction", "cos_theta_cocoon", "kappa")),
+    "general_magnetar_driven": dict(
+        engine=general_magnetar_driven_model, sed="cutoff", vej_name=None, photosphere="model",
+        prior="general_magnetar_driven_supernova",
+        params=("l0", "tau_sd", "nn", "f_nickel", "mej", "E_sn", "kappa", "kappa_gamma",
+                "temperature_floor")),
+}
+ALL_MODELS = {**MODELS, **ADOPTED_MODELS}
+for _name, _spec in ALL_MODELS.items():
     _spec["engine_params"] = _ENGINE_ARGS[_name]
     _spec["sed_params"] = _PHOTOMETRY_ONLY.get(_name, ())
+    _spec.setdefault("photosphere", "floor")
+    _spec.setdefault("at_epochs", _spec["photosphere"] == "model")
+    _spec["options"] = _ENGINE_OPTIONS.get(_name, ())
 
 #: ``model -> full free-parameter tuple``, redback's own order.
-PARAMETERS = {k: v["params"] for k, v in MODELS.items()}
+PARAMETERS = {k: v["params"] for k, v in ALL_MODELS.items()}
 
 
 def model_names():
-    """The eleven (twelve, counting ``slsn`` and ``basic_magnetar_powered`` separately) names."""
-    return sorted(MODELS)
+    """Every name :func:`bolometric` and ``supernova_model`` accept: the twelve of :data:`MODELS`
+    (eleven engines, counting ``slsn`` and ``basic_magnetar_powered`` separately) and the four of
+    :data:`ADOPTED_MODELS`."""
+    return sorted(ALL_MODELS)
 
 
 def _spec(model):
     try:
-        return MODELS[model]
+        return ALL_MODELS[model]
     except KeyError:
         raise KeyError(f"unknown supernova model {model!r}. Known: {model_names()}") from None
 
@@ -1183,52 +1428,363 @@ _MAGNETAR_ENGINES = (basic_magnetar_powered_bolometric, magnetar_nickel_bolometr
 _FALLBACK_ENGINES = (sn_fallback_bolometric, sn_nickel_fallback_bolometric)
 
 
-def _engine_kwargs(spec, params, magnetar_convention, interaction):
+def check_engine_options(model, engine_options):
+    """``engine_options`` as a dict, after checking every name is one ``model``'s engine takes."""
+    options = dict(engine_options or {})
+    unknown = sorted(set(options) - set(_spec(model)["options"]))
+    if unknown:
+        raise ValueError(f"engine_options {unknown} are not settings of {model!r}; it takes "
+                         f"{list(_spec(model)['options']) or 'none'}")
+    return options
+
+
+def _engine_kwargs(spec, params, magnetar_convention, interaction, engine_options=None):
     kw = {}
     for name in spec["engine_params"]:
-        if name in ("nn", "delta") and name not in params:
-            continue                     # shock_cooling's configuration defaults
+        if name in ("nn", "delta", "efficiency") and name not in params:
+            continue                     # the engine's own defaults (shock_cooling, csm_interaction)
         kw[name] = params[name]
     if spec["engine"] in _MAGNETAR_ENGINES:
         kw["magnetar_convention"] = magnetar_convention      # CHANGE 5
     if spec["engine"] in _FALLBACK_ENGINES:
         kw["interaction"] = interaction                      # CHANGE 7b
+    for name, value in (engine_options or {}).items():
+        if name in spec["options"]:
+            kw[name] = value
     return kw
 
 
-def bolometric(model, grid, params, *, magnetar_convention="1.15", interaction=True):
+def _lbol_and_phot(model, grid, params, magnetar_convention, interaction, engine_options):
+    """``(lbol, (T, R) or None)``: the temperature-floor models return ``None`` for the photosphere."""
+    spec = _spec(model)
+    out = spec["engine"](grid, **_engine_kwargs(spec, params, magnetar_convention, interaction,
+                                                engine_options))
+    if spec["photosphere"] == "model":
+        return out[0], (out[1], out[2])
+    return out, None
+
+
+def _floor_inputs(spec, params):
+    """``(vej, temperature_floor)`` of the temperature-floor photosphere, ``(None, None)`` for a model's own."""
+    if spec["photosphere"] == "model":
+        return None, None
+    return params[spec["vej_name"]], params["temperature_floor"]
+
+
+def bolometric(model, grid, params, *, magnetar_convention="1.15", interaction=True,
+               engine_options=None):
     """Bolometric luminosity in erg/s for any model in the family. ``model`` is static.
 
     ``magnetar_convention`` (CHANGE 5) and ``interaction`` (CHANGE 7b) are the two places
     where reproducing redback and believing redback part company. Both are accepted by every
     model and ignored by the ones they do not apply to, so a caller can set them once.
+    ``engine_options`` are the per-model settings in :data:`_ENGINE_OPTIONS`.
     """
-    spec = _spec(model)
-    return spec["engine"](grid, **_engine_kwargs(spec, params, magnetar_convention,
-                                                 interaction))
+    return _lbol_and_phot(model, grid, params, magnetar_convention, interaction,
+                          engine_options)[0]
 
 
 def flux_density(model, grid, params, nu_obs_hz, redshift, dl_cm, *,
-                 magnetar_convention="1.15", interaction=True, **kw):
+                 magnetar_convention="1.15", interaction=True, engine_options=None, **kw):
     """Flux density in mJy for any model in the family. ``model`` is static."""
     spec = _spec(model)
-    lbol = bolometric(model, grid, params, magnetar_convention=magnetar_convention,
-                      interaction=interaction)
+    lbol, phot = _lbol_and_phot(model, grid, params, magnetar_convention, interaction,
+                                engine_options)
     sed_kw = {p: params[p] for p in spec["sed_params"] if p in params}
-    return sn_flux_density(grid, lbol, params[spec["vej_name"]], params["temperature_floor"],
-                           nu_obs_hz, redshift, dl_cm, sed_kind=spec["sed"], **sed_kw, **kw)
+    return sn_flux_density(grid, lbol, *_floor_inputs(spec, params),
+                           nu_obs_hz, redshift, dl_cm, sed_kind=spec["sed"], phot=phot,
+                           **sed_kw, **kw)
 
 
 def ab_magnitude_of(model, grid, params, band_idx, weights, norms, lam_obs_ang,
-                    redshift, dl_cm, *, magnetar_convention="1.15", interaction=True, **kw):
+                    redshift, dl_cm, *, magnetar_convention="1.15", interaction=True,
+                    engine_options=None, **kw):
     """AB magnitude per observation for any model in the family. ``model`` is static."""
     spec = _spec(model)
-    lbol = bolometric(model, grid, params, magnetar_convention=magnetar_convention,
-                      interaction=interaction)
+    lbol, phot = _lbol_and_phot(model, grid, params, magnetar_convention, interaction,
+                                engine_options)
     sed_kw = {p: params[p] for p in spec["sed_params"] if p in params}
-    return sn_ab_magnitude(grid, lbol, params[spec["vej_name"]], params["temperature_floor"],
+    return sn_ab_magnitude(grid, lbol, *_floor_inputs(spec, params),
                            band_idx, weights, norms, lam_obs_ang, redshift, dl_cm,
-                           sed_kind=spec["sed"], **sed_kw, **kw)
+                           sed_kind=spec["sed"], phot=phot, **sed_kw, **kw)
+
+
+# --- the observed-epoch path: a fixed-resolution grid, the SED at the observations only -----
+#
+# WHY. :func:`build_sn_grid` sizes the diffusion grid from the observation epochs, so the epochs
+# are a constant of the compilation: an explosion time or a redshift that moves them cannot be
+# traced (the factory raised "predict_jax needs CONCRETE times"). Here the diffusion integral runs
+# on a FIXED set of source-frame epochs, spaced evenly in log t (30 to a decade) from
+# ``first_epoch`` to ``max_phase_days``, and ONLY the diffused bolometric luminosity is interpolated to each
+# observation's source-frame epoch ``tau = (t - t_exp) / (1 + z)``, which may be traced. The
+# photosphere and the SED are then evaluated at the observations and nowhere else, exactly as
+# :func:`ab_magnitude_of` does on redback's grid. Two measured alternatives it
+# replaces: interpolating MAGNITUDES off a grid of SEDs spent 85 % of an evaluation on SEDs at
+# epochs nobody observed (S1) and was off by 0.05 mag at a shock-cooling peak (S3).
+#
+# REDBACK'S DISCRETISATION IS KEPT, BECAUSE IT IS NOT SMALL. redback's ``Diffusion`` spreads its
+# quadrature nodes over ``[1e-5, time[-1] + 100]`` d and samples the engine on 1000 points of
+# that span, so its answer at one epoch moves with the LAST epoch of the light curve. Measured
+# against redback on 200 prior draws per family: spreading the nodes over the fixed
+# grid's own span instead was off by up to 2.0 mag (magnetar; 5e-3 to 9e-3 mag for the others),
+# and a 300-point engine grid by up to 8e-3 mag. So the engine grid is
+# redback's, ``geomspace(1e-5, max(tau) + 100, 1000)``, built INSIDE the trace from the traced
+# epochs -- the engines are closed-form, so this costs one engine evaluation per point, not a
+# data-dependent shape -- and only the epochs the integral is evaluated at are fixed.
+#
+# WHAT IS INTERPOLATED, AND WHAT IS NOT. Terms redback never diffuses are evaluated in closed
+# form at ``tau`` itself: the Piro shock-cooling term of ``shock_cooling_and_arnett`` (its fast
+# early peak is what a grid misses, S16), the CSM breakout of ``csm_shock_and_arnett`` (on
+# redback's own fixed nodes, as :func:`build_sn_grid` does), and the fallback engines with
+# ``interaction=False``. Only the diffused part -- a convolution, and therefore smooth -- goes
+# through the epochs, as ``ln L`` against ``ln t`` with a cubic (Catmull-Rom) through four
+# neighbouring epochs.
+#
+# PRE-EXPLOSION. An epoch with ``tau <= 0`` returns ``mag_floor`` (zero flux). redback has no such
+# branch (its ``Diffusion`` gathers the first epoch's luminosity for any earlier time), and a
+# fitted explosion time needs one: an upper limit before the explosion must see no flux. Epochs
+# between 0 and the first grid epoch hold that epoch's diffused luminosity (0.01 d by default,
+# where a diffused light curve is ~(0.01 d / t_diff)^2, i.e. 1e-6 to 1e-4, of its peak).
+
+#: Defaults of the fixed epochs (:func:`build_fixed_grid`), chosen against redback on
+#: 200 prior draws per family (arnett, magnetar, shock cooling, CSM, type
+#: Ia, type Ic; ZTF and LSST epochs): the worst case, the magnetar, is 2.6e-3 mag from redback at
+#: 24 epochs per decade, 8.8e-4 at 30 and 2.8e-4 at 36 (p95 <= 7e-5 at 30).
+FIXED_GRID_EPOCHS_PER_DECADE = 30
+FIXED_GRID_FIRST = 1e-2
+#: Epochs the grid runs past ``max_phase_days``, so the cubic's upper neighbours of the last
+#: observation are real epochs, not the padded end (which cost up to 1.9e-3 mag in the gate).
+FIXED_GRID_MARGIN_EPOCHS = 3
+#: Source-frame days since explosion the fixed epochs cover when nothing sizes them
+#: (``supernova_model(max_phase_days=)``, or ``times=`` with the priors' bounds).
+DEFAULT_MAX_PHASE_DAYS = 200.0
+
+
+class FixedGrid:
+    """The fixed epochs of the observed-epoch path, and how to build the rest in the trace.
+
+    Built by :func:`build_fixed_grid`; read by :func:`bolometric_at` and :func:`ab_magnitude_at`.
+    ``arrays`` holds what :func:`diffusion` needs about the epochs (``time``, ``uniq_times``,
+    ``gather_idx``, ``tb``, and ``csm_times``), all independent of the observations; the engine's
+    dense grid is rebuilt per call from ``dense_resolution``, ``spacing`` and ``t_pad`` (see the
+    block above). Plain data, so it pickles.
+    """
+
+    def __init__(self, arrays, *, max_phase_days, first_epoch, dense_resolution, spacing, t_pad):
+        self.arrays = arrays
+        epochs = np.asarray(arrays["time"])
+        self.max_phase_days = float(max_phase_days)
+        self.first_epoch = float(epochs[0])
+        self.n_epochs = int(epochs.size)
+        self.dense_resolution = int(dense_resolution)
+        self.spacing = str(spacing)
+        self.t_pad = float(t_pad)
+        self.ln_t0 = float(np.log(epochs[0]))
+        self.ln_step = float(np.log(epochs[-1] / epochs[0]) / (self.n_epochs - 1))
+
+    def __repr__(self):
+        return (f"FixedGrid({self.n_epochs} epochs, {self.first_epoch:g}-{self.max_phase_days:g} d "
+                f"source frame, engine grid {self.dense_resolution} points, {self.spacing})")
+
+    def dense_times(self, t_last):
+        """redback's engine grid for observations ending at source-frame day ``t_last``. Traced.
+
+        ``geomspace(1e-5, t_last + t_pad, n)`` (``linspace(0, ...)`` for ``spacing="linear"``),
+        as ``ip.Diffusion`` builds it from ``time[-1]``. The end is kept at least two and a half
+        epochs past ``t_last``, so the cubic's upper neighbours are always inside it.
+        """
+        top = jnp.maximum(t_last + self.t_pad, t_last * np.exp(2.5 * self.ln_step))
+        if self.spacing == "linear":
+            return jnp.linspace(0.0, 1.0, self.dense_resolution) * top
+        u = jnp.linspace(0.0, 1.0, self.dense_resolution)
+        dense = jnp.exp(np.log(GRID_START) + u * (jnp.log(top) - np.log(GRID_START)))
+        return dense.at[0].set(GRID_START).at[-1].set(top)
+
+
+def build_fixed_grid(max_phase_days=DEFAULT_MAX_PHASE_DAYS,
+                     epochs_per_decade=FIXED_GRID_EPOCHS_PER_DECADE,
+                     dense_resolution=DENSE_RESOLUTION, first_epoch=FIXED_GRID_FIRST,
+                     t_pad=TIME_PAD, spacing="geometric", csm_interp=True):
+    """The fixed epochs of the observed-epoch path. Setup-time NumPy; build once.
+
+    Source-frame epochs from ``first_epoch`` to at least ``FIXED_GRID_MARGIN_EPOCHS`` epochs past
+    ``max_phase_days`` (days since explosion), ``epochs_per_decade`` to a decade of time, at which
+    the diffusion integral is evaluated. Nothing here depends on the observations, so one compiled
+    model serves any explosion time, redshift or light curve whose epochs stay inside
+    ``max_phase_days``.
+
+    Parameters
+    ----------
+    max_phase_days : float
+        The latest source-frame day since explosion a call may ask for. :func:`ab_magnitude_at`
+        holds the last epoch's luminosity beyond the grid, so size it to the data: the model
+        factory checks every concrete call against it.
+    epochs_per_decade : float
+        Resolution (default 30): 134 epochs to 200 d. The cost of an evaluation is about
+        proportional to the number of epochs.
+    dense_resolution : int
+        Points of the engine grid built per call (default redback's 1000; see the block above
+        for why fewer is not redback's answer).
+    first_epoch : float
+        First epoch, days (default 0.01).
+    t_pad, spacing, csm_interp :
+        As :func:`build_sn_grid`.
+
+    Returns
+    -------
+    FixedGrid
+
+    Examples
+    --------
+    >>> import jax; jax.config.update("jax_enable_x64", True)
+    >>> from whisper_cbpf.models.jax import supernova as sn
+    >>> g = sn.build_fixed_grid(60.0)
+    >>> g.n_epochs, round(float(g.arrays["time"][-1]), 1)
+    (118, 79.4)
+    """
+    if not (max_phase_days > first_epoch > 0):
+        raise ValueError(f"need max_phase_days > first_epoch > 0, got max_phase_days="
+                         f"{max_phase_days!r}, first_epoch={first_epoch!r}")
+    if not epochs_per_decade > 0:
+        raise ValueError(f"epochs_per_decade must be positive, got {epochs_per_decade!r}")
+    step = 1.0 / float(epochs_per_decade)                           # decades per epoch
+    n_in = int(np.ceil(np.log10(max_phase_days / first_epoch) / step))
+    n_epochs = max(n_in + 1 + FIXED_GRID_MARGIN_EPOCHS, 4)          # a cubic needs four
+    epochs = first_epoch * 10.0 ** (step * np.arange(n_epochs))
+    arrays = build_sn_grid(epochs, int(dense_resolution), t_pad, spacing, csm_interp)
+    del arrays["dense_times"]                  # rebuilt per call from the observations' last epoch
+    return FixedGrid(arrays, max_phase_days=max_phase_days, first_epoch=first_epoch,
+                     dense_resolution=dense_resolution, spacing=spacing, t_pad=t_pad)
+
+
+def _loglog_cubic(ln_t, fixed, ln_l):
+    """Catmull-Rom cubic of ``ln_l`` (on the log-even epochs of ``fixed``) at ``ln_t``. Traced.
+
+    The epochs are evenly spaced in ``ln t``, so the segment is found by arithmetic rather than a
+    search. The two ends are padded by linear extrapolation, so the first and last segments are
+    cubics too; outside the grid the value is held at the edge (the caller keeps ``tau`` inside).
+    """
+    n = ln_l.shape[0]
+    pad = jnp.concatenate([2.0 * ln_l[:1] - ln_l[1:2], ln_l, 2.0 * ln_l[-1:] - ln_l[-2:-1]])
+    s = jnp.clip((ln_t - fixed.ln_t0) / fixed.ln_step, 0.0, n - 1.0)
+    i = jnp.clip(jnp.floor(s), 0, n - 2).astype(jnp.int32)
+    u = s - i
+    p0, p1, p2, p3 = pad[i], pad[i + 1], pad[i + 2], pad[i + 3]
+    return p1 + 0.5 * u * ((p2 - p0) + u * ((2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3)
+                                            + u * (3.0 * (p1 - p2) + p3 - p0)))
+
+
+def _split_bolometric(model, grid, tau, params, magnetar_convention, interaction,
+                      engine_options=None):
+    """``(diffused on grid['time'] or None, direct at tau)``: redback's bolometric, split.
+
+    The diffused part is what goes through :func:`diffusion` and is interpolated; the direct part
+    is the terms redback adds WITHOUT diffusing, evaluated at ``tau`` exactly. Their sum is
+    :func:`bolometric`, term for term. A model evaluated at the epochs (``at_epochs``) is all
+    direct: its engine is evaluated at ``tau`` itself.
+    """
+    p = params
+    if _spec(model)["at_epochs"]:
+        return None, bolometric(model, {"time": tau}, p, engine_options=engine_options)
+    if model == "shock_cooling_and_arnett":
+        direct = shock_cooling(tau * DAY_TO_S, 10.0 ** p["log10_mass"], 10.0 ** p["log10_radius"],
+                               10.0 ** p["log10_energy"], p.get("nn", 10.0),
+                               p.get("delta", 1.1))[0]
+        return arnett_bolometric(grid, p["f_nickel"], p["mej"], p["kappa"], p["kappa_gamma"],
+                                 p["vej"]), direct
+    if model == "csm_shock_and_arnett":
+        args = (p["csm_mass"], p["v_min"], p["beta"], p["kappa"], p["shell_radius"],
+                p["shell_width_ratio"])
+        direct, _, _ = csm_shock_breakout(tau, *args)
+        if "csm_times" in grid:                   # redback's interpolation, as the data grid does
+            nodes = grid["csm_times"]
+            on_nodes, _, _ = csm_shock_breakout(nodes, *args)
+            inside = (tau >= nodes[0]) & (tau <= nodes[-1])
+            direct = jnp.where(inside, jnp.interp(tau, nodes, on_nodes), direct)
+        return arnett_bolometric(grid, p["f_nickel"], p["mej"], p["kappa"], p["kappa_gamma"],
+                                 p["v_min"]), direct
+    if model in ("sn_fallback", "sn_nickel_fallback") and not interaction:
+        direct = fallback_lbol(tau, p["logl1"], p["tr"])
+        if model == "sn_nickel_fallback":
+            direct = direct + nickelcobalt_engine(tau, p["f_nickel"], p["mej"])
+        return None, direct
+    return bolometric(model, grid, p, magnetar_convention=magnetar_convention,
+                      interaction=interaction, engine_options=engine_options), 0.0
+
+
+def bolometric_at(model, fixed, tau_days, params, *, t_last=None, magnetar_convention="1.15",
+                  interaction=True, engine_options=None):
+    """Bolometric luminosity [erg/s] at source-frame days ``tau_days``, on fixed epochs. Traced.
+
+    ``fixed`` is :func:`build_fixed_grid`'s. ``tau_days`` may be traced (a fitted explosion time
+    or redshift moves it); keep it positive -- :func:`ab_magnitude_at` masks the rest. ``t_last``
+    (default ``max(tau_days)``) is the last observed epoch, from which redback's engine grid is
+    built (see the block above).
+    """
+    tau = jnp.asarray(tau_days)
+    t_last = jnp.max(tau) if t_last is None else t_last
+    grid = dict(fixed.arrays, dense_times=fixed.dense_times(jnp.maximum(t_last,
+                                                                         fixed.first_epoch)))
+    if fixed.spacing == "geometric":
+        grid["dense_is_geometric"] = 1.0       # a flag: the diffusion's lookup by arithmetic
+    diffused, direct = _split_bolometric(model, grid, tau, params, magnetar_convention,
+                                         interaction, engine_options)
+    if diffused is None:
+        return direct
+    ln_l = jnp.log(jnp.maximum(diffused, 1e-30))
+    ln_t = jnp.log(jnp.maximum(tau, fixed.first_epoch))
+    return jnp.exp(_loglog_cubic(ln_t, fixed, ln_l)) + direct
+
+
+def ab_magnitude_at(model, fixed, tau_days, params, band_idx, weights, norms, lam_obs_ang,
+                    redshift, dl_cm, *, magnetar_convention="1.15", interaction=True,
+                    engine_options=None, mag_floor=40.0, **kw):
+    """AB magnitude per observation at source-frame days ``tau_days``, on fixed epochs. Traced.
+
+    The observed-epoch counterpart of :func:`ab_magnitude_of`: the diffusion integral runs on the
+    fixed epochs of ``fixed`` (:func:`build_fixed_grid`), the diffused luminosity is interpolated
+    to ``tau_days``, and the photosphere and the SED are evaluated at ``tau_days`` only.
+    ``tau_days``, ``redshift`` and ``dl_cm`` may all be traced, so an explosion time and a
+    redshift can be fitted under ``jit`` and ``vmap`` with one compilation. An epoch with
+    ``tau_days <= 0`` (before the explosion) returns ``mag_floor``.
+
+    As redback's, the answer at one epoch depends on the LAST epoch of the call (redback sizes its
+    engine grid from ``time[-1] + 100`` d), by up to ~1e-3 mag.
+
+    Examples
+    --------
+    >>> import jax; jax.config.update("jax_enable_x64", True)
+    >>> import numpy as np, jax.numpy as jnp
+    >>> from whisper_cbpf.models.jax import supernova as sn
+    >>> from whisper_cbpf.synphot import filter_set_for
+    >>> fs = filter_set_for(["lsstg", "lsstr"]).to_legacy()
+    >>> w, nrm = sn.ab_weights(fs["lam"], fs["trans"])
+    >>> g = sn.build_fixed_grid(60.0)
+    >>> p = dict(f_nickel=0.1, mej=2.0, vej=1e4, kappa=0.1, kappa_gamma=0.03,
+    ...          temperature_floor=4000.0)
+    >>> tau = jnp.array([-1.0, 5.0, 20.0])
+    >>> m = sn.ab_magnitude_at("arnett", g, tau, p, jnp.array([0, 0, 1]), w, nrm, fs["lam"],
+    ...                        0.05, 7.1e26)
+    >>> [round(float(x), 2) for x in m][0]       # before the explosion: mag_floor
+    40.0
+    """
+    spec = _spec(model)
+    tau = jnp.asarray(tau_days)
+    alive = tau > 0.0
+    t_eval = jnp.where(alive, tau, fixed.first_epoch)        # finite, and gradient-safe, when dead
+    sed_kw = {p: params[p] for p in spec["sed_params"] if p in params}
+    if spec["photosphere"] == "model":                       # evaluated at the epochs, no grid
+        lbol, phot = _lbol_and_phot(model, {"time": t_eval}, params, magnetar_convention,
+                                    interaction, engine_options)
+    else:
+        lbol = bolometric_at(model, fixed, t_eval, params, t_last=jnp.max(tau),
+                             magnetar_convention=magnetar_convention, interaction=interaction,
+                             engine_options=engine_options)
+        phot = None
+    mag = sn_ab_magnitude({"time": t_eval}, lbol, *_floor_inputs(spec, params), band_idx, weights,
+                          norms, lam_obs_ang, redshift, dl_cm, sed_kind=spec["sed"],
+                          mag_floor=mag_floor, phot=phot, **sed_kw, **kw)
+    return jnp.where(alive, mag, jnp.asarray(mag_floor, mag.dtype))
 
 
 # --- priors --------------------------------------------------------------------------------
@@ -1271,7 +1827,7 @@ def redback_prior(model, *, drop=("redshift",)):
 
     from ...priors import LogUniform, Prior, Uniform
 
-    rb = get_priors(model=_spec(model)["prior"] if model in MODELS else model)
+    rb = get_priors(model=_spec(model)["prior"] if model in ALL_MODELS else model)
     dists, pinned, constraints = {}, {}, {}
     for k, v in rb.items():
         if k in drop:
@@ -1290,6 +1846,8 @@ def redback_prior(model, *, drop=("redshift",)):
                 f"redback's {model} prior has a {kind} on {k!r}, which whisper's prior layer "
                 f"cannot represent. Pin it at the factory or add the distribution to "
                 f"whisper_cbpf.priors.")
+    for k, v in _CODE_PINNED.get(model, {}).items():
+        pinned.setdefault(k, v)
     return Prior(dists), pinned, constraints
 
 
@@ -1306,6 +1864,10 @@ _MAGNETAR = (("p0", "LogUniform", 0.7, 1e4),
              ("mass_ns", "Uniform", 1.1, 2.2),
              ("theta_pb", "Uniform", 0.0, 3.14 / 2))
 _F_NICKEL = (("f_nickel", "LogUniform", 1e-3, 1.0),)
+
+#: Settings of redback's function that its prior file does not list, at redback's code defaults:
+#: pinned, and free to the caller through ``supernova_model(pin=...)``.
+_CODE_PINNED = {"csm_interaction": {"nn": 12.0, "delta": 1.0, "efficiency": 0.5}}
 
 _FALLBACK = {
     "arnett": (_F_NICKEL + _COMMON_DIFFUSION, {}, {}),
@@ -1344,6 +1906,26 @@ _FALLBACK = {
     "type_1a": (_F_NICKEL + _COMMON_DIFFUSION,
                 {"line_wavelength": 6.5e3, "line_width": 500.0, "line_amplitude": 0.3}, {}),
     "type_1c": (_F_NICKEL + _COMMON_DIFFUSION + (("pp", "Uniform", 1.1, 4.0),), {}, {}),
+    "csm_interaction": (
+        (("mej", "LogUniform", 1.0, 100.0), ("csm_mass", "LogUniform", 1.0, 100.0),
+         ("vej", "LogUniform", 1e3, 1e5), ("eta", "Uniform", 0.0, 2.0),
+         ("rho", "LogUniform", 1e-14, 1e-12), ("r0", "Uniform", 50.0, 700.0),
+         ("kappa", "Uniform", 0.05, 2.0), ("temperature_floor", "LogUniform", 100.0, 1e4)),
+        {}, {}),
+    "shock_cooling": (
+        (("log10_mass", "Uniform", -2.0, 3.0), ("log10_radius", "Uniform", 10.0, 14.0),
+         ("log10_energy", "Uniform", 40.0, 52.0), ("nn", "Uniform", 8.0, 12.0),
+         ("delta", "Uniform", 1.0, 1.5)), {}, {}),
+    "shocked_cocoon": (
+        (("mej", "Uniform", 1e-4, 0.2), ("vej", "Uniform", 0.01, 0.7), ("eta", "Uniform", 1.0, 5.0),
+         ("tshock", "Uniform", 0.1, 10.0), ("shocked_fraction", "Uniform", 0.01, 1.0),
+         ("cos_theta_cocoon", "Uniform", 0.866, 1.0), ("kappa", "Uniform", 0.1, 30.0)), {}, {}),
+    "general_magnetar_driven": (
+        (("l0", "LogUniform", 1e40, 1e50), ("tau_sd", "LogUniform", 1e2, 1e8),
+         ("nn", "LogUniform", 1.5, 10.0), ("f_nickel", "LogUniform", 1e-4, 1.0),
+         ("mej", "LogUniform", 0.1, 100.0), ("E_sn", "Uniform", 5e50, 2e51),
+         ("kappa", "Uniform", 0.05, 0.2), ("kappa_gamma", "LogUniform", 1e-4, 1e4),
+         ("temperature_floor", "LogUniform", 1e3, 3e4)), {}, {}),
 }
 
 
@@ -1354,7 +1936,7 @@ def fallback_prior(model):
     dists, pinned, constraints = _FALLBACK[model]
     cls = {"Uniform": Uniform, "LogUniform": LogUniform}
     return (Prior({n: cls[k](lo, hi) for n, k, lo, hi in dists}),
-            dict(pinned), dict(constraints))
+            {**_CODE_PINNED.get(model, {}), **pinned}, dict(constraints))
 
 
 def default_prior(model):

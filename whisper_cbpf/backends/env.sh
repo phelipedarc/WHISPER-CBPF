@@ -24,28 +24,47 @@ _WG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${_WG_DIR}/../.." && pwd)"
 if [ -f "${REPO_ROOT}/pyproject.toml" ]; then
   # PYTHONPATH is searched before site-packages, so the live checkout wins over any stale install.
-  export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH}"
+  # No trailing ':' when it was empty: python reads an empty entry as the current directory.
+  export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 fi
 
 # --- python environment --------------------------------------------------------------------------
-# Override with WHISPER_GPU_VENV=/path/to/venv before sourcing.
-WHISPER_GPU_VENV="${WHISPER_GPU_VENV:-/opt/jax_gpu_venv}"
-if [ -x "${WHISPER_GPU_VENV}/bin/python3" ]; then
-  export PATH="${WHISPER_GPU_VENV}/bin:${PATH}"
+# To use a virtualenv that is not already first on PATH, name it before sourcing:
+#     export WHISPER_CBPF_VENV=/path/to/venv
+# and its interpreter goes first on PATH. Unset, PATH is left alone and the python3 already on it
+# is the one used. The discontinued name WHISPER_GPU_VENV is still honoured.
+WHISPER_CBPF_VENV="${WHISPER_CBPF_VENV:-${WHISPER_GPU_VENV:-}}"
+if [ -n "${WHISPER_CBPF_VENV}" ] && [ -x "${WHISPER_CBPF_VENV}/bin/python3" ]; then
+  export PATH="${WHISPER_CBPF_VENV}/bin:${PATH}"
 fi
 
 # --- CUDA libraries --------------------------------------------------------------------------------
 # JAX ships its CUDA libraries as pip packages under <site-packages>/nvidia/*/lib; torch ships its
 # own set, often under a DIFFERENT interpreter. If neither is on LD_LIBRARY_PATH, JAX does not
 # error -- it falls back to CPU SILENTLY, so the run merely looks slow. Collect both, venv first
-# (jaxlib generally needs a newer cuDNN than torch pins; cuDNN 9.x is minor-version compatible).
+# (jaxlib generally needs a newer cuDNN than torch pins; cuDNN 9.x is minor-version compatible):
+# the site-packages of the python3 now on PATH, then of its base interpreter when that python3 is
+# a venv's, asked of python itself rather than guessed from a version number. Only non-empty
+# parts are joined, because the dynamic loader reads an empty entry as the current directory.
 _wg_nvidia_libs() {
   [ -d "$1" ] || return 0
   find "$1" -maxdepth 2 -type d -name lib 2>/dev/null | paste -sd: -
 }
-_WG_VENV_LIBS="$(_wg_nvidia_libs "${WHISPER_GPU_VENV}/lib/python3.11/site-packages/nvidia")"
-_WG_SYS_LIBS="$(_wg_nvidia_libs "${WHISPER_GPU_CONDA:-/opt/conda}/lib/python3.11/site-packages/nvidia")"
-export LD_LIBRARY_PATH="${_WG_VENV_LIBS}:${_WG_SYS_LIBS}:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:${LD_LIBRARY_PATH}"
+_WG_LD=""
+_wg_append() {
+  if [ -n "$1" ]; then _WG_LD="${_WG_LD:+${_WG_LD}:}$1"; fi
+}
+while IFS= read -r _wg_site; do
+  _wg_append "$(_wg_nvidia_libs "${_wg_site}/nvidia")"
+done < <(python3 -c '
+import sys, sysconfig
+paths = [sysconfig.get_path(kind, vars={"base": b, "platbase": b})
+         for b in (sys.prefix, sys.base_prefix) for kind in ("purelib", "platlib")]
+print("\n".join(dict.fromkeys(paths)))' 2>/dev/null)
+_wg_append /usr/local/nvidia/lib
+_wg_append /usr/local/nvidia/lib64
+_wg_append "${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${_WG_LD}"
 
 # --- device selection ------------------------------------------------------------------------------
 # PCI_BUS_ID makes CUDA_VISIBLE_DEVICES indices match nvidia-smi's; without it the enumeration order

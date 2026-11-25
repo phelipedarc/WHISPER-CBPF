@@ -1,14 +1,17 @@
 # Whisper Tutorial — working with transient light curves
 
-A hands-on tour of what Whisper can do today — **data ingestion, plotting, and fitting** (ABC, ABC-SMC,
-and SNPE). Import once:
+A hands-on tour of what Whisper can do — **data ingestion, plotting, fitting** (ABC, ABC-SMC, MCMC,
+nested sampling and SNPE), and **ranking models, checking the fits and explaining the answer**
+(§8). For a survey alert end to end, start with [`LSST_ALERTS.md`](LSST_ALERTS.md). Import once:
 
-> **Figures and demo scripts linked below are not in this package.** This repository ships code, not
-> analyses, so `dev/` and `sanity_check/` were deliberately left behind at the merge. Every such link
-> points into the frozen legacy repositories
-> [WHISPER_AI](https://github.com/phelipedarc/WHISPER_AI) @ `8ba3843` and
-> [whisper-GPU](https://github.com/phelipedarc/whisper-GPU) @ `10796a0`, pinned at those commits so
-> they cannot rot if the repositories move on.
+> **Most figures and scripts linked below are not in this package.** This repository ships code, not
+> analyses, so `dev/` and `sanity_check/` were deliberately left behind at the merge; the three demos
+> this tutorial calls runnable are ported to [`examples/`](../examples/). Every other such link is
+> history, in the legacy repositories
+> [WHISPER_AI @ `8ba3843`](https://github.com/phelipedarc/WHISPER_AI/tree/8ba3843) and
+> [whisper-GPU @ `10796a0`](https://github.com/phelipedarc/whisper-GPU/tree/10796a0)
+> (discontinued; superseded by whisper_cbpf), pinned at those commits so they cannot rot. Coming
+> from the discontinued `whisper_labia` or `whisper_gpu`? See [`MIGRATION.md`](MIGRATION.md).
 
 ```python
 import whisper_cbpf as wp
@@ -29,6 +32,21 @@ print(lc)
 It auto-detects `time/MJD`, `magnitude`/`flux`, their errors, `band` and `system` columns (override
 with `column_map={'time': 'MJD', ...}`), sniffs comma- vs semicolon-separated files, and drops
 obviously bad rows (non-finite values, non-positive errors).
+
+### Survey alerts
+
+`survey="lsst"` or `"ztf"` reads alert photometry in the brokers' own field names (a Rubin or ZTF
+alert packet, ALeRCE, Fink), keeps only difference-imaging photometry (`psfFlux`, `magpsf`), turns
+forced photometry and non-detections into 5-sigma upper limits, and labels the bands `lsstg`,
+`ztfr`, ...:
+
+```python
+alert = wp.load_lightcurve("tests/data/lsst_alert_sn.json", survey="lsst", redshift=0.1)
+print(alert.n_points, alert.bands)            # 15 ['lsstg', 'lssti', 'lsstr']: 12 detections, 3 limits
+alert.meta["first_detection_mjd"], alert.meta["n_dropped"]
+```
+
+The field mapping and the photometry rule are in [`LSST_ALERTS.md`](LSST_ALERTS.md#2-reading-the-alert).
 
 ## 2. Inspect it
 
@@ -167,16 +185,15 @@ wp.resolve_band("g")                 # {'source':'lsst', 'lambda_eff':4866.0, 'z
 wp.resolve_band("PAN-STARRS/PS1.w")  # warns, then queries SVO (cached by filter ID; offline-safe)
 ```
 SVO results are cached locally, so re-runs never re-query. If SVO is unavailable (no network /
-astroquery), the load degrades gracefully and you can supply the band by hand:
+pyphot / astroquery), the load degrades gracefully and you can supply the band by hand:
 
 ```python
 wp.register_manual_band("my_filter", lambda_eff=9000.0, zero_point=3631.0)
 ```
-> SVO needs `astroquery`, which ships with the `[gpu]` extra; on a CPU-only install add it with
-> `pip install astroquery`.
+> SVO needs `pyphot` (in the `[models]` extra) or, as the fallback, `astroquery` (in `[analysis]`);
+> neither needs a GPU, so on a CPU-only install add one with `pip install pyphot`.
 > A runnable, **offline** tour of all four features is in
-> [`dev/demo_ingestion.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_ingestion.py)
-> (WHISPER_AI, not in this package).
+> [`examples/demo_ingestion.py`](../examples/demo_ingestion.py).
 
 ## 6. Plot
 
@@ -199,6 +216,11 @@ the curve, e.g. `load_lightcurve(..., redshift=0.0099)`).
 **SNR < 3** points are up-triangles (△); **upper limits** are down-triangles (▽); magnitude axes are
 inverted (brighter = up).
 
+**Time axis:** it names day 0 as the curve declares it. Raw MJD reads `time [MJD]`;
+`set_explosion_date(mjd)` reads "days since explosion (MJD …)". When day 0 is not the explosion, say
+what it is: `lc.set_time_reference(mjd, "first detection")` shifts the clock the same way and reads
+"days since first detection (MJD …)" (and `calc_phase` counts from it).
+
 ### Any survey format works
 The same one-liner handles raw ZTF photometry — `zg`/`zr` are recognised as `ztfg`/`ztfr`, and
 `flag_filters` drops rows by any quality column the file carries:
@@ -216,11 +238,12 @@ Whisper has two pluggable axes — **models** and **samplers**:
 ```python
 wp.list_models()     # 6: ['bazin', 'flare', 'flare_jax', 'gaussian_rise', 'mck19',
                      #     'two_component_kilonova']            (+ your own via register_model)
-wp.list_samplers()   # 11: ['abc', 'abc_gpu', 'abc_smc', 'abc_smc_gpu', 'emcee_jax', 'mcmc',
-                     #      'npe', 'nuts_gpu', 'pymc_jax_gpu_parallelized',
-                     #      'pymc_jax_gpu_vectorized', 'snpe']  (+ your own via register_sampler)
+wp.list_samplers()   # 14: ['abc', 'abc_gpu', 'abc_smc', 'abc_smc_gpu', 'dynesty', 'emcee_jax',
+                     #      'mcmc', 'nested', 'npe', 'nuts_gpu', 'pymc_jax_gpu_parallelized',
+                     #      'pymc_jax_gpu_vectorized', 'snpe', 'snpe_gpu']
+                     #      (+ your own via register_sampler)
 
-# The photometric JAX models (kilonova / TDE / the twelve supernovae) are NOT in list_models()
+# The photometric JAX models (kilonova / TDE / the sixteen supernova-family models) are NOT in list_models()
 # until you bind them to a dataset: wp.register_kilonova(bands, redshift, dl_cm). They need the
 # [gpu] extra even to register. See INSTALL.md.
 ```
@@ -302,49 +325,56 @@ The toy models above ignore the band. **`mck19`** is a built-in *physical* model
 from a **binary-black-hole merger in an AGN disk** (McKernan 2019; implementation of Darc 2025). A
 GW-recoil-kicked remnant shocks a bound-gas hotspot that radiates as a blackbody: a `sin²` rise to the
 ram-pressure delay `t_ram`, then exponential decay back to the disk baseline. It returns **flux density
-per band** (the blackbody is evaluated at each band's effective wavelength and the source redshift), so
-g/r/i differ — and it fits with any sampler through the same likelihood:
+per band** (each blackbody, at the source redshift, is integrated over the observation's filter), so
+g/r/i differ — and it fits with any sampler through the same likelihood. Every band must name a filter
+to integrate over, and a band that names none raises (AT2017GFO's `C`, `W` and `F814W`), so fit the
+bands you mean. Bare letters are LSST's filters unless you say otherwise, and AT2017GFO's are SDSS
+photometry ([`PHOTOMETRY.md`](PHOTOMETRY.md) §2):
 
 ```python
-res = wp.fit_MCMC(lc, "mck19", nsteps=2000)   # params: v_kick, M_smbh, M_bh, r_bh, redshift
+wp.set_default_band_system("sdss")              # this session: bare u g r i z are SDSS
+opt = lc.select_bands(["g", "r", "i", "z"])     # 261 points
+res = wp.fit_MCMC(opt, "mck19", nsteps=2000)    # params: v_kick, M_smbh, M_bh, r_bh, redshift
 ```
 
 Because the data is in magnitude space the likelihood compares in magnitude automatically (the model
 predicts flux).
 [`dev/demo_mck19.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_mck19.py)
-(WHISPER_AI, not in this package) renders the light curve:
+(pinned history: WHISPER_AI @ 8ba3843, discontinued) renders the light curve:
 
 ![mck19 light curve](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/mck19_lightcurve.png)
 
 ### A redback-backed model: `two_component_kilonova`
 
 WHISPER can also drive **redback** models (the optional `[models]` extra). **`two_component_kilonova`**
-wraps redback's blue + red kilonova: WHISPER bands map to redback LSST filters, and redback's
-band-integrated AB magnitude is converted to WHISPER's flux density — so it fits through the *same*
-samplers and likelihood as everything else. redback is imported lazily, so the package works without it
-(only `predict` needs the extra).
+is redback's blue + red kilonova, computed as the sum of two one-component redback calls and integrated
+over each observation's filter into WHISPER's flux density, with the band rules `mck19` uses — so it
+fits through the *same* samplers and likelihood as everything else. redback is imported lazily, so the
+package works without it (only `predict` needs the extra, and raises without it).
 
 ```python
-res = wp.fit_SNPE(lc, "two_component_kilonova", num_simulations=3000)   # SNPE suits the slow simulator
+res = wp.fit_SNPE(opt, "two_component_kilonova", num_simulations=3000)   # the g r i z points above
 ```
 
-It's an expensive simulator (~50 ms/call), so **SNPE** (which amortizes simulation cost) is the natural
-sampler; ABC/MCMC work with modest budgets. Because AT2017GFO is a real kilonova, this model fits it
-well (low residual, no prior-railing) — the clean counterpart to the `mck19` exercise above.
+Each call runs redback twice (~4 ms on those 261 points), so **SNPE** (which amortizes simulation
+cost) is the natural sampler; ABC/MCMC work with modest budgets. Because AT2017GFO is a real
+kilonova, this model fits it well (low residual, no prior-railing) — the clean counterpart to the
+`mck19` exercise above.
 [`dev/demo_kilonova.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_kilonova.py)
-(WHISPER_AI, not in this package) renders the light curve (note the blue bands fading faster —
-kilonova reddening):
+(pinned history: WHISPER_AI @ 8ba3843, discontinued) renders the light curve (note the blue bands
+fading faster — kilonova reddening):
 
 ![kilonova light curve](https://raw.githubusercontent.com/phelipedarc/WHISPER_AI/8ba3843/dev/figures/kilonova_lightcurve.png)
 
 ### Likelihoods & space (flux vs magnitude)
 
 All inference can run in **flux** or **apparent-magnitude** space, with Gaussian, upper-limit, and
-mixture (outlier-robust) likelihoods (`whisper_cbpf.likelihood`). The default is chosen by data type;
-override for edge cases (non-detections, outliers). The **upper-limit likelihood is flux-only** — a
-non-detection bounds the flux, and the magnitude of zero flux is undefined — so `space="magnitude"`
-raises there; and a likelihood that does not model censoring refuses a light curve that carries
-non-detections rather than silently fitting the limits as measurements:
+mixture (outlier-robust) likelihoods (`whisper_cbpf.likelihood`). The default is chosen by the data:
+a light curve with **upper limits** is fitted in flux space with the censored likelihood, with no
+argument (a non-detection bounds the flux, and the magnitude of zero flux is undefined), at the
+limits' significance in `lc.meta["upper_limit_sigma"]` (5 for the survey presets). An explicit
+`space="magnitude"` with limits raises, and a likelihood that does not model censoring refuses a
+light curve that carries non-detections rather than silently fitting the limits as measurements:
 
 ```python
 from whisper_cbpf.likelihood import make_likelihood, GaussianLikelihoodWithUpperLimits
@@ -352,8 +382,14 @@ lik = make_likelihood(lc, space="magnitude")                 # default by data t
 lik = GaussianLikelihoodWithUpperLimits(lc, space="flux")    # use non-detections in flux space
 ```
 
-(For ABC the likelihood enters via the χ² distance; **MCMC and SNPE use these likelihoods directly** —
-see below. Routing a chosen likelihood into ABC's acceptance is the next step.)
+(ABC compares simulations with the data through a distance, in the space `space=` names; **MCMC,
+nested sampling and SNPE use these likelihoods directly** — see below. ABC and SNPE cannot use upper
+limits: fit `lc.where(upper_limit=False)` with them.)
+
+**Rows before the event are never fitted.** Once `set_explosion_date` (or a merger date) is set,
+every fit leaves out the rows at or before it, and a model that fits its explosion time leaves out
+the non-detections before the first detection, which then set that time's prior
+(`result.info["excluded_pre_event"]`, [`API_REFERENCE.md` A2](API_REFERENCE.md#what-every-fit-does)).
 
 ### MCMC (emcee)
 
@@ -368,18 +404,25 @@ res.summary["amplitude"]               # median / ci16 / ci84, same as every sam
 res.info["mean_acceptance_fraction"]   # diagnostics; res.emcee_sampler is the raw emcee object
 ```
 
-Walkers initialise from the prior (no starting guess required); pass `initial_guess={...}` to start from
-a point instead. Sampling is **seeded and reproducible**.
+Walkers start from a scan of the prior, climbed into the best basin found (`init="prior_scan"`, no
+starting guess required); pass `init=` a point, a previous result (an ABC fit, say), or
+`init="prior"` for independent prior draws. Sampling is **seeded and reproducible**, and
+`res.diagnostics()` says whether the chain can be trusted (§8).
 
-### All samplers agree — a sanity check
+### How close the samplers come — a sanity check
 
-ABC, ABC-SMC, MCMC and SNPE share Whisper's model + prior + likelihood, so on the same data they reach
-**the same posterior**.
-[`sanity_check/compare_samplers.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/compare_samplers.py)
-(WHISPER_AI, not in this package) fits all four to `gaussian_rise` and overlays them in one corner
-plot. Its output figure was never committed to either repository, so run the script to regenerate it;
-a four-sampler AT2017GFO corner *is* published in
-[`sanity_check/BENCHMARK.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/BENCHMARK.md).
+ABC, ABC-SMC, MCMC and SNPE share Whisper's model + prior + likelihood, so they **target** the same
+posterior, but only MCMC samples it directly: ABC and ABC-SMC reach it as the acceptance distance goes
+to zero, SNPE as its simulation budget grows. At the settings in
+[`examples/compare_samplers.py`](../examples/compare_samplers.py), which fits all four to
+`gaussian_rise` and overlays them in one corner plot, MCMC is tight and on the truth (`sigma_rise`
+2.91 ± 0.07, truth 3); SNPE is centred within one of its own sd but 3-18× wider (2.77 ± 0.23); ABC
+and ABC-SMC are 20-65× wider and shifted by up to 1.5 of their own sd (ABC 3.59 +2.41/−1.88,
+ABC-SMC 6.05 +4.67/−3.56). The script's docstring has the full table. Treat MCMC (or `nested`) as
+the reference and tighten ABC's acceptance before comparing widths. The output figure is not
+committed, so run the script to regenerate it; a four-sampler AT2017GFO corner *is* published in
+[`sanity_check/BENCHMARK.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/BENCHMARK.md)
+(pinned history: WHISPER_AI @ 8ba3843, discontinued).
 
 ### Neural posterior estimation (SNPE)
 
@@ -435,7 +478,7 @@ res = wp.fit_SNPE(
   `torch.nn.Module`. In the Bazin benchmark the MLP was the *fastest* config and the TCN the *most
   accurate* (see
   [`sanity_check/figures/REPORT.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/figures/REPORT.md),
-  WHISPER_AI, not in this package).
+  pinned history: WHISPER_AI @ 8ba3843, discontinued).
 - **`density_estimator`** — a name (`'maf'`/`'nsf'`/`'mdn'`) **or** a pre-built `posterior_nn(...)`
   factory; `hidden_features` / `num_transforms` / `num_bins` tune the built-in architectures.
 - **`proposal_mode='restricted'`** — truncated SNPE (`RestrictedPrior` + `get_density_thresholder`),
@@ -452,20 +495,137 @@ res = wp.fit_SNPE(
   through to `sbi`) are the training-speed levers —
   [`sanity_check/benchmark_snpe_device.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/benchmark_snpe_device.py)
   and [`sanity_check/BENCHMARK.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/BENCHMARK.md)
-  (WHISPER_AI, not in this package) carry the measurements.
+  (pinned history: WHISPER_AI @ 8ba3843, discontinued) carry the measurements.
 - **Amortized reuse** — with `num_rounds=1` (NPE) the trained `result.posterior` infers a **new**
   same-grid observation in ~10–100 ms: `result.posterior.sample((2000,), x=result.format_x(new_flux))`
   — no refit per object.
 
 ```python
-res = wp.fit_SNPE(lc, "two_component_kilonova", device="auto", num_rounds=2, num_simulations=2000)
+res = wp.fit_SNPE(opt, "two_component_kilonova", device="auto", num_rounds=2, num_simulations=2000)
 ```
 
 > `snpe` needs the optional `[sbi]` extra (`pip install 'whisper-cbpf[sbi]'`, adds `sbi` + `torch`).
-> Runnable: [`dev/demo_snpe.py`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/dev/demo_snpe.py)
-> (WHISPER_AI, not in this package) and the notebook
+> Runnable: [`examples/demo_snpe.py`](../examples/demo_snpe.py) and the notebook
 > [`examples/at2017gfo_quickstart.ipynb`](../examples/at2017gfo_quickstart.ipynb). Training is the slow
 > part — its tests are marked `slow` (`pytest -m "not slow"` skips them).
+
+## 8. Rank models, check the fits, explain the answer
+
+The supernova and TDE models need float64, set before anything creates an array:
+
+```python
+import jax; jax.config.update("jax_enable_x64", True)
+import whisper_cbpf as wp
+alert = wp.load_lightcurve("tests/data/lsst_alert_sn.json", survey="lsst", redshift=0.1)
+```
+
+### Compare models in one call
+
+```python
+cmp = wp.compare(alert, ["arnett", "magnetar"])
+print(cmp.summary())       # winner 'arnett', strong over 'magnetar' (ln B = 3.46), weight 0.97
+cmp.table                  # BIC, delta, weight, grade, converged, problems, per model
+```
+
+`compare` fits every model to the same data with the same settings (`emcee_jax` on a GPU, `mcmc` on a
+CPU), finds each fit's likelihood peak, checks each fit's convergence, and ranks by BIC (by ln Z when
+every model has a converged nested-sampling evidence). Family names such as `"arnett"` are bound to
+the light curve: its bands, its redshift (fitted when unknown), and an explosion time fitted from 30
+days before the last non-detection to the first detection (`wp.default_t_exp_prior`; when the rise
+was not observed, pass a wider window:
+[`LSST_ALERTS.md`](LSST_ALERTS.md) section 2). Models fitted to other points, or with at least as many
+parameters as points, are left out with the reason. The rules are in
+[`MODEL_COMPARISON.md`](MODEL_COMPARISON.md#part-0--one-call-wpcompare).
+
+### The likelihood peak behind AIC and BIC
+
+```python
+peak = cmp.peaks["arnett"]      # the same as wp.likelihood_max_opt(cmp.results["arnett"], alert)
+peak.max_log_likelihood, peak.gain, peak.at_edge, peak.bic
+```
+
+A sampler's best draw falls short of the likelihood peak by a different amount for each model;
+`likelihood_max_opt` climbs to the peak and computes AIC and BIC there. The posterior is not
+changed. `gain` is how far the sampler was from the peak: above 1, it never reached it.
+[Why this matters, with numbers](LSST_ALERTS.md#5-why-the-ranking-uses-the-likelihood-maximum).
+For a single fit: `wp.fit(..., likelihood_max_opt=True)` or `result.likelihood_max_opt(lc)`.
+
+### Can this fit be trusted?
+
+```python
+report = cmp.results["arnett"].diagnostics()     # or cmp.diagnostics["arnett"]
+print(report)                                    # every check, pass or fail, and why
+report.passed, report.reasons
+```
+
+Every sampler gets the checks that apply to it: R-hat, ESS, stuck or stranded chains and N/tau for
+MCMC, accepted draws for ABC, the dlogz stop for nested sampling, pile-up at a prior edge for every
+fit ([`API_REFERENCE.md` A4](API_REFERENCE.md#a4-check-a-fit)).
+
+### Save, reload, resume
+
+```python
+res = cmp.results["arnett"]
+res.save("out/arnett")                       # draws, summary, metrics, and how the fit was made
+same = wp.load_result("out/arnett")          # identical; refuses a modified save
+cmp.save("out/alert")                        # the whole comparison, with the light curve
+fit = wp.fit_cached(r, "flare", "mcmc", "fits/", prior=prior, seed=0)   # loads, not refits, next time
+```
+
+### Forecasts, and where the models differ most
+
+```python
+import numpy as np
+t_next = float(alert.time.max()) + np.array([1.0, 3.0, 7.0])
+fc = cmp.forecast(t_next, ["lsstg", "lsstr"], survey_depth=24.5)   # magnitudes, per model and cell
+d = cmp.discriminate(t_next, ["lsstg", "lsstr"], survey_depth=24.5)
+d.attrs["best"]                               # the cell where one more point separates them best
+```
+
+### Plots, facts and the report
+
+```python
+wp.plot_models(cmp, alert)                    # every model over the data, with residuals
+wp.plot_model_comparison(cmp)                 # weights, gap to the best, grade
+wp.plot_widths(cmp.results["arnett"])         # how much the data narrowed each parameter
+wp.plot_forecast(fc[fc["model"] == "arnett"]) # one model's forecast with its 68 % and 95 % bands
+facts = cmp.facts()                           # every quoted number, computed by a stated rule
+cmp.report("out/", forecast_times=list(t_next))   # one self-contained HTML page
+```
+
+### Priors beyond boxes, and where the chains start
+
+```python
+prior = wp.Prior({"amplitude": wp.Uniform(0.0, 10 * fmax),
+                  "rise_time": wp.TruncatedNormal(3.0, 1.0, 0.05, 10.0),
+                  "decay_time": wp.Fixed(15.0)})            # held at 15, not counted in AIC/BIC
+abc  = wp.fit(r, "flare", sampler="abc", prior=prior, n_simulations=20000, quantile=0.01)
+post = wp.fit(r, "flare", sampler="mcmc", prior=prior, init=abc)   # chains start on ABC's draws
+```
+
+`Normal`, `TruncatedNormal` and `Fixed` work in every sampler. `init=` takes a previous result (an
+ABC fit, or the same alert's earlier cut), a point, or one start per chain.
+
+### Explosion time and redshift as parameters
+
+```python
+model = wp.supernova_model("arnett", ["lsstg", "lsstr", "lssti"], free=["t_exp", "redshift"],
+                           prior=wp.Prior({"t_exp": wp.Uniform(61000.0 - 30, 61002.5)}))
+model.parameters[-2:]                         # ['t_exp', 'redshift']
+```
+
+A fitted redshift can bias a comparison, since a model can move the source to buy a fit: read the
+redshift posterior against its prior (`wp.plot_widths`, and `prior_dominated` in the facts).
+
+### Many alerts, and checking a model against its twin
+
+- `wp.fit_batch(alerts, model)`: one model, many alerts, one compiled GPU loop;
+  `wp.run_jobs(jobs)`: many fits over the idle GPUs and pinned CPU cores; `wp.profile(model, lc)`
+  and `wp.capacity(cost, hours=12)`: seconds per evaluation and alerts per night.
+  [`LSST_ALERTS.md` §7-8](LSST_ALERTS.md#7-seconds-per-alert).
+- `wp.check_parity(model_a, model_b, prior_or_posterior, times, bands)`: the per-band |Δmag| between
+  two models at the same parameters, for example a JAX port against its redback twin
+  ([`API_REFERENCE.md` A11](API_REFERENCE.md#a11-check-that-two-models-agree)).
 
 ## 9. Compare posteriors & select models — `plot_corner` and `waic`
 
@@ -473,7 +633,7 @@ Every sampler returns a `SamplerResult` with the same interface, so comparing th
 whether methods are **compatible**, overlay their posteriors (a table of medians hides the uncertainty):
 
 ```python
-fig = wp.plot_corner(
+axes = wp.plot_corner(
     [res_abc, res_mcmc, res_snpe],                       # any SamplerResult / DataFrame / dict / array
     labels=["ABC", "MCMC", "SNPE"], log_params=["mej_1"], # log axes for wide-range parameters
     truths={"amplitude": 5.0}, title="AT2017GFO posteriors", save="corner.png")
@@ -482,14 +642,14 @@ fig = wp.plot_corner(
 It uses a dark, colourblind-distinct palette (`wp.CORNER_PALETTE`), shared axis ranges, contour lines +
 filled marginals, and a legend — publication-ready. See
 [`sanity_check/BENCHMARK.md`](https://github.com/phelipedarc/WHISPER_AI/blob/8ba3843/sanity_check/BENCHMARK.md)
-(WHISPER_AI, not in this package) for the four-sampler AT2017GFO corner.
+(pinned history: WHISPER_AI @ 8ba3843, discontinued) for the four-sampler AT2017GFO corner.
 
 For **model selection**, `AIC`/`BIC` on each result are now computed from the exact Gaussian likelihood
 and are comparable across samplers (lower = better). For a fully-Bayesian score that uses the *whole*
 posterior, use **WAIC**:
 
 ```python
-w = wp.waic(res, lc, model="two_component_kilonova", fixed={"redshift": 0.00984})
+w = wp.waic(res, opt, model="two_component_kilonova", fixed={"redshift": 0.00984})
 w["waic"], w["p_waic"]   # lower WAIC is better; p_waic is the effective number of parameters
 ```
 
@@ -498,7 +658,8 @@ tolerance posterior, an under-trained SNPE), which is itself a useful warning si
 
 ## What's next
 
-Planned: route `likelihood=` / `space=` into the ABC/ABC-SMC **acceptance** (not just the reported
-metric), nested sampling (Dynesty) for direct evidence, and a `fit_all` transient × model × sampler
-grid. Physical models + priors can be plugged in from the external redback package (the `[models]`
-extra); `two_component_kilonova` is the first such model.
+- [`LSST_ALERTS.md`](LSST_ALERTS.md): a survey alert end to end, how to read the answer, and seconds
+  per alert on a CPU and on one GPU.
+- [`MODEL_COMPARISON.md`](MODEL_COMPARISON.md): the ranking rules, and worked comparisons on CPU and
+  GPU.
+- [`API_REFERENCE.md`](API_REFERENCE.md): every public name, by task.

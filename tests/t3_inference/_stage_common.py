@@ -5,9 +5,9 @@ same bands, same redshift, same distance, same epoch grid, same sigma -- so a
 calibration failure found by the staged jobs points at the SAMPLER x MODEL pair,
 never at a second copy of the dataset conventions.
 
-These jobs need a GPU. They must run inside the ``a GPU environment`` container with
-``CUDA_VISIBLE_DEVICES`` set and ``the env bootstrap ("$(whisper-cbpf-env)")`` sourced; see the __main__
-docstrings of stage_sbc.py / stage_injection_recovery.py for the exact command.
+These jobs need a GPU. They must run with ``CUDA_VISIBLE_DEVICES`` set and
+``source "$(whisper-cbpf-env)"`` done first; see the __main__ docstrings of stage_sbc.py /
+stage_injection_recovery.py for the exact command.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def require_gpu(allow_cpu=False):
     if backend != "gpu" and not allow_cpu:
         raise SystemExit(
             f"jax backend is {backend!r}, not 'gpu'. These jobs are sized for an A6000; "
-            f"run in a GPU environment with CUDA_VISIBLE_DEVICES set and the env bootstrap ("$(whisper-cbpf-env)") "
+            f"run with CUDA_VISIBLE_DEVICES set and the bootstrap `whisper-cbpf-env` prints "
             f"sourced (and WITHOUT JAX_PLATFORMS=cpu), or pass --allow-cpu to accept "
             f"a ~100x slowdown.")
     return backend

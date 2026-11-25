@@ -12,7 +12,8 @@ How it plugs into Whisper:
   :class:`~whisper_cbpf.likelihood.GaussianLikelihood`), and adds Gaussian noise with the per-point
   data error — so the implicit likelihood matches Whisper's Gaussian likelihood.
 * **Prior** = Whisper's :class:`~whisper_cbpf.priors.Prior`, adapted to a torch prior (``Uniform`` →
-  ``BoxUniform``; mixed ``Uniform``/``LogUniform`` → ``MultipleIndependent``).
+  ``BoxUniform``; a mix with ``LogUniform``, ``Normal`` or ``TruncatedNormal`` →
+  ``MultipleIndependent``). A ``Fixed`` parameter is held at its value, outside the torch prior.
 * **Result** = the same :class:`~whisper_cbpf.samplers.SamplerResult` every other sampler returns,
   with exact Gaussian ``max_log_likelihood`` / ``AIC`` / ``BIC`` evaluated at the best posterior draw.
   The trained sbi posterior is attached as ``result.posterior`` (and ``result.posteriors`` per round)
@@ -31,6 +32,7 @@ import pandas as pd
 
 from ..likelihood import _MIN_FLUX_JY
 from ..models import get_model
+from .jax import _diagnostics as _dg                                # numpy-only; no JAX import
 from .base import (
     aic_bic,
     BaseSampler,
@@ -38,6 +40,7 @@ from .base import (
     attach_band_metrics,
     attach_predictive_metrics,
     summarize_posterior,
+    _warn_user,
 )
 
 
@@ -162,16 +165,136 @@ def _bounded_log_uniform_cls(torch):
     return _BoundedLogUniform
 
 
+_TRUNCATED_NORMAL_CLS = None
+
+
+def _truncated_normal_cls(torch):
+    """A torch distribution for whisper's :class:`~whisper_cbpf.priors.TruncatedNormal`.
+
+    torch has no truncated normal. This one is the whisper class moved into torch, term for term:
+
+    * ``log_prob``: ``-z^2/2 - log sigma - log sqrt(2 pi) - log Z`` on the closed range
+      ``[low, high]`` and ``-inf`` outside, ``Z`` the truncation mass (computed once, in float64, by
+      the whisper class), so the density sbi's round-2 loss evaluates is exact;
+    * ``sample``: the inverse CDF of ``U(0, 1)`` draws (the probability integral transform), in
+      float64 and on the upper tail's side when the range lies above ``mu``, as the whisper class
+      draws; ``u`` is kept inside ``(0, 1)`` and the result clamped into the range after the cast
+      to torch's default dtype, so a draw never lands outside it;
+    * ``support``: the real range (``interval``, ``greater_than_eq``, ``less_than`` or ``real``), the
+      test sbi's rejection sampler runs, as :func:`_bounded_log_uniform_cls` does for LogUniform;
+    * ``mean`` / ``variance``: the truncated distribution's (scipy), for sbi's transforms.
+
+    Built lazily and cached because torch is an optional dependency.
+    """
+    global _TRUNCATED_NORMAL_CLS
+    if _TRUNCATED_NORMAL_CLS is not None:
+        return _TRUNCATED_NORMAL_CLS
+
+    import math
+
+    constraints = torch.distributions.constraints
+    log_sqrt_2pi = 0.5 * math.log(2.0 * math.pi)
+
+    class _TruncatedNormal(torch.distributions.Distribution):
+        """whisper's ``TruncatedNormal(mu, sigma, low, high)`` as a 1-D torch distribution."""
+
+        arg_constraints = {}
+        has_rsample = False
+
+        def __init__(self, dist, device="cpu", validate_args=False):
+            from scipy.stats import truncnorm
+
+            self._mu, self._sigma = float(dist.mu), float(dist.sigma)
+            self._low, self._high = float(dist.low), float(dist.high)
+            self._lo_cdf, self._mass = float(dist._lo_cdf), float(dist._mass)
+            self._log_mass, self._flip = float(dist._log_mass), bool(dist._flip)
+            ref = truncnorm(dist._alpha, dist._beta, loc=self._mu, scale=self._sigma)
+            self._mean, self._var = float(ref.mean()), float(ref.var())
+            self._device = torch.device(device)
+            super().__init__(batch_shape=torch.Size([1]), validate_args=validate_args)
+
+        def to(self, device):
+            self._device = torch.device(device)
+            return self
+
+        @constraints.dependent_property(is_discrete=False, event_dim=0)
+        def support(self):
+            lo_inf, hi_inf = math.isinf(self._low), math.isinf(self._high)
+            if lo_inf and hi_inf:
+                return constraints.real
+            if hi_inf:
+                return constraints.greater_than_eq(self._low)
+            if lo_inf:
+                return constraints.less_than(self._high)
+            return constraints.interval(self._low, self._high)
+
+        @property
+        def mean(self):
+            return torch.full((1,), self._mean, device=self._device)
+
+        @property
+        def variance(self):
+            return torch.full((1,), self._var, device=self._device)
+
+        def icdf(self, value):
+            p = torch.as_tensor(value, dtype=torch.float64, device=self._device)
+            # torch.rand can return 0, whose quantile is -inf; eps keeps p * Z a normal number
+            # (a subnormal one can be flushed to 0 on a GPU)
+            eps = torch.finfo(torch.float64).eps
+            p = p.clamp(eps, 1.0 - eps)
+            if self._flip:
+                z = -torch.special.ndtri(self._lo_cdf + (1.0 - p) * self._mass)
+            else:
+                z = torch.special.ndtri(self._lo_cdf + p * self._mass)
+            return (self._mu + self._sigma * z).clamp(self._low, self._high)
+
+        def sample(self, sample_shape=torch.Size()):
+            shape = self._extended_shape(sample_shape)
+            with torch.no_grad():
+                u = torch.rand(shape, dtype=torch.float64, device=self._device)
+                x = self.icdf(u).to(torch.get_default_dtype())
+                return x.clamp(self._low, self._high)
+
+        def log_prob(self, value):
+            v = torch.as_tensor(value)
+            x = v.to(torch.float64)
+            z = (x - self._mu) / self._sigma
+            lp = -0.5 * z * z - math.log(self._sigma) - log_sqrt_2pi - self._log_mass
+            inside = (x >= self._low) & (x <= self._high)
+            lp = torch.where(inside, lp, torch.full_like(lp, -math.inf))
+            return lp.to(v.dtype if v.is_floating_point() else torch.get_default_dtype())
+
+    _TRUNCATED_NORMAL_CLS = _TruncatedNormal
+    return _TruncatedNormal
+
+
+class _HoldFixed:
+    """``predict`` with the prior's ``Fixed`` parameters added to every call: SNPE samples the free
+    parameters only. A module-level class, so it pickles to ``num_workers > 1`` workers."""
+
+    def __init__(self, predict, fixed):
+        self.predict, self.fixed = predict, dict(fixed)
+
+    def __call__(self, params, times, bands=None):
+        full = dict(params)
+        full.update(self.fixed)
+        return self.predict(full, times, bands)
+
+
 def _to_torch_prior(prior, sb, device="cpu"):
     """Adapt a Whisper :class:`Prior` to a torch prior sbi can use, on ``device``.
 
-    All-``Uniform`` priors become a single ``BoxUniform`` (fast); a mix that includes ``LogUniform``
-    becomes a ``MultipleIndependent`` of per-parameter 1-D distributions (``LogUniform`` = exp of a
-    uniform in log-space, via :func:`_bounded_log_uniform_cls` so the ``[low, high]`` bounds reach
-    sbi's rejection sampler). Unsupported distribution types raise a clear error. The prior tensors
-    are created on ``device`` so it matches the (GPU) training device sbi requires.
+    All-``Uniform`` priors become a single ``BoxUniform`` (fast); any other mix becomes a
+    ``MultipleIndependent`` of per-parameter 1-D distributions: ``LogUniform`` = exp of a uniform in
+    log-space, via :func:`_bounded_log_uniform_cls` so the ``[low, high]`` bounds reach sbi's
+    rejection sampler; ``Normal`` = ``torch.distributions.Normal``; ``TruncatedNormal`` via
+    :func:`_truncated_normal_cls` (exact density and draws). A ``Fixed`` parameter is not a
+    dimension of the torch prior (:meth:`SNPESampler.fit` holds it at its value), and other
+    distribution types raise a clear error. The prior tensors are created on ``device`` so it
+    matches the (GPU) training device sbi requires.
     """
-    from ..priors import LogUniform, Uniform
+    from ..priors import LogUniform, Normal, TruncatedNormal, Uniform
+    from ..priors._numpy import family
 
     torch = sb.torch
     lows, highs, comps, all_uniform = [], [], [], True
@@ -189,10 +312,28 @@ def _to_torch_prior(prior, sb, device="cpu"):
                 torch.tensor([float(np.log(d.high))], device=device))
             comps.append(_bounded_log_uniform_cls(torch)(
                 base, torch.distributions.ExpTransform(), float(d.low), float(d.high)))
+        elif isinstance(d, Normal):
+            all_uniform = False
+            comps.append(torch.distributions.Normal(
+                torch.tensor([float(d.mu)], device=device),
+                torch.tensor([float(d.sigma)], device=device)))
+        elif isinstance(d, TruncatedNormal):
+            all_uniform = False
+            comps.append(_truncated_normal_cls(torch)(d, device=device))
+        elif family(d) == "Fixed":
+            raise TypeError(
+                f"parameter {name!r} is Fixed, which is not a dimension of the torch prior: "
+                f"SNPESampler.fit holds it at its value. Pass the prior to fit(), or leave "
+                f"{name!r} out of the prior given to _to_torch_prior.")
         else:
             raise TypeError(
-                f"SNPE prior adapter supports Uniform/LogUniform; got {type(d).__name__} for "
-                f"parameter {name!r}. Provide a Uniform/LogUniform prior or extend _to_torch_prior.")
+                f"SNPE prior adapter supports Uniform/LogUniform/Normal/TruncatedNormal (and "
+                f"Fixed, held at its value by fit); got {type(d).__name__} for parameter "
+                f"{name!r}. Express the prior in one of these, or use sampler='abc' / 'mcmc'.")
+    if len(comps) == 1 and not all_uniform:
+        # sbi's MultipleIndependent needs at least two components; one 1-D distribution with
+        # batch_shape (1,) is already the joint.
+        return comps[0]
     if all_uniform:
         return sb.BoxUniform(low=torch.tensor(lows, device=device), high=torch.tensor(highs, device=device))
     # device= is REQUIRED, not optional: sbi's MultipleIndependent does `self.to(device or "cpu")`
@@ -256,9 +397,10 @@ def _torch_model_in_space(space, zeropoint_jy, torch):
     THE FLOOR IS NOT ALWAYS 1e-300. The numpy likelihood clamps at ``_MIN_FLUX_JY = 1e-300``, which
     is fine in float64 and silently useless here: these tensors are usually float32, where 1e-300
     underflows to exactly 0 and the clamp stops clamping — log10(0) then gives -inf and the whole
-    simulation batch becomes NaN. (The same defect, in the same form, is documented as identity 8 in
-    whisper-GPU's kilonova model.) Clamping at the dtype's smallest normal keeps a non-positive model
-    flux finite at ~104 mag in float32, far fainter than any real detection and therefore harmless.
+    simulation batch becomes NaN. (The same defect, in the same form, is documented in the
+    ``MAG_FLOOR`` note of :mod:`whisper_cbpf.models.jax.kilonova`.) Clamping at the dtype's smallest
+    normal keeps a non-positive model flux finite at ~104 mag in float32, far fainter than any real
+    detection and therefore harmless.
 
     The rule is ``max(_MIN_FLUX_JY, finfo.tiny)``, identical to
     :func:`whisper_cbpf.likelihood._jax.log_likelihood_jax` and
@@ -402,7 +544,6 @@ def _resolve_device(device, torch):
     Accepts ``'cpu'``, ``'cuda'`` / ``'gpu'`` / ``'cuda:N'``, or ``'auto'`` (use CUDA when available,
     else CPU). Requesting a GPU without one available warns and uses CPU rather than crashing.
     """
-    import warnings
 
     d = str(device).lower()
     cuda_ok = bool(torch.cuda.is_available())
@@ -410,8 +551,8 @@ def _resolve_device(device, torch):
         return "cuda" if cuda_ok else "cpu"
     if d in ("gpu", "cuda") or d.startswith("cuda:"):
         if not cuda_ok:
-            warnings.warn(f"SNPE device={device!r} requested but CUDA is unavailable; using CPU.",
-                          stacklevel=3)
+            _warn_user(f"SNPE device={device!r} requested but CUDA is unavailable; using CPU.",
+                         )
             return "cpu"
         return "cuda" if d == "gpu" else d
     return "cpu"
@@ -436,7 +577,7 @@ def _probe_acceptance_rate(posterior, torch_prior, torch, x_o_norm, n_probe=4000
 
 
 def _robust_final_sample(posterior, inference, de_net, torch_prior, torch, x_o_norm, num_samples,
-                          show_progress, num_workers, min_acceptance=1e-3, n_probe=4000):
+                          show_progress, num_chains, min_acceptance=1e-3, n_probe=4000, seed=0):
     """Sample the final (real-data-conditioned) posterior, falling back to MCMC if needed.
 
     ``DirectPosterior.sample()`` (the sbi default) draws via rejection sampling against the prior,
@@ -458,15 +599,14 @@ def _robust_final_sample(posterior, inference, de_net, torch_prior, torch, x_o_n
     in the prior support — a cheap, hang-proof estimate. Healthy runs are unaffected: the probe is fast
     and the common path (rejection sampling) is untouched.
     """
-    import warnings
 
     def _mcmc_fallback(reason):
-        warnings.warn(
+        _warn_user(
             f"SNPE: final posterior sampling {reason}; falling back to MCMC-based sampling "
             "(slice_np_vectorized) which conditions via log_prob instead of the flow's inverse.",
-            stacklevel=3)
-        mcmc_posterior = _build_mcmc_posterior(inference, de_net, x_o_norm, num_workers)
-        return mcmc_posterior.sample((num_samples,), x=x_o_norm, show_progress_bars=show_progress)
+           )
+        return _mcmc_sample(inference, de_net, x_o_norm, num_samples, num_chains, seed, torch,
+                            show_progress)
 
     try:
         rate = _probe_acceptance_rate(posterior, torch_prior, torch, x_o_norm, n_probe)
@@ -486,18 +626,32 @@ def _robust_final_sample(posterior, inference, de_net, torch_prior, torch, x_o_n
     return samples_np, method, rate
 
 
-def _build_mcmc_posterior(inference, de_net, x_o_norm, num_workers):
-    """An ``MCMCPosterior`` over the same trained estimator, conditioned on ``x_o_norm``.
+def _mcmc_sample(inference, de_net, x_o_norm, num_draws, num_chains, seed, torch, show_progress):
+    """``num_draws`` from an ``MCMCPosterior`` over the same trained estimator, at ``x_o_norm``.
 
     Shared by the final draw and the between-round proposal draw so both escape hatches are the
     same object: slice sampling on the estimator's raw ``log_prob``, with no rejection loop and
     therefore no acceptance rate to stall on.
+
+    ``num_chains`` is its own setting. It used to be ``min(20, max(4, num_workers))``, so the
+    parallelism knob changed the algorithm: 4 chains at ``num_workers=1`` (which ``snpe_gpu`` needs,
+    to avoid forking a JAX process), 20 at ``num_workers=30``.
+
+    SEEDED HERE, BECAUSE NOTHING UPSTREAM REACHES IT. sbi's ``slice_np_vectorized`` steps its chains
+    with numpy's GLOBAL generator (``SliceSamplerVectorized.rng = np.random``) and picks their
+    starting points with torch. The numpy simulate path hid this -- sbi's ``simulate_for_sbi``
+    re-seeds every backend each round -- but the torch path (``predict_torch``, i.e. ``snpe_gpu``)
+    never touches numpy's generator, so four seed-0 GPU runs of SN2025pgp/arnett ended on max ln L
+    -1798.5, -1748.9, -1819.2 and -1805.9. Both generators are seeded, as ``simulate_for_sbi``
+    seeds them, so the draw depends on ``seed`` and the trained estimator alone.
     """
+    np.random.seed(int(seed) & 0xFFFFFFFF)
+    torch.manual_seed(int(seed))
     mcmc_posterior = inference.build_posterior(
         de_net, sample_with="mcmc", mcmc_method="slice_np_vectorized",
-        mcmc_parameters={"num_chains": min(20, max(4, int(num_workers))), "warmup_steps": 100})
+        mcmc_parameters={"num_chains": int(num_chains), "warmup_steps": 100})
     mcmc_posterior.set_default_x(x_o_norm)
-    return mcmc_posterior
+    return mcmc_posterior.sample((int(num_draws),), x=x_o_norm, show_progress_bars=show_progress)
 
 
 def _nudge_into_prior_density(theta, torch_prior, torch, max_tries=4):
@@ -541,7 +695,7 @@ def _nudge_into_prior_density(theta, torch_prior, torch, max_tries=4):
 
 
 def _robust_proposal_draw(proposal, num_draws, inference, de_net, torch_prior, torch, x_o_norm,
-                          show_progress, num_workers, min_acceptance=1e-3, n_probe=4000):
+                          show_progress, num_chains, min_acceptance=1e-3, n_probe=4000, seed=0):
     """Draw the NEXT round's parameters, escaping to MCMC when the proposal leaks.
 
     THE SAME HAZARD AS THE FINAL DRAW, ON THE SAME OBJECT, AND IT USED TO BE UNGUARDED HERE.
@@ -562,7 +716,6 @@ def _robust_proposal_draw(proposal, num_draws, inference, de_net, torch_prior, t
     in truncated mode) have no flow inverse and no reject-against-the-prior loop, so they are drawn
     from directly. Returns ``(theta, method, rate)``.
     """
-    import warnings
 
     def _direct(n):
         try:
@@ -574,11 +727,11 @@ def _robust_proposal_draw(proposal, num_draws, inference, de_net, torch_prior, t
         """Every path leaves through here, so the boundary repair cannot be forgotten on one."""
         theta, n_nudged, n_bad = _nudge_into_prior_density(theta, torch_prior, torch)
         if n_bad:
-            warnings.warn(
+            _warn_user(
                 f"SNPE: {n_bad} of {int(num_draws)} proposal draws are outside the prior's own "
                 "density and could not be nudged inside. sbi's atomic loss asserts a finite prior "
                 "log-probability, so training this round would raise; replacing those rows with "
-                "prior draws.", stacklevel=3)
+                "prior draws.")
             replacement = torch_prior.sample((n_bad,)).to(theta.device).to(theta.dtype)
             still = ~torch.isfinite(torch_prior.log_prob(theta).reshape(-1))
             theta[torch.nonzero(still).flatten()] = replacement
@@ -601,12 +754,12 @@ def _robust_proposal_draw(proposal, num_draws, inference, de_net, torch_prior, t
         except AssertionError:
             reason = "hit a numerically-degenerate flow transform (AssertionError)"
 
-    warnings.warn(
+    _warn_user(
         f"SNPE: the round-to-round proposal {reason}; drawing this round's simulations from an "
         "MCMC-based posterior (slice_np_vectorized) instead of the flow's rejection sampler, which "
-        "would stall rather than fail.", stacklevel=3)
-    mcmc_posterior = _build_mcmc_posterior(inference, de_net, x_o_norm, num_workers)
-    theta = mcmc_posterior.sample((int(num_draws),), x=x_o_norm, show_progress_bars=show_progress)
+        "would stall rather than fail.")
+    theta = _mcmc_sample(inference, de_net, x_o_norm, num_draws, num_chains, seed, torch,
+                         show_progress)
     return _finish(theta, "mcmc_fallback", rate)
 
 
@@ -643,13 +796,19 @@ class SNPESampler(BaseSampler):
             num_bins=None, proposal_mode="posterior", truncate_quantile=1e-4,
             support_samples=10000, num_samples=10000, device="cpu", seed=0, show_progress=False,
             num_workers=1, max_logl_scan=2000, scan_timeout=300, standardize_x=True,
-            proposal_min_acceptance=1e-3, **train_kwargs):
+            proposal_min_acceptance=1e-3, num_chains=4, **train_kwargs):
         """Fit ``lc`` with ``model`` via SNPE/NPE.
 
         ``num_rounds=1`` is amortized NPE; ``num_rounds>1`` focuses simulations sequentially.
         ``num_simulations`` is *per round*; ``num_workers`` parallelizes simulation. ``space``
         ('auto'|'flux'|'magnitude') sets the data space for the simulator and the Gaussian noise model
         (errors required).
+
+        **Priors:** ``Uniform``, ``LogUniform``, ``Normal`` and ``TruncatedNormal`` (exact density
+        and draws; see :func:`_to_torch_prior`). A ``Fixed`` parameter is held at its value: it is
+        not a dimension of the torch prior nor of the network, not counted in AIC/BIC
+        (``n_params``), a constant column in ``samples``, and listed in ``info["fixed"]``. A
+        ``predict_torch`` receives the free columns only, in the prior's order.
 
         **Input layout:** ``x_format="value"`` (default) conditions on the data-space values alone;
         ``x_format="stacked"`` appends two constant context channels — ``(value, error, time)`` per
@@ -690,10 +849,24 @@ class SNPESampler(BaseSampler):
         from any model registered through the JAX factories.
 
         **Multi-round leakage guard:** ``proposal_min_acceptance`` (default ``1e-3``) is the
-        within-prior acceptance rate below which the ROUND-TO-ROUND proposal draw stops using the
-        flow's rejection sampler and takes its draws from an ``MCMCPosterior`` over the same
-        estimator instead. Without it a ``num_rounds>1`` fit can stall indefinitely in a rejection
-        loop that never raises (see :func:`_robust_proposal_draw`).
+        within-prior acceptance rate below which the ROUND-TO-ROUND proposal draw, and the final
+        draw, stop using the flow's rejection sampler and take their draws from an
+        ``MCMCPosterior`` over the same estimator instead. Without it a ``num_rounds>1`` fit can
+        stall indefinitely in a rejection loop that never raises (see
+        :func:`_robust_proposal_draw`). That MCMC runs ``num_chains`` slice-sampling chains
+        (default 4), seeded from ``seed``, so a fit that falls back is as reproducible as one that
+        does not.
+
+        **Reporting:** ``info["leakage"]`` is ``True`` when the final flow put so little mass inside
+        the prior box that the final draw had to fall back (acceptance below
+        ``proposal_min_acceptance``), and ``info["converged"]`` is ``True`` only when the final
+        draw needed no fallback at all. Of 45 test fits with an emcee reference, the
+        38 that fell back sat a median 1.61 emcee sigma from emcee (median worst parameter 19.8),
+        the 7 that did not 1.00 (2.31). ``info["x_o_min_rms_z"]`` is the RMS distance, in units of
+        the data errors, from the observation to the closest round-0 (prior-predictive)
+        simulation: a large value says the prior cannot produce the data before any training is
+        spent. ``runtime_s`` covers simulation and training; ``info["postprocess_s"]`` is the final
+        draw plus the max-likelihood scan, which the fallback can make several times longer.
 
         **Free extra scatter (Villar+2017):** ``scatter_param`` names a prior parameter that is a
         LIKELIHOOD scatter term, not a model input: each simulation's noise becomes
@@ -736,8 +909,12 @@ class SNPESampler(BaseSampler):
 
         times = np.asarray(lc.time, dtype=float)
         bands = np.asarray(lc.band)
-        predict = model.predict
-        param_names = list(prior.names)
+        # A Fixed parameter is held at its value: it is not a dimension of the torch prior nor of
+        # the network's output, and it is not counted in AIC/BIC. The simulator and the best-fit
+        # scan see it through `_HoldFixed`; `predict_torch` receives the free columns only.
+        all_names = list(prior.names)
+        prior, param_names, fixed = _dg.split_fixed(prior, all_names, "snpe")
+        predict = _HoldFixed(model.predict, fixed) if fixed else model.predict
         k, n = len(param_names), int(len(times))
         scatter_idx = None
         if scatter_param is not None:
@@ -836,12 +1013,13 @@ class SNPESampler(BaseSampler):
             # the prior -- the same loop `_robust_final_sample` guards at the end, one call earlier,
             # and until now unguarded (observed: 0 of 1500 accepted after 42 s, no error, no end).
             # Draw it here, guarded, and hand the result to whichever simulate path runs.
+            # Seeds: seed + r for the draw before round r, seed + num_rounds for the final draw.
             theta_pre = None
             if r > 0:
                 theta_pre, _m, _rate = _robust_proposal_draw(
                     proposal, int(num_simulations), inference, de_net, torch_prior, torch,
-                    _norm(x_o), show_progress, max(1, int(num_workers)),
-                    min_acceptance=float(proposal_min_acceptance))
+                    _norm(x_o), show_progress, int(num_chains),
+                    min_acceptance=float(proposal_min_acceptance), seed=int(seed) + r)
                 proposal_draw_methods.append(_m)
                 proposal_draw_rates.append(_rate)
             if predict_torch is not None:
@@ -860,6 +1038,12 @@ class SNPESampler(BaseSampler):
                     simulator, sim_proposal, num_simulations=int(num_simulations),
                     num_workers=num_workers, seed=int(seed) + r, show_progress_bar=show_progress)
             x = x if isinstance(x, torch.Tensor) else torch.as_tensor(np.asarray(x), dtype=torch.float32)
+            if r == 0:
+                # Out-of-distribution check, free before any training: RMS distance in data-error
+                # units from x_o to the closest prior-predictive simulation (value columns only;
+                # nanmin, because a failed simulation is a NaN row that training drops anyway).
+                z = (x[:, :n].detach().cpu().double().numpy() - x_np[:n]) / sig_clean
+                x_o_min_rms_z = float(np.nanmin(np.sqrt(np.mean(z ** 2, axis=1))))
             if _norm_method != "none" and not _norm_stats:   # fit the normaliser on round-0 sims
                 _fit_norm(x)
             x = _norm(x)                                # normalised conditioning input
@@ -898,10 +1082,13 @@ class SNPESampler(BaseSampler):
                     proposal = posterior
         runtime = time.perf_counter() - t0
 
+        t_post = time.perf_counter()
         samples_np, final_sample_method, final_sample_acceptance = _robust_final_sample(
             posterior, inference, de_net, torch_prior, torch, _norm(x_o), int(num_samples),
-            show_progress, max(1, int(num_workers)))
-        samples = pd.DataFrame(samples_np, columns=param_names)
+            show_progress, int(num_chains), min_acceptance=float(proposal_min_acceptance),
+            seed=int(seed) + int(num_rounds))
+        samples = pd.DataFrame(_dg.fill_fixed(samples_np, param_names, fixed, all_names),
+                               columns=all_names)
 
         # Exact Gaussian metrics at the best (max-likelihood) posterior draw — scatter-augmented
         # (with each draw's own scatter value) when a scatter parameter is fitted. The scan re-runs the
@@ -918,11 +1105,10 @@ class SNPESampler(BaseSampler):
         n_jobs = max(1, int(num_workers))
         logls, _ = _parallel_max_logl(args, n_jobs, scan_timeout)
         if logls is None:                           # parallel scan hit the timeout (a draw hung)
-            import warnings
-            warnings.warn(f"SNPE: max-likelihood scan exceeded scan_timeout={scan_timeout}s (a "
+            _warn_user(f"SNPE: max-likelihood scan exceeded scan_timeout={scan_timeout}s (a "
                           "posterior draw stalled the forward model); scoring a small subset instead. "
                           "This usually means a poorly-conditioned posterior — prefer magnitude space "
-                          "for neural SBI on flux data.", stacklevel=2)
+                          "for neural SBI on flux data.")
             logls, _ = _parallel_max_logl(args[:min(len(args), 4 * n_jobs)], n_jobs, scan_timeout)
             if logls is None:
                 logls = np.array([float("-inf")])
@@ -930,11 +1116,13 @@ class SNPESampler(BaseSampler):
             best_idx = int(np.nanargmax(logls))
             max_log_likelihood = float(logls[best_idx])
         else:                                       # every scanned draw gave a non-finite likelihood
-            import warnings
-            warnings.warn("SNPE: all scanned posterior draws have non-finite log-likelihood; "
-                          "AIC/BIC are -inf and best_params is the first draw.", stacklevel=2)
+            _warn_user("SNPE: all scanned posterior draws have non-finite log-likelihood; "
+                          "AIC/BIC are -inf and best_params is the first draw.")
             best_idx, max_log_likelihood = 0, float("-inf")
         best_params = {nm: float(scan[best_idx][j]) for j, nm in enumerate(param_names)}
+        best_params = {nm: best_params[nm] if nm in best_params else float(fixed[nm])
+                       for nm in all_names}
+        postprocess_s = time.perf_counter() - t_post
 
         info = {
             "num_rounds": int(num_rounds), "num_simulations": int(num_simulations),
@@ -945,25 +1133,31 @@ class SNPESampler(BaseSampler):
             "normalize_x": _norm_method,
             "final_sample_method": final_sample_method,
             "final_sample_acceptance_rate": final_sample_acceptance,
+            "leakage": bool(final_sample_acceptance < float(proposal_min_acceptance)),
+            "converged": final_sample_method == "rejection",
+            "x_o_min_rms_z": x_o_min_rms_z,
             "proposal_draw_methods": list(proposal_draw_methods),
             "proposal_draw_acceptance_rates": list(proposal_draw_rates),
+            "num_chains": int(num_chains),
+            "postprocess_s": postprocess_s,
             "sim_backend": "torch" if predict_torch is not None else "numpy",
             "scatter_param": scatter_param,
             "proposal_mode": proposal_mode,
             "truncate_quantile": float(truncate_quantile) if proposal_mode == "restricted" else None,
             "space": lik.space, "num_samples": int(num_samples), "device": str(device),
             "seed": int(seed), "num_workers": int(num_workers),
+            "fixed": dict(fixed),
         }
-        attach_band_metrics(info, lc, model.name, best_params, space)
+        attach_band_metrics(info, lc, model, best_params, space)
         aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
-            sampler="snpe", model=model.name, parameters=list(param_names), samples=samples,
-            summary=summarize_posterior(samples, param_names), best_params=best_params,
+            sampler="snpe", model=model.name, parameters=list(all_names), samples=samples,
+            summary=summarize_posterior(samples, all_names), best_params=best_params,
             n_data=n, n_params=k, runtime_s=runtime, info=info,
             max_log_likelihood=max_log_likelihood,
             aic=aic, bic=bic,
         )
-        attach_predictive_metrics(result, lc, space)
+        attach_predictive_metrics(result, lc, space, model=model)
         # Attach the trained sbi objects for resampling / pairplot (not part of to_json).
         result.posterior = posterior
         result.posteriors = posteriors
@@ -988,5 +1182,37 @@ def fit_SNPE(lc, model="flare", prior=None, **kwargs) -> SamplerResult:
     """Fit ``lc`` with ``model`` via Sequential Neural Posterior Estimation.
 
     See :meth:`SNPESampler.fit` for options. Requires the optional ``[sbi]`` extra (sbi + torch).
+
+    Parameters
+    ----------
+    lc : LightCurve
+        The data (detections only: SNPE cannot use an upper limit).
+    model : str or Model, default "flare"
+    prior : Prior, optional
+        Default: the model's.
+    **kwargs
+        The sampler's settings (``num_rounds``, ``num_simulations``, ``num_samples``, ``seed``,
+        ...).
+
+    Returns
+    -------
+    SamplerResult
+
+    Examples
+    --------
+    A ``Normal`` prior on the amplitude and a ``Fixed`` rise time (held outside the network):
+
+    >>> import numpy as np
+    >>> import whisper_cbpf as wp
+    >>> t = np.linspace(0.5, 30.0, 30)
+    >>> truth = {"amplitude": 5.0, "rise_time": 3.0, "decay_time": 15.0}
+    >>> lc = wp.LightCurve(time=t, band=["r"] * 30, flux=wp.get_model("flare").predict(truth, t),
+    ...                    flux_err=np.full(30, 0.2))
+    >>> prior = wp.Prior({"amplitude": wp.Normal(5.0, 1.0), "rise_time": wp.Fixed(3.0),
+    ...                   "decay_time": wp.Uniform(1.0, 50.0)})
+    >>> res = wp.fit_SNPE(lc, "flare", prior=prior, num_rounds=1, num_simulations=500,
+    ...                   max_num_epochs=20, num_samples=500, seed=0)
+    >>> res.n_params, res.info["fixed"], list(res.samples.columns)
+    (2, {'rise_time': 3.0}, ['amplitude', 'rise_time', 'decay_time'])
     """
     return SNPESampler().fit(lc, model, prior=prior, **kwargs)

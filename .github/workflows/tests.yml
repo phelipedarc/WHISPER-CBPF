@@ -7,7 +7,7 @@ name: tests
 # and that every GPU sampler and model still appears in list_samplers() / list_models() as
 # available-requiring-an-extra. The GPU tiers (tests/t0_parity, t2_autodiff, t3_inference and the
 # *_vs_redback comparisons) need a CUDA device and `source "$(whisper-cbpf-env)"`; they stay a
-# manual run in phe_sbi_2 and are NOT gated here. See docs/GPU_SETUP.md.
+# manual run on a GPU machine and are NOT gated here. See docs/GPU_SETUP.md.
 #
 # The environment is deliberately minimal -- core + [dev] only, no redback, no arviz, no jax. That is
 # the configuration most likely to be broken by accident, because nobody develops in it.
@@ -44,6 +44,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install ".[dev]"
+
+      - name: Every Python file compiles
+        # pytest never collects the staged GPU jobs in tests/t3_inference/ or their helpers, so a
+        # syntax error there is invisible to the Test step below.
+        run: python -m compileall -q whisper_cbpf tests
 
       - name: Import with no optional dependency present
         # Run from a directory that is NOT the checkout, so this imports the INSTALLED package

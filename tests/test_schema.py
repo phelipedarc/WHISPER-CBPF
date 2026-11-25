@@ -74,6 +74,36 @@ def test_set_explosion_date():
     assert np.allclose(lc.time, [-1.0, 0.0, 1.0])
 
 
+def test_set_time_reference_shifts_the_same_way_and_records_what_day_0_is():
+    """Regression: ``set_explosion_date`` was the only way to shift the clock, so a
+    curve whose day 0 is the first detection was recorded, and plotted, as "days since explosion"."""
+    lc = _toy().set_time_reference(2.0, "first detection")    # times [1, 2, 3] -> [-1, 0, 1]
+    assert np.allclose(lc.time, [-1.0, 0.0, 1.0])
+    assert (lc.meta["time_reference"], lc.meta["time_reference_mjd"]) == ("first detection", 2.0)
+    assert "explosion_mjd" not in lc.meta                     # it is not the explosion
+    assert lc.select_bands("g").add_flux().meta["time_reference"] == "first detection"
+
+
+def test_set_explosion_date_declares_the_explosion_as_day_0():
+    lc = _toy().set_explosion_date(2.0)
+    assert (lc.meta["time_reference"], lc.meta["time_reference_mjd"]) == ("explosion", 2.0)
+
+
+def test_calc_phase_counts_from_the_declared_day_0():
+    """A curve already measured from a stated day 0 is phased from it, as one from the explosion is."""
+    ph = _toy().set_time_reference(3.0, "peak").calc_phase()   # times [1, 2, 3] -> [-2, -1, 0]
+    assert ph.meta["refmjd"] == 0.0
+    assert np.allclose(ph["phase"], [-2.0, -1.0, 0.0])
+
+
+def test_where_names_the_missing_column():
+    """Regression (bugs.md §2): the mask was built first, so astropy's bare ``KeyError: 'nosuchcol'``
+    fired before the message naming the columns that do exist could."""
+    for key in ("nosuchcol", "nosuchcol_min", "nosuchcol_not"):
+        with pytest.raises(KeyError, match=r"where\(\): no column 'nosuchcol'; have \['time', "):
+            _toy().where(**{key: 1})
+
+
 def test_upper_limit_field():
     lc = LightCurve(time=[1.0, 2.0], band=["g", "g"],
                     magnitude=[20.0, 21.0], magnitude_err=[0.1, 0.1],

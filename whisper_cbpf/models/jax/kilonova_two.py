@@ -19,10 +19,11 @@ L), an XLA reassociation that makes float32 flux density NaN, a float32 gradient
 flips the sign of d/d(vej), and a magnitude clamp that does nothing because
 ``float32(1e-300) == 0``. Sharing the core means a fix lands once, and this file cannot drift.
 
-**Validity horizon -- read this before comparing against redback.** ``kilonova.py`` deliberately
-diverges from redback past ``t ~ 2.66 * t_diff``, where redback's trapezoid is under-resolved. With
-two components there are two ``t_diff`` values, and under redback's own prior they can differ by up
-to a factor of 21. So:
+**Validity horizon -- read this before comparing against redback.** With ``time_grid=None``,
+``kilonova.py``'s converged quadrature diverges from redback past ``t ~ 2.66 * t_diff``, where
+redback's trapezoid is under-resolved; with ``time_grid=redback_time_grid(...)`` (the factories'
+default) it reproduces redback there, error included. With two components there are two ``t_diff``
+values, and under redback's own prior they can differ by up to a factor of 21. So:
 
 * use ``2.66 * min(t_diff_1, t_diff_2)`` as the horizon -- not the max, and not a flux-weighted
   average, because the *short* component enters the bad regime first;
@@ -32,8 +33,10 @@ to a factor of 21. So:
   first.
 
 Note also that ``2comp(p1, p2) != 1comp(p1) + 1comp(p2)`` *in redback*, because its two-component
-path starts its dense grid at 1e-2 s and its one-component path at 1e-3 s. Do not assert that
-identity against redback. Here the two do agree, which is a property worth testing.
+path ends its dense grid at 6 d and its one-component path at 81 d (redback 1.20; in 1.15 they
+started at 1e-2 s and 1e-3 s). Do not assert that identity against redback's two-component model.
+Here the two do agree, which is a property worth testing -- and the sum of one-component calls is
+what whisper takes as the two-component model.
 """
 from __future__ import annotations
 
@@ -126,26 +129,31 @@ def three_component_magnitude(t_src_s, band_idx, weights, norms, lam_obs_ang, re
 
 
 def bolometric_multi(t_src_s, mej, vej, kappa, temperature_floor,
-                     arnett_prefactor=None):
+                     arnett_prefactor=None, time_grid=None):
     """Per-component ``(L/LSCALE, T, R)``, each ``(n_comp, n_obs)``.
 
     ``mej, vej, kappa, temperature_floor`` are ``(n_comp,)``. A plain vmap over the one-component
     core, so it generalises to N components for free. ``arnett_prefactor`` is per the
     one-component core (None = its ARNETT_PREFACTOR default = redback's 1.0; see kilonova.py) --
     passed OUTSIDE the vmap because it is a trace-time python float, not a traced value.
+    ``time_grid`` is the one-component core's too, shared by every component: redback 1.20's
+    grid depends on the epochs only, so the sum of one-component redback calls solves each
+    component on the same grid.
     """
     from .kilonova import ARNETT_PREFACTOR
     ap = ARNETT_PREFACTOR if arnett_prefactor is None else arnett_prefactor
-    fn = lambda t, m, v, k, tf: bolometric(t, m, v, k, tf, arnett_prefactor=ap)  # noqa: E731
+    fn = lambda t, m, v, k, tf: bolometric(t, m, v, k, tf, arnett_prefactor=ap,  # noqa: E731
+                                           time_grid=time_grid)
     return jax.vmap(fn, in_axes=(None, 0, 0, 0, 0))(
         t_src_s, mej, vej, kappa, temperature_floor)
 
 
 def flux_density_mjy_multi(t_src_s, nu_obs_hz, redshift, dl_cm,
-                           mej, vej, kappa, temperature_floor, arnett_prefactor=None):
+                           mej, vej, kappa, temperature_floor, arnett_prefactor=None,
+                           time_grid=None):
     """Flux density in mJy, summed over components."""
     _, temp, rad = bolometric_multi(t_src_s, mej, vej, kappa, temperature_floor,
-                                    arnett_prefactor=arnett_prefactor)
+                                    arnett_prefactor=arnett_prefactor, time_grid=time_grid)
     nu_src = nu_obs_hz * (1.0 + redshift)
     f_nu = _flux_nu(temp, rad, dl_cm, nu_src, redshift, PLANCK_T3)   # (n_comp, n_obs)
     return jnp.sum(f_nu, axis=0) / MJY
@@ -153,7 +161,7 @@ def flux_density_mjy_multi(t_src_s, nu_obs_hz, redshift, dl_cm,
 
 def ab_magnitude_multi(t_src_s, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm,
                        mej, vej, kappa, temperature_floor, *, mag_floor=MAG_FLOOR,
-                       arnett_prefactor=None,
+                       arnett_prefactor=None, time_grid=None,
                        ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None,
                        r_v_mw=3.1, r_v_host=3.1, law='f99'):
     """AB magnitude of the SUMMED SED.
@@ -168,13 +176,16 @@ def ab_magnitude_multi(t_src_s, band_idx, weights, norms, lam_obs_ang, redshift,
     caller must chunk. See ``abc_gpu.DEFAULT_CHUNK`` for the same trap.
     """
     _, temp, rad = bolometric_multi(t_src_s, mej, vej, kappa, temperature_floor,
-                                    arnett_prefactor=arnett_prefactor)
+                                    arnett_prefactor=arnett_prefactor, time_grid=time_grid)
     nu_obs = SPEED_OF_LIGHT / (lam_obs_ang * 1e-8)
     nu_src = nu_obs[None, None, :] * (1.0 + redshift)
 
     # AB-zero-point units (identity 8), matching the one-component path: this is what keeps
     # d(mag)/d(flux) inside float32 rather than overflowing to inf and poisoning the gradient.
     f_nu = _flux_nu(temp[:, :, None], rad[:, :, None], dl_cm, nu_src, redshift, PLANCK_T3_AB)
+    # Keep the Planck exp/expm1 out of the band reduction (XLA's GPU fusion autotuner takes
+    # minutes on a reduce that contains it); see kilonova.ab_magnitude.
+    f_nu = jax.lax.optimization_barrier(f_nu)
     f_tot = jnp.sum(f_nu, axis=0)                                   # (n_obs, n_wave), IN FLUX
     tau = _ext_transmission(lam_obs_ang, redshift, ebv_mw, ebv_host,
                             xi_mw, xi_host, r_v_mw, r_v_host, law)
@@ -206,12 +217,12 @@ def two_component_magnitude(t_src_s, band_idx, weights, norms, lam_obs_ang, reds
 
 def two_component_flux_density(t_src_s, nu_obs_hz, redshift, dl_cm,
                                mej_1, vej_1, temperature_floor_1, kappa_1,
-                               mej_2, vej_2, temperature_floor_2, kappa_2):
+                               mej_2, vej_2, temperature_floor_2, kappa_2, time_grid=None):
     """Flux density in mJy, summed over both components."""
     return flux_density_mjy_multi(
         t_src_s, nu_obs_hz, redshift, dl_cm,
         _stack(mej_1, mej_2), _stack(vej_1, vej_2), _stack(kappa_1, kappa_2),
-        _stack(temperature_floor_1, temperature_floor_2))
+        _stack(temperature_floor_1, temperature_floor_2), time_grid=time_grid)
 
 
 def default_prior():

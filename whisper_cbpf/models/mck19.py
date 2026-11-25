@@ -10,10 +10,14 @@ Reference: McKernan et al. 2019, ApJL 884, L50 (https://iopscience.iop.org/artic
 This implementation follows the code of **Darc 2025** (https://arxiv.org/abs/2506.02224).
 
 This is a **band-dependent** model: it returns flux density (Jy) at each observed ``(time, band)``,
-computing the hotspot + disk blackbody at each band's effective wavelength (resolved through Whisper's
-band system). It is self-contained (astropy constants + cosmology only). The original used `speclite`
-LSST filter integration; here the AB magnitude is evaluated monochromatically at each band's effective
-wavelength -- a documented approximation that keeps the model dependency-free.
+integrating the hotspot and the disk blackbody over each band's filter with
+:mod:`whisper_cbpf.synphot` (the band integral every whisper model uses; the original used
+``speclite`` LSST filter integration). LSST ugrizy, ZTF gri and SDSS ugriz come from the package's
+shipped FilterSets, so the model stays self-contained (astropy constants + cosmology only); other
+filters need sncosmo or an SVO ID. Bare ``u g r i z y`` are LSST. A band that names no filter
+raises -- up to whisper 0.1.0 it was evaluated at 6000 A without a word, and every band was
+monochromatic at its effective wavelength (the ``g`` peak at the test point moves from 25.898 to
+25.840 mag with the band integral).
 
 Parameters
 ----------
@@ -57,7 +61,7 @@ _JY_CGS = 1e-23                # 1 Jy = 1e-23 erg s^-1 cm^-2 Hz^-1
 from ..io.photometry import AB_ZEROPOINT_JY as _AB_ZP_JY
 _MDOT_EDD = 0.05               # disk accretion rate [Eddington] (fixed)
 _EXP_CLIP = 700.0              # keep exp() finite (just under float64's exp overflow ~709)
-_DEFAULT_LAMBDA_AA = 6000.0    # fallback effective wavelength for unresolved bands
+_NO_BANDS_LABEL = "r"          # the band assumed (with a warning) when predict gets bands=None
 
 # Redshift -> luminosity distance (cm), precomputed + interpolated so predict() stays fast.
 _Z_GRID = np.linspace(1e-3, 3.0, 800)
@@ -121,8 +125,8 @@ def _duration_days(m_smbh, m_bh, r_bh, v_kick):
     return (rh_km / v_kick) / 86400.0
 
 
-def _ab_mag_blackbody(lambda_obs_aa, temperature, r_emit_cm, dl_cm, z):
-    """AB magnitude of a blackbody sphere (radius ``r_emit_cm``) at the observed wavelength(s)."""
+def _fnu_blackbody_jy(lambda_obs_aa, temperature, r_emit_cm, dl_cm, z):
+    """Observed F_nu [Jy] of a blackbody sphere (radius ``r_emit_cm``) at the observed wavelength(s)."""
     lam_obs_cm = np.asarray(lambda_obs_aa, dtype=float) * 1e-8
     lam_rest_cm = lam_obs_cm / (1.0 + z)
     x = np.clip(_H_CGS * _C_CGS / (lam_rest_cm * _KB_CGS * temperature), None, _EXP_CLIP)
@@ -132,8 +136,19 @@ def _ab_mag_blackbody(lambda_obs_aa, temperature, r_emit_cm, dl_cm, z):
     # making every predicted flux a factor of pi (~1.24 mag) too faint; restore it for physical fluxes.
     f_lambda_obs = np.pi * b_lambda * (r_emit_cm / dl_cm) ** 2 / (1.0 + z)
     f_nu = f_lambda_obs * lam_obs_cm**2 / _C_CGS                          # erg s^-1 cm^-2 Hz^-1
-    f_nu_jy = np.maximum(f_nu / _JY_CGS, 1e-300)
-    return -2.5 * np.log10(f_nu_jy / _AB_ZP_JY)
+    return f_nu / _JY_CGS
+
+
+def _band_mag_blackbody(filter_set, band_idx, temperature, r_emit_cm, dl_cm, z):
+    """AB magnitude of the blackbody integrated over each observation's filter.
+
+    One evaluation per filter node, not per observation: the blackbody does not depend on time.
+    """
+    mags = np.array([
+        -2.5 * np.log10(max(w @ _fnu_blackbody_jy(x, temperature, r_emit_cm, dl_cm, z) / w.sum(),
+                            1e-300) / _AB_ZP_JY)
+        for x, w in zip(filter_set.nodes, filter_set.weights)])
+    return mags[band_idx]
 
 
 def _flare_shape(t, t_peak, tau_decay):
@@ -149,18 +164,21 @@ def _flare_shape(t, t_peak, tau_decay):
     return s
 
 
-def _effective_wavelengths(bands):
-    """Per-point observed effective wavelength [Angstrom] from Whisper's band system (NaN -> default)."""
-    from ..io.bands import resolve_bands
-    lam, _, _ = resolve_bands(np.asarray(bands), svo_fallback=False, warn=False)
-    return np.where(np.isfinite(lam), lam, _DEFAULT_LAMBDA_AA)
+def _filters(bands):
+    """``(FilterSet, per-point index into it)`` for these band labels. Raises for a label that names
+    no filter (a grouped ``r-band``, a typo): there is no silent fallback wavelength any more."""
+    from ..synphot import filter_set_for, resolve_filters
+
+    names = resolve_filters(np.asarray(bands).ravel())
+    fs = filter_set_for(names)
+    return fs, np.array([fs.index(n) for n in names], dtype=int).reshape(np.shape(bands))
 
 
 def mck19_flux(parameters, times, bands=None):
     """Predicted flux density [Jy] at each ``(time, band)`` for the McKernan-2019 AGN-disk flare.
 
-    ``times`` are days since the merger; ``bands`` selects the effective wavelength per point. See the
-    module docstring for the parameters and physics.
+    ``times`` are days since the merger; ``bands`` selects the filter each point is integrated over
+    (bare letters are LSST). See the module docstring for the parameters and physics.
     """
     v_kick = float(parameters["v_kick"])
     m_smbh = float(parameters["M_smbh"])
@@ -170,10 +188,10 @@ def mck19_flux(parameters, times, bands=None):
 
     t = np.asarray(times, dtype=float)
     if bands is None:
-        warnings.warn("mck19 is band-dependent; no bands given -> assuming r-band wavelength.", stacklevel=2)
-        lam_obs = np.full(t.shape, _DEFAULT_LAMBDA_AA)
-    else:
-        lam_obs = _effective_wavelengths(bands)
+        warnings.warn("mck19 is band-dependent; no bands given -> assuming the r band (LSST r "
+                      "unless set_default_band_system says otherwise).", stacklevel=2)
+        bands = np.full(t.shape, _NO_BANDS_LABEL)
+    fs, band_idx = _filters(bands)
 
     r_g = _r_g_cm(m_smbh)
     dl_cm = _lum_distance_cm(z)
@@ -182,8 +200,9 @@ def mck19_flux(parameters, times, bands=None):
     t_peak = _t_ram_days(m_bh, v_kick, z)
     tau_decay = _duration_days(m_smbh, m_bh, r_bh, v_kick) * (1.0 + z)
 
-    peak_mag = _ab_mag_blackbody(lam_obs, _temperature_flare(v_kick), r_emit_flare, dl_cm, z)
-    disk_mag = _ab_mag_blackbody(lam_obs, _temperature_disk(m_smbh, r_bh), r_emit_disk, dl_cm, z)
+    peak_mag = _band_mag_blackbody(fs, band_idx, _temperature_flare(v_kick), r_emit_flare, dl_cm, z)
+    disk_mag = _band_mag_blackbody(fs, band_idx, _temperature_disk(m_smbh, r_bh), r_emit_disk, dl_cm,
+                                   z)
 
     # Only an EM brightening on top of the disk (no "negative flare" where the hotspot is fainter).
     brighten = np.maximum(disk_mag - peak_mag, 0.0)

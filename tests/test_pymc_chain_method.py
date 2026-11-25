@@ -21,7 +21,10 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# The repo root, where whisper_cbpf lives. Not its parent: in a checkout whose parent also holds a
+# redback clone, that directory would shadow the installed redback as an empty namespace package for
+# every test that runs after this module is collected.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from whisper_cbpf.samplers.jax.pymc_gpu import _effective_chain_method  # noqa: E402
 

@@ -9,7 +9,10 @@ is the honest summary — a posterior is only as well-characterized as its least
 direction.
 
 ArviZ is imported lazily and failures degrade to NaN with a warning, matching the
-optional-arviz pattern in ``whisper_cbpf.metrics._loo_waic``.
+optional-arviz pattern in ``whisper_cbpf.metrics._loo_waic``. The ESS itself comes from
+:func:`whisper_cbpf.samplers.jax._diagnostics.rank_diagnostics`, the one routine the NUTS samplers
+use for their R-hat and ESS too. This module called ``az.convert_to_inference_data``, which arviz
+1.x removed, so every ESS was NaN (and every ESS/sec with it) on arviz >= 1.0.
 """
 from __future__ import annotations
 
@@ -22,7 +25,8 @@ def ess_by_parameter(samples_by_chain, param_names, method="bulk"):
     """Per-parameter ESS from draws shaped ``(n_chains, n_draws, n_params)``.
 
     Samplers without a natural chain axis (SNPE's iid draws) should pass ``n_chains=1``.
-    Returns ``{param: ess}``; all-NaN if arviz is unavailable.
+    ``method`` is ``"bulk"`` or ``"tail"`` (rank-normalised, Vehtari et al. 2021). Returns
+    ``{param: ess}``; all-NaN, with a warning naming the reason, if arviz is unavailable or fails.
     """
     samples_by_chain = np.asarray(samples_by_chain)
     if samples_by_chain.ndim != 3:
@@ -30,22 +34,17 @@ def ess_by_parameter(samples_by_chain, param_names, method="bulk"):
     if samples_by_chain.shape[2] != len(param_names):
         raise ValueError(f"{samples_by_chain.shape[2]} parameter columns but "
                          f"{len(param_names)} names given")
-    try:
-        import arviz as az
-    except ImportError:
-        warnings.warn("arviz not installed; ESS unavailable (pip install arviz).", stacklevel=2)
-        return {nm: float("nan") for nm in param_names}
+    if method not in ("bulk", "tail"):
+        raise ValueError(f"method must be 'bulk' or 'tail', got {method!r}")
+    from ..samplers.jax._diagnostics import rank_diagnostics
 
-    try:
-        # One arviz variable per parameter: az.ess then returns a scalar per name, avoiding any
-        # ambiguity about how a multi-dimensional variable's ESS would be reduced.
-        idata = az.convert_to_inference_data(
-            {nm: samples_by_chain[:, :, i] for i, nm in enumerate(param_names)})
-        ess = az.ess(idata, method=method)
-        return {nm: float(np.asarray(ess[nm].values)) for nm in param_names}
-    except Exception as exc:                                   # pragma: no cover
-        warnings.warn(f"ESS computation failed: {exc!r}", stacklevel=2)
+    d = rank_diagnostics(samples_by_chain, list(param_names))
+    if not d["rhat_method"].startswith("arviz"):
+        # The numpyro fallback's ESS is classical, not rank-normalised, and has no tail: not the
+        # number this function promises, so it is not passed off as one.
+        warnings.warn(f"ESS unavailable: {d['rhat_error']} (pip install arviz).", stacklevel=2)
         return {nm: float("nan") for nm in param_names}
+    return dict(d["ess_bulk" if method == "bulk" else "ess_tail"])
 
 
 def ess_summary(samples_by_chain, param_names, wall_clock_s, method="bulk"):

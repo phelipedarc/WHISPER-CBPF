@@ -144,6 +144,19 @@ def test_batched_simulator_reports_a_zero_copy_handoff():
     assert pt.chunk == 2 and pt.names == ["amp", "tau"]
 
 
+def test_batched_simulator_default_chunk_is_the_re_measured_width():
+    """250 simulations per compiled block, not 16. The simulator compiles in 1.3-2.5 s
+    at 250, and a latency-bound model pays per block (the TDE at n_time=5000: 2.25 s against 0.73 s
+    per 1000-simulation call). Not a power of two: see abc_gpu.DEFAULT_CHUNK."""
+    from whisper_cbpf.samplers.jax.snpe_gpu import DEFAULT_SIM_CHUNK, make_predict_torch
+
+    assert DEFAULT_SIM_CHUNK == 250
+    pt = make_predict_torch(_toy_lc(), _banded_toy_model())
+    assert pt.chunk == 250
+    rows = torch.as_tensor(np.array([[1.0, 6.0], [2.5, 15.0], [4.0, 28.0]]))
+    assert tuple(pt(rows).shape) == (3, 24)               # fewer rows than one block: padded
+
+
 def test_batched_simulator_refuses_a_different_grid():
     """The band -> filter-index map is resolved once, outside the trace. A different band array
     would therefore evaluate the WRONG filters silently; a different epoch count, the wrong span."""
@@ -200,6 +213,21 @@ def test_context_embedding_injects_sigma_and_band_after_sbis_standardizer():
     assert bool(torch.isfinite(emb0.sigma_ch).all())
 
 
+def test_a_context_embedding_with_the_stacked_layout_is_refused_before_simulating():
+    """``embedding_net=ContextEmbedding(...)`` is what the deprecation of ``embedding="tcn"`` points
+    to, and it reads the value-only vector: with ``x_format="stacked"`` it raised ``RuntimeError:
+    shape '[1, 1, 24]' is invalid for input of size 72`` at the first training batch, after the
+    simulations had been paid for."""
+    from whisper_cbpf.samplers.jax.snpe_gpu import ContextEmbedding, encode_bands
+
+    lc, m = _toy_lc(), _banded_toy_model(name="snpe_gpu_toy_ctx_stacked")
+    codes, labels = encode_bands(lc.band, labels=None)
+    ctx = ContextEmbedding(np.asarray(lc.flux_err), codes, n_bands=len(labels), latent_dim=8)
+    with pytest.raises(ValueError, match="x_format='value'"):
+        wp.fit(lc, m.name, sampler="snpe_gpu", device="cpu", embedding_net=ctx,
+               x_format="stacked", num_rounds=1, num_simulations=50)
+
+
 def test_flare_jax_now_carries_a_predict_jax():
     """The slot was empty, which is why ``snpe_gpu`` needed a flare-shaped special case."""
     m = wp.get_model("flare_jax")
@@ -210,6 +238,23 @@ def test_flare_jax_now_carries_a_predict_jax():
     want = m.predict({"log_amp": 0.0, "log_sigma": 0.5, "log_tau": 1.0, "t0": 10.0},
                      np.asarray(times), None)
     assert np.allclose(got, want, rtol=2e-6)
+
+
+def test_snpe_and_snpe_gpu_default_to_the_same_num_rounds():
+    """``snpe_gpu`` wraps ``SNPESampler``, so its default must not quietly pick another algorithm.
+
+    Regression: ``snpe`` defaulted to 2 rounds (sequential SNPE), ``snpe_gpu`` and ``fit_snpe_gpu``
+    to 1 (amortised NPE), and the API reference said 3.
+    """
+    import inspect
+
+    from whisper_cbpf.samplers.jax.snpe_gpu import SNPEGPUSampler, fit_snpe_gpu
+    from whisper_cbpf.samplers.snpe import SNPESampler
+
+    def default(fn):
+        return inspect.signature(fn).parameters["num_rounds"].default
+
+    assert default(SNPEGPUSampler.fit) == default(fit_snpe_gpu) == default(SNPESampler.fit)
 
 
 def test_snpe_gpu_refuses_a_model_with_no_predict_jax():
@@ -385,11 +430,58 @@ def test_snpe_gpu_embedding_and_density_estimator_options(embedding, estimator):
     lc, m = _toy_lc(n=32), _banded_toy_model(name=f"snpe_gpu_toy_{embedding}")
     res = wp.fit(lc, m.name, sampler="snpe_gpu", device="cpu", space="flux",
                  num_rounds=1, num_simulations=120, num_samples=150, seed=0,
-                 sim_chunk=16, embedding=embedding, embedding_latent=8,
+                 sim_chunk=16, embedding_net=embedding, embedding_latent=8,
                  density_estimator=estimator, max_num_epochs=8)
     assert res.samples.shape == (150, 2)
-    assert res.info["embedding"].startswith(f"ContextEmbedding({embedding}")
+    assert res.info["embedding_net"] == embedding
     assert res.info["density_estimator"] == estimator
+
+
+def _tcn_channels(res):
+    """Input channels of every TCN inside the trained estimator: what the network conditions on."""
+    from whisper_cbpf.embeddings import TCNEmbedding
+
+    return [mod.n_channels for mod in res.posterior.posterior_estimator.modules()
+            if isinstance(mod, TCNEmbedding)]
+
+
+_EMB_TINY = dict(space="flux", num_rounds=1, num_simulations=100, num_samples=100, seed=0,
+                 embedding_latent=8, max_num_epochs=3)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("x_format,channels", [("value", 1), ("stacked", 3)])
+def test_embedding_net_names_one_network_on_both_arms(x_format, channels):
+    """One keyword, one meaning: ``embedding_net="tcn"`` is the same TCN on ``snpe`` and ``snpe_gpu``.
+
+    Regression, three ways: the GPU arm took ``embedding=``, and ``embedding_net=`` raised
+    ``TypeError: multiple values``; its ``"tcn"`` was a ContextEmbedding over (value, log sigma,
+    band one-hot) where the CPU's is a TCN over the ``x_format`` channels; and with
+    ``x_format="stacked"`` it raised ``RuntimeError: shape '[1, 1, 29]' is invalid for input of
+    size 87`` at the first training batch, after the simulations had been paid for.
+    """
+    pytest.importorskip("sbi")
+
+    lc, m = _toy_lc(), _banded_toy_model(name=f"snpe_gpu_toy_emb_{x_format}")
+    cpu = wp.fit(lc, m.name, sampler="snpe", embedding_net="tcn", x_format=x_format, **_EMB_TINY)
+    gpu = wp.fit(lc, m.name, sampler="snpe_gpu", device="cpu", sim_chunk=16, embedding_net="tcn",
+                 x_format=x_format, **_EMB_TINY)
+    assert _tcn_channels(cpu) == _tcn_channels(gpu) == [channels]
+    assert cpu.info["embedding_net"] == gpu.info["embedding_net"] == "tcn"
+
+
+@pytest.mark.slow
+def test_the_old_embedding_keyword_is_a_deprecated_alias():
+    pytest.importorskip("sbi")
+
+    lc, m = _toy_lc(), _banded_toy_model(name="snpe_gpu_toy_alias")
+    for old, new in (("tcn", "tcn"), ("none", None)):
+        with pytest.warns(DeprecationWarning, match="embedding_net"):
+            res = wp.fit(lc, m.name, sampler="snpe_gpu", device="cpu", sim_chunk=16,
+                         embedding=old, **_EMB_TINY)
+        assert res.info["embedding_net"] == new
+    with pytest.raises(TypeError, match="embedding_net"):
+        wp.fit(lc, m.name, sampler="snpe_gpu", device="cpu", embedding="tcn", embedding_net="mlp")
 
 
 @pytest.mark.slow

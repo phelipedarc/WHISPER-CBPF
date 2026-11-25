@@ -78,9 +78,12 @@ def test_mck19_blackbody_has_pi_factor():
     m = get_model("mck19")
     p = {"v_kick": 300.0, "M_smbh": 1e8, "M_bh": 80.0, "r_bh": 700.0, "redshift": 0.28}
     t = np.linspace(0, 60, 400)
-    peak_mag = -2.5 * np.log10(m.predict(p, t, np.array(["g"] * 400)).max() / 3631.0)
-    # pi-corrected peak is exactly 2.5*log10(pi) ~ 1.24 mag brighter than the (wrong) no-pi value 27.14
-    assert peak_mag == pytest.approx(27.143 - 2.5 * np.log10(np.pi), abs=0.05)
+    peak_mag = -2.5 * np.log10(m.predict(p, t, np.array(["lsstg"] * 400)).max() / 3631.0)
+    # pi-corrected peak is exactly 2.5*log10(pi) ~ 1.24 mag brighter than the (wrong) no-pi value
+    # 27.14 at g's effective wavelength, i.e. 25.900; integrating the blackbody over the LSST g
+    # filter instead (whisper 0.1.1) makes it a further 0.058 mag brighter: 25.8415. A lost pi
+    # would read 27.08, a lost filter integral 25.900.
+    assert peak_mag == pytest.approx(27.143 - 2.5 * np.log10(np.pi) - 0.0582, abs=0.005)
 
 
 # --- #4: CCM89 clamps out-of-range bands (does not silently return A=0) ----------------------------

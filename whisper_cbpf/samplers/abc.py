@@ -30,11 +30,10 @@ import pandas as pd
 _MP_CONTEXT = multiprocessing.get_context("spawn")
 
 
-import warnings
-
 from ..distance import chi2_distance, get_distance
 from ..likelihood import make_likelihood
 from ..models import get_model
+from .jax import _diagnostics as _dg                                # numpy-only; no JAX import
 from .base import (
     aic_bic,
     BaseSampler,
@@ -42,6 +41,7 @@ from .base import (
     attach_band_metrics,
     attach_predictive_metrics,
     summarize_posterior,
+    _warn_user,
 )
 
 
@@ -80,6 +80,21 @@ def _worker(args):
     return _simulate_batch(*args)
 
 
+def _logl_batch(predict, lik, times, bands, thetas, scatter_name):
+    """Exact log-likelihood of each theta -- the best-fit scan, split across workers like the
+    simulations. ``scatter_name`` routes that draw's own scatter value to ``sigma_extra``."""
+    logls = np.empty(len(thetas), dtype=float)
+    for j, th in enumerate(thetas):
+        mf = np.asarray(predict(th, times, bands), dtype=float)
+        logls[j] = (lik.log_likelihood(mf, sigma_extra=float(th[scatter_name])) if scatter_name
+                    else lik.log_likelihood(mf))
+    return logls
+
+
+def _logl_worker(args):
+    return _logl_batch(*args)
+
+
 class ABCSampler(BaseSampler):
     """Approximate Bayesian Computation by parallel rejection (see the module docstring)."""
 
@@ -87,7 +102,7 @@ class ABCSampler(BaseSampler):
 
     def fit(self, lc, model, prior=None, *, n_simulations=10000, quantile=0.01, threshold=None,
             distance=chi2_distance, simulate_noise=True, space="auto", scatter_param=None,
-            n_jobs=None, seed=0):
+            n_jobs=None, seed=0, max_logl_scan=None):
         """Fit ``lc`` with ``model`` by rejection ABC, returning a :class:`SamplerResult`.
 
         Parameters
@@ -98,6 +113,9 @@ class ABCSampler(BaseSampler):
             A registered model name or a :class:`~whisper_cbpf.models.Model`.
         prior : Prior, optional
             Parameter prior; defaults to the model's ``default_prior`` (``ValueError`` if neither).
+            Any distribution with ``sample(rng)`` works (``Normal``, ``TruncatedNormal`` included).
+            A ``Fixed`` parameter is drawn as its value: a constant column in ``samples``, listed
+            in ``info["fixed"]``, and not counted in AIC/BIC (``n_params``).
         n_simulations : int, default 10000
             Number of prior draws / simulations.
         quantile : float, default 0.01
@@ -108,8 +126,12 @@ class ABCSampler(BaseSampler):
             noise — ``E[D] ≈ χ² + n_points`` with roughly doubled per-point variance — so a threshold
             calibrated against the old noiseless χ² scale will accept (near) nothing. Re-derive fixed
             thresholds, or use ``quantile`` (which adapts automatically).
-        distance : callable, default :func:`chi2_distance`
-            ``f(obs_flux, obs_err, sim_flux, bands) -> float``. Must be picklable for ``n_jobs > 1``.
+        distance : callable or str, default :func:`chi2_distance`
+            ``f(obs_flux, obs_err, sim_flux, bands) -> float``, or a registered name. Must be
+            picklable for ``n_jobs > 1``. ``"max_abs_z"`` with ``threshold=k`` accepts a draw only
+            if every point is within ``k`` of its own error (the v3 rule is ``threshold=5,
+            simulate_noise=False, space="magnitude"``); see
+            :func:`whisper_cbpf.distance.max_abs_z_distance`.
         simulate_noise : bool, default True
             Add per-point white noise ``N(0, flux_err)`` to each simulation so it matches the
             generative model of the data (measurement noise included). This is what makes ABC exact
@@ -136,12 +158,20 @@ class ABCSampler(BaseSampler):
             speed only, not the science.
         seed : int, default 0
             Base RNG seed; the full posterior is reproducible given ``(seed, n_simulations)``.
+        max_logl_scan : int, optional
+            Cap on the accepted draws re-scored by exact log-likelihood to pick ``best_params``
+            (one forward-model call each, on the same ``n_jobs`` workers as the simulations).
+            **Default ``None`` scores every accepted draw.** When a cap binds, the draws with the
+            LOWEST distance are scored, never the first ones accepted. ``info['logl_scan_n']`` and
+            ``info['logl_scan_capped']`` record what was done.
 
         Returns
         -------
         SamplerResult
             Posterior samples + summary, ``best_params``, and ``max_log_likelihood``/``aic``/``bic``
-            (chi-square = -2 ln L for a Gaussian likelihood).
+            (chi-square = -2 ln L for a Gaussian likelihood). If no draw was accepted,
+            ``best_params`` is the closest *rejected* draw (``info['best_params_source']``) and the
+            predictive metrics are skipped (``info['predictive_metrics_skipped']``).
         """
         model = get_model(model)
         distance = get_distance(distance)
@@ -159,6 +189,9 @@ class ABCSampler(BaseSampler):
         obs_err = np.asarray(lik_space.sigma, dtype=float)
         predict = model.predict
         names = list(prior.names)               # sampled parameters (may include a scatter nuisance)
+        # A Fixed parameter is drawn as its value (Fixed.sample) and kept as a constant column, but
+        # it is not a fitted parameter, so it is not counted in AIC/BIC.
+        _, free_names, fixed = _dg.split_fixed(prior, names, "abc")
         if scatter_param is not None:
             if scatter_param not in names:
                 raise ValueError(f"scatter_param {scatter_param!r} is not in the prior ({names}).")
@@ -190,56 +223,72 @@ class ABCSampler(BaseSampler):
         t0 = time.perf_counter()
         thetas = []
         dist_parts = []
-        if n_jobs == 1:
-            th, ds = _simulate_batch(predict, prior, distance, times, bands,
-                                     obs_y, obs_err, index_chunks[0], seed, simulate_noise,
-                                     lik_space.model_in_space, scatter_param)
-            thetas.extend(th)
-            dist_parts.append(ds)
-        else:
-            args = [(predict, prior, distance, times, bands, obs_y, obs_err, idx, seed,
-                     simulate_noise, lik_space.model_in_space, scatter_param)
-                    for idx in index_chunks]
-            with ProcessPoolExecutor(max_workers=n_jobs,
-                                     mp_context=_MP_CONTEXT) as executor:
-                for th, ds in executor.map(_worker, args):
+        # One pool for the simulations AND the best-fit scan below: spawn's start-up is the cost
+        # that makes n_jobs > 1 opt-in (see above), so the scan reuses the workers instead of
+        # paying it twice.
+        pool = (ProcessPoolExecutor(max_workers=n_jobs, mp_context=_MP_CONTEXT)
+                if n_jobs > 1 else None)
+        try:
+            if pool is None:
+                th, ds = _simulate_batch(predict, prior, distance, times, bands,
+                                         obs_y, obs_err, index_chunks[0], seed, simulate_noise,
+                                         lik_space.model_in_space, scatter_param)
+                thetas.extend(th)
+                dist_parts.append(ds)
+            else:
+                args = [(predict, prior, distance, times, bands, obs_y, obs_err, idx, seed,
+                         simulate_noise, lik_space.model_in_space, scatter_param)
+                        for idx in index_chunks]
+                for th, ds in pool.map(_worker, args):
                     thetas.extend(th)
                     dist_parts.append(ds)
-        runtime = time.perf_counter() - t0
+            runtime = time.perf_counter() - t0
 
-        distances = np.concatenate(dist_parts)
-        epsilon = float(np.quantile(distances, quantile)) if threshold is None else float(threshold)
-        keep = distances <= epsilon
-        if not keep.any():
-            warnings.warn(
-                f"ABC accepted 0 of {n_simulations} draws at epsilon={epsilon:g}; the posterior is "
-                "empty. best_params / AIC / BIC reflect the single closest draw only.", stacklevel=2)
-        accepted = [thetas[i] for i in np.nonzero(keep)[0]]
-        samples = pd.DataFrame(accepted, columns=names)     # ALL sampled params (incl. any scatter)
-        samples["distance"] = distances[keep]
+            distances = np.concatenate(dist_parts)
+            epsilon = (float(np.quantile(distances, quantile)) if threshold is None
+                       else float(threshold))
+            keep = distances <= epsilon
+            if not keep.any():
+                _warn_user(
+                    f"ABC accepted 0 of {n_simulations} draws at epsilon={epsilon:g}; the "
+                    "posterior is empty. best_params / AIC / BIC reflect the single closest draw, "
+                    "which was NOT accepted, and the predictive metrics are skipped.")
+            accepted = [thetas[i] for i in np.nonzero(keep)[0]]
+            samples = pd.DataFrame(accepted, columns=names)  # ALL sampled params (incl. scatter)
+            samples["distance"] = distances[keep]
 
-        # Model-selection metrics. The chi-square distance drops the Gaussian normalisation; to make
-        # AIC/BIC **comparable across samplers** (MCMC/SNPE use the exact Gaussian log-likelihood in
-        # the data's natural space), evaluate that same likelihood here too — the scatter-augmented
-        # one when a scatter parameter is fitted, with each draw's own scatter value. With
-        # simulate_noise the noisy-distance argmin is the *luckiest simulation-noise draw*, not the
-        # best theta — so the best fit is chosen by exact log-likelihood over the accepted draws
-        # (deterministically capped scan), never by the noisy distance.
-        chi2_min = float(distances.min())     # noisy scale when simulate_noise: E[D] ~ chi2 + n_points
-        k, n = len(names), lc.n_points
-        lik = (make_likelihood(lc, kind="gaussian_scatter", space=space,
-                               scatter_param=scatter_param) if scatter_param
-               else make_likelihood(lc, space=space))
-        cand = accepted if accepted else [thetas[int(np.argmin(distances))]]
-        scan = cand[:2000]
-
-        def _logl(th):
-            mf = np.asarray(predict(th, times, bands), dtype=float)
-            if scatter_param:
-                return lik.log_likelihood(mf, sigma_extra=float(th[scatter_param]))
-            return lik.log_likelihood(mf)
-
-        logls = np.array([_logl(th) for th in scan], dtype=float)
+            # Model-selection metrics. The chi-square distance drops the Gaussian normalisation; to
+            # make AIC/BIC **comparable across samplers** (MCMC/SNPE use the exact Gaussian
+            # log-likelihood in the data's natural space), evaluate that same likelihood here too —
+            # the scatter-augmented one when a scatter parameter is fitted, with each draw's own
+            # scatter value. With simulate_noise the noisy-distance argmin is the *luckiest
+            # simulation-noise draw*, not the best theta — so the best fit is chosen by exact
+            # log-likelihood over the accepted draws, never by the noisy distance.
+            chi2_min = float(distances.min())  # noisy when simulate_noise: E[D] ~ chi2 + n_points
+            k, n = len(free_names), lc.n_points
+            lik = (make_likelihood(lc, kind="gaussian_scatter", space=space,
+                                   scatter_param=scatter_param) if scatter_param
+                   else make_likelihood(lc, space=space))
+            # EVERY accepted draw by default. This used to be the first 2000 in acceptance order,
+            # an arbitrary subset: on real supernova fits ln L_max came out up to 3.4 low and BIC
+            # up to 6.9 high. A cap, when given, keeps the lowest-distance draws -- the most
+            # promising -- and at least one, so the ranking can never come back empty.
+            cand = np.nonzero(keep)[0] if keep.any() else np.array([int(np.argmin(distances))])
+            n_cand = len(cand)
+            cap = n_cand if max_logl_scan is None else max(int(max_logl_scan), 1)
+            if n_cand > cap:
+                cand = cand[np.argsort(distances[cand], kind="stable")[:cap]]
+            scan = [thetas[i] for i in cand]
+            if pool is None:
+                logls = _logl_batch(predict, lik, times, bands, scan, scatter_param)
+            else:
+                parts = [c for c in np.array_split(np.arange(len(scan)), n_jobs) if len(c)]
+                logls = np.concatenate(list(pool.map(
+                    _logl_worker, [(predict, lik, times, bands, [scan[j] for j in c], scatter_param)
+                                   for c in parts])))
+        finally:
+            if pool is not None:
+                pool.shutdown()
         best_idx = int(np.nanargmax(logls)) if np.any(np.isfinite(logls)) else 0
         best = {p: float(scan[best_idx][p]) for p in names}
         max_log_likelihood = float(logls[best_idx])
@@ -255,8 +304,12 @@ class ABCSampler(BaseSampler):
             "n_jobs": int(n_jobs),
             "distance": getattr(distance, "__name__", str(distance)),
             "likelihood_space": lik.space,
+            "logl_scan_n": int(len(scan)),
+            "logl_scan_capped": bool(len(scan) < n_cand),
+            "best_params_source": "accepted_draws" if accepted else "closest_rejected_draw",
+            "fixed": dict(fixed),
         }
-        attach_band_metrics(info, lc, model.name, best, space)
+        attach_band_metrics(info, lc, model, best, space)
         aic, bic = aic_bic(max_log_likelihood, k, n)
         result = SamplerResult(
             sampler="abc", model=model.name, parameters=names,
@@ -265,10 +318,41 @@ class ABCSampler(BaseSampler):
             min_distance=chi2_min, max_log_likelihood=max_log_likelihood,
             aic=aic, bic=bic,
         )
-        attach_predictive_metrics(result, lc, space)
+        attach_predictive_metrics(result, lc, space, model=model)
         return result
 
 
 def fit_ABC(lc, model="flare", prior=None, **kwargs) -> SamplerResult:
-    """Fit ``lc`` with ``model`` via rejection ABC. See :meth:`ABCSampler.fit` for options."""
+    """Fit ``lc`` with ``model`` via rejection ABC. See :meth:`ABCSampler.fit` for options.
+
+    Parameters
+    ----------
+    lc : LightCurve
+        The data (detections only: ABC cannot use an upper limit).
+    model : str or Model, default "flare"
+    prior : Prior, optional
+        Default: the model's.
+    **kwargs
+        The sampler's settings (``n_simulations``, ``quantile``, ``threshold``, ``distance``,
+        ``seed``, ...).
+
+    Returns
+    -------
+    SamplerResult
+
+    Examples
+    --------
+    Accept a draw only if every point is within 5 sigma (``distance="max_abs_z"``):
+
+    >>> import numpy as np
+    >>> import whisper_cbpf as wp
+    >>> from whisper_cbpf.models.flare import flare_flux
+    >>> t, b = np.linspace(0.5, 30.0, 30), np.array(["r"] * 30)
+    >>> flux = flare_flux({"amplitude": 5.0, "rise_time": 3.0, "decay_time": 15.0}, t, b)
+    >>> lc = wp.LightCurve(time=t, band=b, flux=flux, flux_err=np.full(30, 0.25))
+    >>> res = wp.fit_ABC(lc, "flare", n_simulations=5000, distance="max_abs_z", threshold=5.0,
+    ...                  simulate_noise=False)
+    >>> res.info["n_accepted"] > 0 and bool((res.samples["distance"] <= 5.0).all())
+    True
+    """
     return ABCSampler().fit(lc, model, prior=prior, **kwargs)

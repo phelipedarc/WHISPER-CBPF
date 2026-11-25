@@ -138,11 +138,97 @@ def test_manual_band_resolves_without_warning(svo_clean):
     assert r["source"] == "manual" and r["lambda_eff"] == 5000.0
 
 
-def test_get_transmission_data_mocked(monkeypatch):
+def test_get_transmission_data_mocked(svo_clean, monkeypatch):
+    # svo_clean: curves are cached on disk now, and a fake curve must not land in the real cache.
     monkeypatch.setattr(svo, "_svo_fetch_transmission",
                         lambda fid: (np.array([1000.0, 2000.0]), np.array([0.1, 0.9])))
     wl, tr = svo.get_transmission_data("PAN-STARRS/PS1.r")
     assert np.allclose(wl, [1000.0, 2000.0]) and np.allclose(tr, [0.1, 0.9])
+
+
+def test_transmission_is_cached_in_memory_and_on_disk(svo_clean, monkeypatch):
+    """A model bound to an SVO filter must rebuild offline: the curve is cached like the metadata."""
+    calls = {"n": 0}
+
+    def counting(fid):
+        calls["n"] += 1
+        return np.array([5000.0, 5500.0, 6000.0]), np.array([0.0, 0.8, 0.0])
+    monkeypatch.setattr(svo, "_svo_fetch_transmission", counting)
+    a = svo.get_transmission_data("X/X.q")
+    b = svo.get_transmission_data("X/X.q")                 # memory
+    svo._CURVE_CACHE.clear()
+    c = svo.get_transmission_data("X/X.q")                 # disk
+    assert calls["n"] == 1
+    for got in (b, c):
+        assert np.array_equal(got[0], a[0]) and np.array_equal(got[1], a[1])
+    svo.get_transmission_data("X/X.q", use_cache=False)
+    assert calls["n"] == 2
+
+
+class _FakeFilter:
+    """What ``pyphot.svo.get_pyphot_filter`` returns: wavelength as a Quantity, in nm."""
+
+    def __init__(self):
+        import astropy.units as u
+        self.wavelength = np.array([400.0, 450.0, 500.0]) * u.nm
+        self.transmit = np.array([0.0, 0.9, 0.0])
+
+
+class _FakePyphotSvo:
+    QUERY_URL = "http://invalid.example/fps.php"
+
+    @staticmethod
+    def get_pyphot_filter(fid):
+        return _FakeFilter()
+
+
+def test_transmission_goes_through_pyphot_when_installed(monkeypatch):
+    """Role A of the pyphot trial: pyphot first, and its nm curve comes back in Angstrom."""
+    def no_astroquery():
+        raise AssertionError("astroquery must not be used when pyphot answers")
+    monkeypatch.setattr(svo, "_pyphot", lambda: _FakePyphotSvo)
+    monkeypatch.setattr(svo, "_svo", no_astroquery)
+    wl, tr = svo._svo_fetch_transmission("LSST/LSST.g")
+    assert np.allclose(wl, [4000.0, 4500.0, 5000.0]) and np.allclose(tr, [0.0, 0.9, 0.0])
+
+
+def test_astroquery_is_the_fallback_without_pyphot(monkeypatch):
+    class FakeSvoFps:
+        @staticmethod
+        def get_transmission_data(fid):
+            return {"Wavelength": [4000.0, 4500.0], "Transmission": [0.2, 0.3]}
+    monkeypatch.setattr(svo, "_pyphot", lambda: None)
+    monkeypatch.setattr(svo, "_svo", lambda: FakeSvoFps)
+    wl, tr = svo._svo_fetch_transmission("LSST/LSST.g")
+    assert np.allclose(wl, [4000.0, 4500.0]) and np.allclose(tr, [0.2, 0.3])
+    assert svo.transmission_backend() == "astroquery"
+
+
+def test_pyphot_failure_falls_back_to_astroquery(monkeypatch):
+    class Broken:
+        QUERY_URL = "http://invalid.example/fps.php"
+
+        @staticmethod
+        def get_pyphot_filter(fid):
+            raise RuntimeError("pyphot could not parse this")
+
+    class FakeSvoFps:
+        @staticmethod
+        def get_transmission_data(fid):
+            return {"Wavelength": [4000.0, 4500.0], "Transmission": [0.2, 0.3]}
+    monkeypatch.setattr(svo, "_pyphot", lambda: Broken)
+    monkeypatch.setattr(svo, "_svo", lambda: FakeSvoFps)
+    wl, _ = svo._svo_fetch_transmission("LSST/LSST.g")
+    assert np.allclose(wl, [4000.0, 4500.0])
+
+
+def test_boundary_names_exist_on_pyphot():
+    """The pyphot names the wrappers call must exist (attribute presence only; no network)."""
+    pytest.importorskip("pyphot")
+    from pyphot.io.votable import from_votable      # noqa: F401  (the metadata parser)
+    pyphot_svo = svo._pyphot()
+    assert pyphot_svo is not None
+    assert hasattr(pyphot_svo, "get_pyphot_filter") and hasattr(pyphot_svo, "QUERY_URL")
 
 
 def test_empty_svo_index_with_hint_is_graceful(svo_clean, monkeypatch):
@@ -174,3 +260,42 @@ def test_resolve_bands_vectorized(monkeypatch):
     assert lam.shape == (3,) and zp.shape == (3,)
     assert info["g"]["source"] == "lsst"
     assert np.isfinite(lam).all()
+
+
+_MINI_VOTABLE = b"""<?xml version="1.0"?>
+<VOTABLE version="1.1" xmlns="http://www.ivoa.net/xml/VOTable/v1.1">
+<RESOURCE type="results"><TABLE>
+<PARAM name="filterID" value="X/X.q" datatype="char" arraysize="*"/>
+<PARAM name="WavelengthEff" value="6200.5" unit="Angstrom" datatype="double"/>
+<PARAM name="ZeroPoint" value="3100.25" unit="Jy" datatype="double"/>
+<FIELD name="Wavelength" unit="Angstrom" datatype="double"/>
+<FIELD name="Transmission" datatype="double"/>
+<DATA><TABLEDATA><TR><TD>6000.0</TD><TD>0.1</TD></TR><TR><TD>6400.0</TD><TD>0.5</TD></TR>
+</TABLEDATA></DATA></TABLE></RESOURCE></VOTABLE>"""
+
+
+def test_metadata_goes_through_pyphot_when_installed(monkeypatch):
+    """With pyphot, the metadata is SVO's own VOTable PARAMs, read by pyphot's parser from the
+    single-filter query -- no astroquery, and the same numbers its filter list carries."""
+    pytest.importorskip("pyphot")
+    import requests
+
+    class Response:
+        content = _MINI_VOTABLE
+
+        def raise_for_status(self):
+            pass
+
+    seen = {}
+
+    def fake_get(url, params=None, timeout=None):
+        seen.update(url=url, params=params)
+        return Response()
+
+    def no_astroquery():
+        raise AssertionError("astroquery must not be used when pyphot answers")
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(svo, "_svo", no_astroquery)
+    meta = svo._svo_fetch_metadata("X/X.q")
+    assert meta == {"filter_id": "X/X.q", "WavelengthEff": 6200.5, "ZeroPoint": 3100.25}
+    assert seen["params"] == {"ID": "X/X.q"} and seen["url"] == svo._pyphot().QUERY_URL

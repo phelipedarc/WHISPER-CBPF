@@ -6,8 +6,10 @@ Whisper models predict **flux**; a likelihood compares that prediction to the da
 * ``space='flux'`` — residuals/errors in flux (Jy). Upper limits (non-detections) can be used here.
 * ``space='magnitude'`` — the model flux is converted to AB magnitude and compared to the observed
   magnitudes/errors.
-* ``space='auto'`` (default) — magnitude data -> magnitude space, flux data -> flux space. This is the
-  "correct" default; users override only for edge cases (e.g. outliers, non-detections).
+* ``space='auto'`` (default) — magnitude data -> magnitude space, flux data -> flux space, and a
+  light curve with upper limits -> flux space, where ``likelihood='auto'`` fits the limits with the
+  censored likelihood (their significance from ``lc.meta["upper_limit_sigma"]``, else 5 sigma).
+  This is the "correct" default; users override only for edge cases (e.g. outliers).
 
 Likelihoods are picklable so they can cross process boundaries for parallel inference. Each exposes
 ``log_likelihood(model_flux) -> float``.
@@ -25,6 +27,7 @@ the classes, so ``from whisper_cbpf.likelihood import GaussianLikelihood`` still
 from __future__ import annotations
 
 from ._numpy import (  # noqa: F401
+    DEFAULT_UPPER_LIMIT_SIGMA,
     GaussianLikelihood,
     GaussianLikelihoodWithScatter,
     GaussianLikelihoodWithUpperLimits,

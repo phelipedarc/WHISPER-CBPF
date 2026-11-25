@@ -32,9 +32,8 @@ trash/
 # user needs to install and use the package.
 _local/
 
-# Editor state and the standalone analysis runs. Both are large and neither belongs in the
+# Standalone analysis runs. They are large and do not belong in the
 # published tree; listed here so `git add -A` cannot sweep them in.
-.claude/
 analysis_170826/
 
 # Working notes on bugs found while writing the tutorials. Local only.

@@ -6,8 +6,20 @@
 pip install "git+https://github.com/phelipedarc/WHISPER-CBPF.git"
 ```
 
-That gives you a working CPU package: data ingestion, plotting, priors, likelihoods, the model
-comparison metrics, and the samplers `abc`, `abc_smc`, `mcmc` and `nested`.
+That gives you a working CPU package: data ingestion (survey alerts included), plotting, priors,
+likelihoods, the samplers `abc`, `abc_smc`, `mcmc` and `nested`, and the comparison tools
+(`compare`, `likelihood_max_opt`, `diagnostics`, `forecast`, the facts file and the HTML report)
+for the CPU models. The supernova and TDE families that `compare` binds to an alert (`"arnett"`, `"magnetar"`,
+`"tde"`, ...), and so the README quickstart, are JAX models. Add JAX for them:
+
+```bash
+pip install jax           # CPU: Linux, macOS, Windows (the platforms JAX publishes wheels for)
+```
+
+That is enough for the quickstart on a CPU (`compare` then uses CPU `mcmc`); it was checked with JAX
+installed and numpyro, PyMC, redback, sbi and torch absent. On an NVIDIA GPU use the `[gpu]` extra
+instead (section 3), which pins JAX's CUDA 12 build and adds the GPU samplers; it has no macOS or
+Windows wheels.
 
 Verify it:
 
@@ -15,8 +27,8 @@ Verify it:
 python -c "import whisper_cbpf as wp; print(wp.__version__, len(wp.list_models()), len(wp.list_samplers()))"
 ```
 
-Expect `0.1.0 6 13`. All 13 samplers are listed even on the base install — the ones needing an extra
-say so when you ask for them, rather than vanishing from the registry.
+Expect the version, then `6 14`. All 14 samplers are listed even on the base install — the ones
+needing an extra say so when you ask for them, rather than vanishing from the registry.
 
 > **PyPI:** nothing is published yet, so `pip install whisper-cbpf` does **not** work. Install from
 > GitHub with the command above. (The GitHub route was verified on 2026-08-14: anonymous
@@ -27,35 +39,38 @@ say so when you ask for them, rather than vanishing from the registry.
 | | |
 |---|---|
 | Python | ≥ 3.10 |
-| OS | Linux, macOS, Windows (GPU extra is Linux + CUDA 12) |
+| OS | Linux, macOS, Windows (the `[gpu]` extra is Linux + CUDA 12; on a CPU add `pip install jax`) |
 | Compiler | not needed for the base install; `[models]` builds `sncosmo` |
 
 The base install is pure-Python wheels: numpy, scipy, pandas, matplotlib, astropy, emcee, dynesty,
 corner.
 
-## 3. The three extras
+## 3. The extras
 
-There are exactly three, and you can combine them.
+There are five, and you can combine them.
 
 | Extra | Command | Gives you |
 |---|---|---|
-| `[gpu]` | `pip install "whisper-cbpf[gpu] @ git+https://github.com/phelipedarc/WHISPER-CBPF.git"` | every JAX model (kilonova 1- and 2-component, TDE, 12 supernovae) and the samplers `nuts_gpu`, `abc_gpu`, `abc_smc_gpu`, `emcee_jax`, `pymc_jax_gpu_vectorized`, `pymc_jax_gpu_parallelized` |
-| `[models]` | `…[models] @ git+…` | redback's physical models — `two_component_kilonova` on CPU, and the TDE / supernova priors read from redback's own `.prior` files |
-| `[sbi]` | `…[sbi] @ git+…` | the `snpe` / `npe` simulation-based sampler (pulls torch) |
+| `[gpu]` | `pip install "whisper-cbpf[gpu] @ git+https://github.com/phelipedarc/WHISPER-CBPF.git"` | every JAX model (kilonova with one, two or three components and the Metzger kilonovae, TDE and the two further TDE models, 16 supernovae, the phenomenological light-curve models), the samplers `nuts_gpu`, `abc_gpu`, `abc_smc_gpu`, `emcee_jax`, `pymc_jax_gpu_vectorized`, `pymc_jax_gpu_parallelized`, and `fit_batch`, `log_density` and `profile` for many alerts |
+| `[models]` | `…[models] @ git+…` | redback's physical models — `two_component_kilonova` on CPU, and the TDE / supernova priors read from redback's own `.prior` files — plus `pyphot`, the SVO filter client |
+| `[sbi]` | `…[sbi] @ git+…` | the `snpe` / `npe` simulation-based sampler (pulls torch); with `[gpu]` as well, `snpe_gpu` |
+| `[analysis]` | `…[analysis] @ git+…` | `arviz` (ESS, PSIS-LOO) and `astroquery` (SVO wavelength search, and SVO filters when `pyphot` is absent), neither GPU-specific |
+| `[ode]` | `…[ode] @ git+…` | `diffrax`, the adaptive ODE solver of `general_magnetar_driven` (the model also runs without it, on a fixed-step solver built into the package) |
 
 Everything at once:
 
 ```bash
-pip install "whisper-cbpf[gpu,models,sbi] @ git+https://github.com/phelipedarc/WHISPER-CBPF.git"
+pip install "whisper-cbpf[gpu,models,sbi,analysis,ode] @ git+https://github.com/phelipedarc/WHISPER-CBPF.git"
 ```
 
-`[gpu]` also carries `pymc`, `arviz` and `astroquery`, so the PyMC samplers, the ESS / PSIS-LOO
-metrics and the SVO band lookup need no separate extra. On a **CPU-only** install those three are
-not pulled in; add them directly if you want them:
+`[gpu]` installs `pymc`, which requires `arviz`, so a GPU install has the PyMC samplers and the ESS /
+PSIS-LOO metrics without `[analysis]`. On a **CPU-only** install add `[analysis]` for them. Without
+`arviz`, `elpd_loo` is `None`, not an error.
 
-```bash
-pip install arviz astroquery      # PSIS-LOO metrics, SVO band resolution, on CPU
-```
+The SVO lookup (`io.svo`) uses `pyphot` when it is installed and falls back to `astroquery`; either
+one is enough for filter curves by SVO ID, and a search by wavelength needs `astroquery`. With
+neither, a band given by SVO ID cannot be resolved and you supply it by hand. The built-in LSST, ZTF
+and SDSS bands need neither.
 
 ### redback pins numpy
 
@@ -103,8 +118,8 @@ print(ok, msg)
 ### float64 is mandatory for the TDE and every supernova
 
 The TDE's envelope ODE accumulates increments ~1e-6 of the state, below float32's 1.2e-7 epsilon.
-The twelve supernova engines carry bolometric luminosities of 1e43–1e46 erg/s, and float32 stops at
-3.4e38. Both **raise** rather than returning a plausible wrong answer — but at the first `predict`,
+The sixteen supernova-family engines carry bolometric luminosities of 1e43–1e46 erg/s, and float32
+stops at 3.4e38; so do `tde_fallback` and `tde_analytical`. All **raise** rather than returning a plausible wrong answer — but at the first `predict`,
 **not** at registration, so a registry containing `tde_gaussianrise_jax` is not evidence that this
 session can run it.
 
@@ -151,9 +166,19 @@ python -c "import whisper_cbpf as wp; print(wp.get_model('two_component_kilonova
 python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 ```
 
+```bash
+# [gpu], from a checkout -- the README quickstart, from an LSST alert to an HTML report
+python -m pytest tests/test_docs_coverage.py -q
+```
+
+The last check runs the quickstart on the synthetic alert in `tests/data` with a short chain (about
+two minutes on a CPU), and checks that every public name is documented.
+
 ## 6. Where to go next
 
-* [`README.md`](README.md) — a five-minute first fit.
+* [`README.md`](README.md) — from an LSST alert to a ranked answer in six lines, and a first fit.
+* [`docs/LSST_ALERTS.md`](docs/LSST_ALERTS.md) — the alert workflow end to end, with seconds per
+  alert on a CPU and on one GPU.
 * [`docs/TUTORIAL.md`](docs/TUTORIAL.md) — the guided walkthrough.
 * [`docs/MODEL_COMPARISON.md`](docs/MODEL_COMPARISON.md) — comparing models on CPU and on
   GPU, with a personalised prior.

@@ -1,9 +1,10 @@
 """T0 golden-file generator. Run ONCE, inside the reference container, then commit the npz.
 
-    docker exec a GPU environment bash -lc 'export JAX_PLATFORMS=cpu; \
-        cd /tf/astrodados2/phelipedata2/WHISPER/WHISPER-CBPF && \
-        source "$(whisper-cbpf-env)" && \
-        python -u tests/t0_parity/make_goldens.py'
+From the repo root, with the ``[gpu,models,dev]`` extras installed::
+
+    export JAX_PLATFORMS=cpu
+    source "$(whisper-cbpf-env)"
+    python -u tests/t0_parity/make_goldens.py
 
 Everything asserted by ``test_goldens.py`` is computed here FROM REDBACK ONLY -- numpy in,
 numpy out, no JAX anywhere in the reference path. The one exception is ``filterset_t0.npz``,

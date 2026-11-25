@@ -13,9 +13,12 @@ float32 cannot resolve, so the engine raises rather than returning a plausible w
 
     import jax; jax.config.update("jax_enable_x64", True)   # before the first array exists
 
-The defaults that differ from one or other redback release -- ``n_time=5000``, ``dilation=True``,
-and the envelope's own termination criterion -- and every other deviation, with the measurements
-behind them, are in ``docs/PORTING_NOTES.md``.
+The defaults that differ from one or other redback release -- ``n_time`` (the installed redback's
+grid, see :func:`default_n_time`), ``dilation=True``, and the envelope's own termination
+criterion -- and every other deviation, with the measurements behind them, are in
+``docs/PORTING_NOTES.md``. One is a deliberate project decision, kept as the default:
+the Gaussian-rise cooling envelope dilates time once, by ``(1 + z)``, where redback 1.20-1.21
+dilates it twice (reported upstream as a redback bug; PORTING_NOTES section 4.5).
 
 The expressions below keep redback's exact spelling on purpose: a forward-Euler recursion
 amplifies round-off, so respelling ``Rv ** 2`` as ``Rv * Rv`` is not a no-op. Do not simplify them.
@@ -38,6 +41,7 @@ from .kilonova import (
     RATIO_CONST,
     RSCALE,
     DLSCALE,
+    TEMPERATURE_MIN,
     NUSCALE,
     SIGMA_SB,
     SOLAR_MASS,
@@ -63,7 +67,7 @@ __all__ = [
     "PARAMETERS", "PARAMETERS_GAUSSIANRISE", "default_prior", "default_prior_gaussianrise",
     "redback_prior", "fallback_prior",
     "envelope_exists", "rise_peaks_near_fallback",
-    "N_TIME", "REDBACK_PRESETS", "REDBACK_ENGINE_PRESETS",
+    "N_TIME", "REDBACK_PRESETS", "REDBACK_ENGINE_PRESETS", "default_n_time",
 ]
 
 # --- constants not already in kilonova.py (redback/constants.py, astropy cgs) ----------
@@ -74,14 +78,16 @@ STEF_CONSTANT = 4.0 * np.pi * SIGMA_SB   # redback/photosphere.py
 RADIUS_CONSTANT = KM_CGS * DAY_TO_S      # redback/photosphere.py
 
 #: redback 1.12.0's grid size for `_cooling_envelope`. See CHANGE 6 -- this is part of the
-#: model, not a tolerance, so it is a documented default rather than a tunable.
+#: model, not a tolerance. No longer the default: that is :func:`default_n_time`.
 N_TIME = 5000
 
 #: Exact settings to reproduce each installed redback's ENGINE. See CHANGE 6. The termination
 #: RULE is not a preset: it is the model's own physical criterion in both cases (CHANGE 3).
+#: 1.20 integrates on 1.15's 500 points (``tde_models.py:105``).
 REDBACK_ENGINE_PRESETS = {
     "1.12": dict(n_time=5000),
     "1.15": dict(n_time=500),
+    "1.20": dict(n_time=500),
 }
 
 #: ... and its PHOTOMETRY, which additionally differs by a ``(1+z)`` flux factor that
@@ -91,7 +97,25 @@ REDBACK_ENGINE_PRESETS = {
 REDBACK_PRESETS = {
     "1.12": dict(**REDBACK_ENGINE_PRESETS["1.12"], dilation=False),
     "1.15": dict(**REDBACK_ENGINE_PRESETS["1.15"], dilation=True),
+    "1.20": dict(**REDBACK_ENGINE_PRESETS["1.20"], dilation=True),
 }
+
+
+def default_n_time():
+    """``n_time`` of the INSTALLED redback's grid: the default of every function here.
+
+    500 for redback 1.15 and 1.20, and when redback is not installed (the latest release); 5000
+    for 1.12. Read from redback's source without importing it
+    (:func:`whisper_cbpf.models.redback_adapter.installed_redback_preset`), so the port and a
+    redback fit in the same environment integrate the same grid by default.
+
+    500 is 10x coarser than 5000 and it is not free: the photosphere temperature is 1.7% from
+    converged, and the termination index moves by grid steps under a 1e-6 change of a parameter
+    (CHANGE 6, ``docs/PORTING_NOTES.md`` section 6.1). Pass ``n_time=5000`` for the finer grid.
+    """
+    from ..redback_adapter import LATEST_REDBACK_PRESET, installed_redback_preset
+
+    return REDBACK_ENGINE_PRESETS[installed_redback_preset() or LATEST_REDBACK_PRESET]["n_time"]
 
 # --- guard sentinels (CHANGE 4) ---------------------------------------------------------
 # These are substituted for Ee and Me in the GUARDED half of the step only -- the half that
@@ -276,7 +300,7 @@ def _cooling_envelope_step(carry, xs, mbh_6, Ledd40, zeta, Rv0, tfb,
 
 def cooling_envelope(mbh_6, stellar_mass, eta, alpha, beta, *,
                      f_debris=1.0, t_0_init=1.0, binding_energy_const=0.8,
-                     zeta=2.0, hoverR=0.3, n_time=N_TIME):
+                     zeta=2.0, hoverR=0.3, n_time=None):
     """Sarin & Metzger (2024) cooling-envelope TDE engine.
 
     Parameters
@@ -291,8 +315,9 @@ def cooling_envelope(mbh_6, stellar_mass, eta, alpha, beta, *,
         partial-disruption branch can be reproduced too (see :func:`ryu_f_debris`).
     t_0_init, binding_energy_const, zeta, hoverR : redback's kwargs, same defaults.
     n_time : grid size. **This is part of the model, not a tolerance** -- see CHANGE 6.
-        1.12.0 uses 5000 (the default here), 1.15.1 uses 500, and the difference is 1.7%
-        in the photosphere temperature.
+        1.12.0 uses 5000, 1.15.1 and 1.20 use 500, and the difference is 1.7% in the
+        photosphere temperature. ``None`` (default) is the installed redback's,
+        :func:`default_n_time`.
 
     Returns
     -------
@@ -317,6 +342,7 @@ def cooling_envelope(mbh_6, stellar_mass, eta, alpha, beta, *,
     simply all-False).
     """
     _require_x64("whisper_cbpf.models.jax.tde.cooling_envelope")
+    n_time = default_n_time() if n_time is None else n_time
 
     Mstar = stellar_mass * SOLAR_MASS
     Mdisrupt = f_debris * Mstar
@@ -689,9 +715,27 @@ def _quadrature_nodes(scale, t_max, tb, uniq_times, timesteps):
     return jnp.clip(tb + (uniq_times[:, None] - tb) * xm[None, :], tb, t_max)
 
 
-@partial(jax.jit, static_argnames=("timesteps",))
+def _interp_geometric(x, xp, fp):
+    """``jnp.interp(x, xp, fp)`` for a GEOMETRIC ``xp``, the segment found by arithmetic.
+
+    ``jnp.interp`` searches for each point's segment; on a geometric grid the segment is
+    ``floor(log(x / xp[0]) / log step)``. The interpolation itself uses the real nodes, so the
+    value is the same piecewise-linear interpolant (a point on a node boundary may take the
+    neighbouring segment, which gives the same value). Measured on the supernova observed-epoch
+    path: identical output, the diffusion 2.2x faster on a GPU (14.2 -> 6.4 us per evaluation).
+    """
+    n = xp.shape[0]
+    xc = jnp.clip(x, xp[0], xp[-1])
+    ln0 = jnp.log(xp[0])
+    s = (jnp.log(xc) - ln0) / ((jnp.log(xp[-1]) - ln0) / (n - 1))
+    i = jnp.clip(jnp.floor(s).astype(jnp.int32), 0, n - 2)
+    x0, x1 = xp[i], xp[i + 1]
+    return fp[i] + (xc - x0) / (x1 - x0) * (fp[i + 1] - fp[i])
+
+
+@partial(jax.jit, static_argnames=("timesteps", "geometric"))
 def diffusion(uniq_times, gather_idx, tb, dense_times, luminosity,
-              kappa, kappa_gamma, mej, vej, timesteps=100):
+              kappa, kappa_gamma, mej, vej, timesteps=100, geometric=False):
     """redback ``interaction_processes.Diffusion`` (Arnett 1982).
 
     ORIGINAL (interaction_processes.py:33-65):
@@ -703,7 +747,10 @@ def diffusion(uniq_times, gather_idx, tb, dense_times, luminosity,
         uniq_lums *= -2.0*expm1(-trap_coeff/int_te2s)/tau_diff**2
 
     CHANGES: interp1d -> jnp.interp (both piecewise linear, identical); np.unique -> sort;
-    uniq_times/gather_idx precomputed. The arithmetic is untouched.
+    uniq_times/gather_idx precomputed. The arithmetic is untouched. ``geometric=True`` (static)
+    declares ``dense_times`` geometric and finds each node's segment by arithmetic
+    (:func:`_interp_geometric`): same values, fewer operations; the supernova observed-epoch path
+    uses it.
 
     Times in days, mej in Msun, vej in km/s.
     """
@@ -717,7 +764,8 @@ def diffusion(uniq_times, gather_idx, tb, dense_times, luminosity,
     int_times = _quadrature_nodes(tau_diff, t_max, tb, uniq_times, timesteps)
 
     int_te2s = int_times[:, -1] ** 2
-    int_lums = jnp.interp(int_times, dense_times, luminosity)
+    int_lums = (_interp_geometric(int_times, dense_times, luminosity) if geometric
+                else jnp.interp(int_times, dense_times, luminosity))
     # exponent <= 0 by construction (int_times <= int_times[:, -1]): nothing can overflow
     int_args = int_lums * int_times * jnp.exp(
         (int_times ** 2 - int_te2s[:, None]) / tau_diff ** 2)
@@ -845,6 +893,7 @@ def _flux_nu_tde(temperature, r_photosphere, dl_cm, nu_source, redshift,
     and 8 in :mod:`whisper_cbpf.models.jax.kilonova`. ``pref_const`` selects the output unit:
     ``PLANCK_T3`` gives cgs, ``PLANCK_T3_AB`` the same spectrum in AB-zero-point units.
     """
+    temperature = jnp.maximum(temperature, TEMPERATURE_MIN)         # T = 0: zero flux, not NaN
     ratio = RATIO_CONST * ((r_photosphere / RSCALE) / (dl_cm / DLSCALE)) ** 2
     nu14 = jax.lax.optimization_barrier(nu_source / NUSCALE)
     arg = PLANCK_ARG * nu14 / temperature
@@ -894,6 +943,11 @@ def ab_magnitude(temperature, r_photosphere, band_idx, weights, norms, lam_obs_a
     nu_src = nu_obs[None, :] * (1.0 + redshift)
     f_ab = _flux_nu_tde(temperature[:, None], r_photosphere[:, None], dl_cm, nu_src,
                         redshift, PLANCK_T3_AB, dilation=dilation)
+    # Keep the Planck exp/expm1 out of the band reduction below. Fused into it, XLA's GPU fusion
+    # autotuner compiles several emitter configurations of a reduce over (batch, n_obs, n_wave) just
+    # to find the plain one fastest: minutes at batch 480 x 480 observations. The barrier is the
+    # identity in value and in both derivatives.
+    f_ab = jax.lax.optimization_barrier(f_ab)
     tau = _ext_transmission(lam_obs_ang, redshift, ebv_mw, ebv_host,
                             xi_mw, xi_host, r_v_mw, r_v_host, law)
     w = weights if tau is None else weights * tau[None, :]
@@ -932,9 +986,11 @@ def _interp_photosphere(out, t_src_s):
     flux is exactly zero at every epoch, so the gradient is exactly zero in ALL FIVE
     parameters -- a flat region a gradient sampler can neither escape nor detect the edge of.
     Measured over redback's own prior: **6.45% of draws at n_time=500**, and empty at
-    n_time=5000 in 512 draws. It reaches the factory too -- 3.1% of
-    `tde_model(rise="gaussian", n_time=500)`'s prior. :func:`envelope_exists` bounds only the
-    closed-form 0.431% of it; the rest needs the integration to detect.
+    n_time=5000 in 512 draws. It reached the factory too -- 3.1% of
+    `tde_model(rise="gaussian", n_time=500)`'s prior -- until the rise took its normaliser from
+    the envelope's first sample (:func:`_rise_normaliser`); there only the envelope after the
+    stitch is flat now. :func:`envelope_exists` bounds only the closed-form 0.431% of it; the
+    rest needs the integration to detect.
 
     THE COST, STATED: that is a genuine discontinuity in time AND in the parameters, and the
     gradient does not know about it. Measured at (1, 1, 0.05, 0.1, 1.0), z = 0.05, envelope
@@ -970,7 +1026,7 @@ def _interp_photosphere(out, t_src_s):
 
 def cooling_envelope_flux_density(t_obs_days, nu_obs_hz, redshift, dl_cm,
                                   mbh_6, stellar_mass, eta, alpha, beta, *,
-                                  n_time=N_TIME, dilation=True, **kw):
+                                  n_time=None, dilation=True, **kw):
     """redback ``cooling_envelope(..., output_format='flux_density')``, in mJy.
 
     ``t_obs_days`` is observer-frame days SINCE FALLBACK (redback interpolates against
@@ -984,7 +1040,7 @@ def cooling_envelope_flux_density(t_obs_days, nu_obs_hz, redshift, dl_cm,
 
 def cooling_envelope_ab_magnitude(t_obs_days, band_idx, weights, norms, lam_obs_ang,
                                   redshift, dl_cm, mbh_6, stellar_mass, eta, alpha, beta,
-                                  *, n_time=N_TIME, mag_floor=40.0, dilation=True,
+                                  *, n_time=None, mag_floor=40.0, dilation=True,
                                   ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None,
                                   r_v_mw=3.1, r_v_host=3.1, law='f99', **kw):
     """redback ``cooling_envelope(..., output_format='magnitude')``, AB magnitudes."""
@@ -1086,10 +1142,32 @@ def _envelope_TR_observer(out, t_obs_s, redshift):
     return temp, rad * inside
 
 
+def _rise_normaliser(out, stitch_s, redshift, xi):
+    """``(T, R_phot, exists)``: the envelope's photosphere at the stitch, the rise's normaliser.
+
+    :func:`_envelope_TR_observer` at ``stitch_s``, except where the envelope's integration ends
+    after its FIRST sample (``constraint == 1``) and the stitch is at or before fallback
+    (``xi <= 1``). There the normaliser is that first sample: the closed-form initial envelope,
+    which is redback's normaliser in every case (``photosphere_temperature[0]``) and involves
+    no integration. Asking for two live samples, as the envelope itself must (see
+    :func:`_interp_photosphere`), took the RISE away on those draws and left ``mag_floor`` at
+    every epoch -- and on redback 1.20's 500-point grid the first forward-Euler step overshoots
+    ``Ee`` through zero on 4.8% of ``gaussianrise_cooling_envelope.prior`` (none at 5000,
+    where the same draws live ~3100 steps). Measured against redback on prior draws: up to 47.7 mag
+    from redback 1.20 on epochs that all lie on the rise. ``exists`` is False where there is
+    nothing to normalise to: the envelope was never born, or the stitch lies past its end.
+    """
+    temp, rad = _envelope_TR_observer(out, stitch_s, redshift)
+    first = (out["constraint"] == 1) & (jnp.asarray(xi) <= 1.0)
+    return (jnp.where(first, out["photosphere_temperature"][0], temp),
+            jnp.where(first, jnp.maximum(out["photosphere_radius"][0], 0.0), rad),
+            (out["constraint"] >= 2) | first)
+
+
 def gaussianrise_cooling_envelope_flux_density(
         t_obs_days, nu_obs_hz, redshift, dl_cm, peak_time, sigma_t,
         mbh_6, stellar_mass, eta, alpha, beta, *, xi=1.0, n_pre=200,
-        n_time=N_TIME, dilation=True,
+        n_time=None, dilation=True,
         ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None,
         r_v_mw=3.1, r_v_host=3.1, law='f99', **kw):
     """Gaussian rise stitched onto the cooling envelope, flux density in mJy.
@@ -1110,7 +1188,7 @@ def gaussianrise_cooling_envelope_flux_density(
     temp, rad = _envelope_TR_observer(out, t_s, redshift)
     f_env = flux_density_mjy(temp, rad, nu_obs_hz, redshift, dl_cm, dilation=dilation, **ext)
 
-    temp_s, rad_s = _envelope_TR_observer(out, stitch_s, redshift)
+    temp_s, rad_s, _ = _rise_normaliser(out, stitch_s, redshift, xi)
     f_stitch = flux_density_mjy(jnp.broadcast_to(temp_s, jnp.shape(f_env)),
                                 jnp.broadcast_to(rad_s, jnp.shape(f_env)),
                                 nu_obs_hz, redshift, dl_cm, dilation=dilation, **ext)
@@ -1127,8 +1205,9 @@ def gaussianrise_cooling_envelope_flux_density(
     # live there, and the magnitude branch reports the same source as a number.
     tp, sig = peak_time * DAY_TO_S, sigma_t * DAY_TO_S
     expo = ((stitch_s - tp) ** 2 - (t_s - tp) ** 2) / (2.0 * sig ** 2)
-    # f_stitch is exactly 0 when the envelope never lived (constraint < 2) or the stitch sits
-    # past its last epoch; 0 * exp(huge) is 0 * inf = NaN, so select rather than multiply.
+    # f_stitch is exactly 0 when there is no normaliser (the envelope was never born, or the
+    # stitch sits past its last epoch -- see _rise_normaliser); 0 * exp(huge) is 0 * inf = NaN,
+    # so select rather than multiply.
     f_rise = jnp.where(f_stitch > 0.0,
                        f_stitch * jnp.exp(jnp.minimum(expo, 700.0)), 0.0)
     return jnp.where(t_s < stitch_s, f_rise, f_env)
@@ -1137,7 +1216,7 @@ def gaussianrise_cooling_envelope_flux_density(
 def gaussianrise_cooling_envelope_ab_magnitude(
         t_obs_days, band_idx, weights, norms, lam_obs_ang, redshift, dl_cm,
         peak_time, sigma_t, mbh_6, stellar_mass, eta, alpha, beta, *,
-        xi=1.0, n_pre=100, n_time=N_TIME, mag_floor=40.0, dilation=True,
+        xi=1.0, n_pre=100, n_time=None, mag_floor=40.0, dilation=True,
         ebv_mw=None, ebv_host=None, xi_mw=None, xi_host=None,
         r_v_mw=3.1, r_v_host=3.1, law='f99', **kw):
     """Gaussian rise stitched onto the cooling envelope, AB magnitudes per observation.
@@ -1167,7 +1246,7 @@ def gaussianrise_cooling_envelope_ab_magnitude(
                            redshift, dl_cm, **ext)
 
     # the envelope's magnitude AT the stitch point, in each observation's own band
-    temp_s, rad_s = _envelope_TR_observer(out, stitch_s, redshift)
+    temp_s, rad_s, normalised = _rise_normaliser(out, stitch_s, redshift, xi)
     shape = jnp.shape(mag_env)
     mag_stitch = ab_magnitude(jnp.broadcast_to(temp_s, shape), jnp.broadcast_to(rad_s, shape),
                               band_idx, weights, norms, lam_obs_ang, redshift, dl_cm, **ext)
@@ -1176,8 +1255,9 @@ def gaussianrise_cooling_envelope_ab_magnitude(
     # An envelope that never lived has no rise to normalise against: `mag_stitch` is already
     # `mag_floor` there, but the parabola then climbs BRIGHTER than the floor wherever
     # peak_time < stitch (measured: down to 39.51, on 34.5% of (draw, epoch) pairs). The
-    # whole light curve must be the floor, not just its stitch point.
-    dead = out["constraint"] < 2
+    # whole light curve must be the floor, not just its stitch point. "Never lived" is
+    # _rise_normaliser's: one born sample is enough for a stitch at or before fallback.
+    dead = ~normalised
     out_mag = jnp.where(t_s < stitch_s, jnp.minimum(mag_rise, mag_floor), mag_env)
     return jnp.where(dead, jnp.asarray(mag_floor, out_mag.dtype), out_mag)
 
@@ -1270,18 +1350,20 @@ def redback_prior(model_name, *, drop=("redshift",)):
     ``redshift`` is dropped by default: it is a factory argument here, because ``dl_cm`` would
     otherwise have to move with it through a cosmology on every likelihood call.
 
-    WHAT ``pinned`` IS. redback's ``cooling_envelope.prior`` declares five distributions and
-    then appends ``beta = 0.9``, ``eta = 0.1``, ``alpha = 0.1``, ``mbh_6 = 1``. bilby parses
-    the file into a dict, so those four win and come back as ``DeltaFunction`` -- verified by
-    calling ``redback.priors.get_priors("cooling_envelope")``, which returns exactly that.
-    So redback's shipped cooling-envelope fit has **one** free parameter, ``stellar_mass``
-    (plus redshift). whisper's prior layer has no delta, so a fixed parameter is expressed the
+    WHAT ``pinned`` IS. A scalar assignment in a redback prior file, which bilby returns as a
+    ``DeltaFunction``. whisper's prior layer has no delta, so a fixed parameter is expressed the
     way :func:`kilonova_model` expresses a fixed ``temperature_floor``: bound at the factory
-    and absent from ``parameters``.
+    and absent from ``parameters``. Up to redback 1.15, ``cooling_envelope.prior`` declared five
+    distributions and then appended ``beta = 0.9``, ``eta = 0.1``, ``alpha = 0.1``,
+    ``mbh_6 = 1``; bilby parses the file into a dict, so those four won, and redback's shipped
+    cooling-envelope fit had **one** free parameter, ``stellar_mass`` (plus redshift). redback
+    1.18 (commit a4ce717a, so also 1.20) replaced them with free priors -- ``mbh_6``
+    LogUniform(0.1, 10), ``stellar_mass`` LogUniform(0.5, 10) -- and a comment that the
+    ``eta``/``beta`` bounds need ``constraint=True``; whisper applies them in the JAX samplers
+    through ``tde_model(constraint=...)``. ``pinned`` is then empty and all five are free.
 
-    ``gaussianrise_cooling_envelope.prior`` has NO delta functions in 1.15.1 -- that file was
-    fixed and the other was not -- so its ``pinned`` comes back empty and all seven parameters
-    are free.
+    ``gaussianrise_cooling_envelope.prior`` has no delta functions in 1.15.1 or 1.20, so all
+    seven of its parameters are free.
 
     Raises ImportError if redback is not installed; use :func:`fallback_prior` then.
     """
@@ -1311,12 +1393,17 @@ def redback_prior(model_name, *, drop=("redshift",)):
     return Prior(dists), pinned
 
 
-#: Transcribed from redback 1.15.1's prior files, for when redback is not importable. The
-#: shipped files are the source of truth -- see :func:`redback_prior`, and prefer it.
+#: Transcribed from the LATEST redback's prior files (1.20; ``LATEST_REDBACK_PRESET``, which
+#: ``default_n_time`` follows too), for when redback is not importable. The shipped files are
+#: the source of truth -- see :func:`redback_prior`, and prefer it. Up to whisper 0.1.0 this was
+#: 1.15.1's, whose ``cooling_envelope`` had ``stellar_mass`` LogUniform(0.1, 10) free and pinned
+#: ``mbh_6=1, eta=0.1, alpha=0.1, beta=0.9``; ``tde_model(rise="none", pin={...})`` rebuilds it.
 _FALLBACK = {
     "cooling_envelope": (
-        {"stellar_mass": ("LogUniform", 0.1, 10.0)},
-        {"mbh_6": 1.0, "eta": 0.1, "alpha": 0.1, "beta": 0.9},
+        {"mbh_6": ("LogUniform", 0.1, 10.0), "stellar_mass": ("LogUniform", 0.5, 10.0),
+         "eta": ("LogUniform", 1e-4, 0.1), "alpha": ("LogUniform", 0.1, 1.0),
+         "beta": ("Uniform", 1.0, 5.0)},
+        {},
     ),
     "gaussianrise_cooling_envelope": (
         {"peak_time": ("LogUniform", 1.0, 60.0), "sigma_t": ("LogUniform", 10.0, 60.0),
@@ -1329,7 +1416,8 @@ _FALLBACK = {
 
 
 def fallback_prior(model_name):
-    """:func:`redback_prior` without redback. Same return shape; see _FALLBACK."""
+    """:func:`redback_prior` without redback: the latest release's (1.20) files, transcribed.
+    Same return shape; see _FALLBACK."""
     from ...priors import LogUniform, Prior, Uniform
 
     dists, pinned = _FALLBACK[model_name]
@@ -1341,9 +1429,9 @@ def default_prior(model_name="cooling_envelope"):
     """``(Prior, pinned)`` for a TDE model: redback's, read from redback where possible.
 
     NOT modified, narrowed or "improved" -- including where redback's own file leaves only one
-    parameter free (see :func:`redback_prior`). If a fit should vary more than that, widen the
-    prior at the call site, where the choice is visible in the analysis rather than buried in
-    a library default.
+    parameter free (1.15's ``cooling_envelope``; see :func:`redback_prior`). If a fit should vary
+    more than that, widen the prior at the call site, where the choice is visible in the
+    analysis rather than buried in a library default.
     """
     try:
         return redback_prior(model_name)
@@ -1352,7 +1440,7 @@ def default_prior(model_name="cooling_envelope"):
 
 
 def default_prior_gaussianrise():
-    """``(Prior, pinned)`` for ``gaussianrise_cooling_envelope``. All seven free in 1.15.1."""
+    """``(Prior, pinned)`` for ``gaussianrise_cooling_envelope``. All seven free (1.15.1, 1.20)."""
     return default_prior("gaussianrise_cooling_envelope")
 
 

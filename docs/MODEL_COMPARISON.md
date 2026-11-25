@@ -1,7 +1,9 @@
 # Model comparison, on CPU and on GPU
 
-A complete worked example: fit a **multi-component kilonova** to AT2017GFO with a **personalised
-prior**, using each available sampler, then compare it against a simpler model.
+[Part 0](#part-0--one-call-wpcompare) is the one-call comparison, `wp.compare`, and the rules it
+ranks by. The rest is a complete worked example done by hand: fit a **multi-component kilonova** to
+AT2017GFO with a **personalised prior**, using each available sampler, then compare it against a
+simpler model.
 
 The task is the same on both backends and so is the arithmetic. What differs is which samplers you
 have, how the models are built, and — on the GPU — two setup steps that cost you silently if you
@@ -11,6 +13,78 @@ skip them. Read [Part 1](#part-1--on-cpu) or [Part 2](#part-2--on-gpu) depending
 **The rule that governs every comparison below:** AIC, BIC and WAIC compare *models*, not *spaces*.
 Numbers from a flux-space fit are not comparable with numbers from a magnitude-space fit. Keep
 `space=` identical across everything you put in one table, and only compare fits that converged.
+
+---
+
+## Part 0 — one call: `wp.compare`
+
+```python
+import numpy as np
+import whisper_cbpf as wp
+
+t = np.linspace(0.5, 30.0, 30)                                   # simulated from flare
+truth = {"amplitude": 5.0, "rise_time": 3.0, "decay_time": 15.0}
+flux = wp.get_model("flare").predict(truth, t) + np.random.default_rng(1).normal(0.0, 0.1, 30)
+toy = wp.LightCurve(time=t, band=["r"] * 30, flux=flux, flux_err=np.full(30, 0.1))
+cmp = wp.compare(toy, ["flare", "bazin", "gaussian_rise"], sampler="mcmc")
+print(cmp.summary())        # 'flare' first, "decisive" over 'bazin' (ln B = 10.34); all converged
+```
+
+`compare` does, for every model, what Parts 1 and 2 do by hand, and keeps the rule above for you:
+the same light curve, the same sampler, the same settings and the same space for every model. Then:
+
+1. **It finds each fit's likelihood peak** (`wp.likelihood_max_opt`). AIC and BIC are defined at
+   the maximum likelihood; a sampler's best draw is below it, by an amount that differs between models and runs
+   (on a simulated LSST alert, 0.005 ln L for the 6-parameter Arnett model and 0.3-1 ln L for the
+   9-11-parameter families: [`VALIDATION.md`](VALIDATION.md) section 5.3). `compare` takes AIC
+   and BIC from the peak; the posterior is not changed. `cmp.peaks[model].gain` is how far the
+   sampler was from it.
+2. **It checks each fit** (`result.diagnostics()`): `converged` in the table is the report's verdict,
+   and `problems` lists every failed check, a likelihood maximum more than 1 ln L above the
+   sampler's best draw, and a peak on a prior edge.
+3. **It ranks.** By ln Z when every ranked model has a nested-sampling evidence that stopped on
+   dlogz (`sampler="nested"`), otherwise by BIC at the likelihood maximum. `delta` is the gap to
+   the best,
+   `weight` is `exp(-delta/2)` normalised over the ranked models, and `grade` is Jeffreys' scale on
+   ln B (`delta / 2` under BIC): below 1.15 inconclusive, below 2.30 substantial, below 4.61 strong,
+   decisive above. The winner is graded against the runner-up.
+4. **It leaves out** what cannot be compared, with the reason: a failed fit, no draws, a fit to
+   other rows or in another space than the most common ones, `k >= n` ("not enough data"), no
+   finite BIC.
+5. **It checks a close call.** When the top two are within ln B < ln 10, `evidence_check="auto"` runs
+   nested sampling on them; if ln Z disagrees with BIC, the winner's grade becomes "inconclusive".
+   ln Z weighs the priors as well as the fits: when the ln Z gap is much larger than the gap between
+   the two likelihood peaks, the summary says it comes from the priors, and it is then only as
+   meaningful as they are. A model behind a constraint wall (the supernova and TDE families) has
+   its prior renormalised to the allowed region, so the wall does not cost it evidence
+   (`info["constraint_prior"]` of its nested fit).
+
+`cmp.table` has every number; `cmp.save(dir)` / `wp.Comparison.load(dir)`, `cmp.facts()`,
+`cmp.report(path)`, `cmp.forecast(times, bands)` and `cmp.discriminate(times, bands)` take it
+further. Pass `likelihood_max_opt=False` to rank on the samplers' best draws instead, and `cache_dir=` to resume
+an interrupted comparison. For survey alerts and physical families (`"arnett"`, `"magnetar"`,
+`"tde"`, ...), see [`LSST_ALERTS.md`](LSST_ALERTS.md); every argument is in
+[`API_REFERENCE.md` A5](API_REFERENCE.md#a5-compare-models).
+
+### More physical models
+
+Beyond the five families used above, `wp.compare` binds these by name: `"csm_interaction"`,
+`"shock_cooling"`, `"shocked_cocoon"`, `"general_magnetar_driven"` (all in
+`wp.supernova_models()`), `"tde_fallback"`, `"tde_analytical"`, `"metzger_kilonova"` and
+`"magnetar_boosted_kilonova"`.
+
+- `csm_interaction` is the Chevalier–Chatzopoulos model of redback. It is a different model from
+  `csm_shock_and_arnett` (Margalit's shell breakout plus nickel), with different parameters; compare
+  them as two hypotheses, not as one model with two settings.
+- The Metzger kilonovae are not comparable parameter for parameter with `kilonova_one_jax`: their
+  ejecta have a velocity profile (`beta`) and are heated shell by shell, where the one-component
+  model is one zone.
+- `general_magnetar_driven` integrates an ODE: it needs float64, and uses `diffrax` when it is
+  installed (`pip install "whisper-cbpf[ode]"`), a built-in fixed-step solver otherwise.
+- The phenomenological shapes (`bazin_sne`, `villar_sne`, ...) have one amplitude per band. Build one
+  for your bands with `wp.phenomenological_model("bazin_sne", ["ztfg", "ztfr"], prior=...)` (the
+  default amplitude prior is a placeholder) and pass the `Model` to `wp.compare` or `wp.fit`;
+  `wp.compare` does not bind them by name.
 
 ---
 
@@ -34,7 +108,7 @@ No GPU, no JAX, no CUDA.
 | `abc_smc` | — | sequential ABC; reaches the same tolerance in far fewer simulations than flat `abc`. |
 | `snpe` / `npe` | `[sbi]` | neural simulation-based inference. |
 
-`wp.list_samplers()` shows all 13 registered names; the GPU ones are listed too and tell you which
+`wp.list_samplers()` shows all 14 registered names; the GPU ones are listed too and tell you which
 extra they need if you ask for them.
 
 ### 1. Load the data
@@ -42,11 +116,16 @@ extra they need if you ask for them.
 ```python
 import whisper_cbpf as wp
 
+wp.set_default_band_system("sdss")      # this file's bare g, r, i are SDSS photometry
 lc = wp.load_lightcurve("tests/data/at2017gfo.csv", redshift=0.0098)
 lc = lc.select_bands(["g"]).set_explosion_date(57982.529)   # merger epoch, MJD
 lc = lc.select_time_window(0.0, 10.0)
 print(lc.n_points)      # 53
 ```
+
+A bare band letter means LSST unless you say otherwise ([`PHOTOMETRY.md`](PHOTOMETRY.md) section 2),
+and AT2017GFO's `g` is SDSS g: without the first line the physical model below would integrate its
+SED over the LSST g filter.
 
 > **Order matters.** `set_explosion_date` must come *before* `select_time_window`. The window
 > filters whatever `time` currently holds, so windowing first compares days-since-explosion bounds
@@ -111,57 +190,66 @@ for sampler, kwargs in runs:
 These are deliberately small budgets so the example finishes in minutes. For a result you intend to
 publish, raise them and **check `r.info["converged"]`** before quoting anything.
 
-Measured on CPU, 53 g-band points, `two_component_kilonova` (redback), 9 parameters:
+Measured on CPU (one process, a shared 96-core host), 53 SDSS g points, `two_component_kilonova`
+(redback), 9 parameters:
 
 | sampler | wall clock | AIC | BIC | ln Z | `converged` |
 |---|---:|---:|---:|---:|---|
-| `abc_smc` | 12.1 s | 745.33 | 763.06 | — | n/a |
-| `abc` | 33.3 s | 719.46 | 737.20 | — | n/a |
-| `mcmc` | 230.5 s | **−3.06** | **14.67** | — | False |
-| `nested` | 464.0 s | 186.07 | 203.80 | **−96.22** | False |
+| `abc_smc` | 10.2 s | 934.82 | 952.55 | — | n/a |
+| `abc` | 12.1 s | 599.47 | 617.21 | — | n/a |
+| `mcmc` | 205.1 s | **−26.22** | **−8.49** | — | False |
+| `nested` | 140.9 s | −21.32 | −3.59 | 0.17 (capped: a lower bound) | False |
 
 #### Budget these fits from a measured cost, not a guess
 
 One `two_component_kilonova` prediction on these 53 points costs:
 
-* **97.6 s on the first call** — redback and sncosmo build their grids once. Your first fit appears
-  to hang for a minute and a half. It has not.
-* **14.7 ms warm** (median of 20).
+* **1.5 s on the first call** — redback and sncosmo build their grids once.
+* **4.9 ms warm** (median of 20).
 
 Multiply by the number of likelihood evaluations before you start. `mcmc` at 24 walkers × 1500 steps
-is 36,000 evaluations ≈ 9 minutes. Nested sampling on 9 parameters needs far more calls than a
+is 36,000 evaluations ≈ 3 minutes. Nested sampling on 9 parameters needs far more calls than a
 back-of-envelope suggests — the run above is capped with `maxcall=40000` for exactly that reason,
-and an earlier uncapped attempt was still going after 50 minutes.
+which is why it did not converge and its ln Z is only a lower bound.
 
 #### Why `nested`'s AIC is worse while its medians agree
 
-`mcmc` reports AIC −3.06 and `nested` 186.07, yet the two posteriors nearly coincide:
+`mcmc` reports AIC −26.22 and `nested` −21.32, and the two posteriors' medians are close, except
+`mej_2`, which neither capped run pins down:
 
 | parameter | `mcmc` | `nested` |
 |---|---:|---:|
-| `mej_1` | 0.0467 | 0.0424 |
-| `vej_1` | 0.3443 | 0.3141 |
-| `kappa_1` | 0.2316 | 0.1947 |
-| `mej_2` | 0.0793 | 0.0791 |
-| `kappa_2` | 1.7134 | 2.3929 |
-| `redshift` | 0.0091 | 0.0091 |
+| `mej_1` | 0.0404 | 0.0471 |
+| `vej_1` | 0.2921 | 0.3013 |
+| `kappa_1` | 0.1731 | 0.1423 |
+| `mej_2` | 0.0700 | 0.0416 |
+| `kappa_2` | 1.4266 | 1.3079 |
+| `redshift` | 0.0094 | 0.0100 |
 
-AIC is computed from the **best** draw, so a capped run that never reached the likelihood peak
-scores worse even when its *typical* draws are in the right place. Both reported
-`converged=False` at these deliberately small budgets. Two conclusions follow, and both matter more
-than the AIC: compare AIC only between fits of comparable quality, and raise the budget until
-`converged` is `True` before quoting anything.
+A sampler's AIC is computed from its **best** draw, so a capped run that never reached the
+likelihood peak scores worse even when its *typical* draws are in the right place.
+`wp.likelihood_max_opt(r, lc)` climbs from those draws to the peak and recomputes AIC and BIC there (Part 0); `compare` does it for
+every model. Both reported `converged=False` at these deliberately small budgets. Two conclusions
+follow, and both matter more than the AIC: compare AIC only between fits of comparable quality, and
+raise the budget until `converged` is `True` before quoting anything.
 
 **ABC's AIC is not comparable with `mcmc`'s at all.** ABC never evaluates the likelihood; it accepts
 draws whose simulated curve is close enough under a distance, and the reported AIC comes from
 whichever accepted draw was best. Compare ABC with ABC.
 
-#### A cross-check worth noticing
+#### A cross-check, and what it can and cannot tell you
 
-The GPU page fits a *different implementation* of the same physics — `kilonova_two_jax`, which even
-orders its parameters differently — and `emcee_jax` there returns AIC **−7.98** against this page's
-`mcmc` **−3.06**. Two independent implementations, two different samplers, two devices, agreeing to
-about 5 AIC units. That is the kind of agreement that should precede belief.
+Part 2 fits a *different implementation* of the same physics — `kilonova_two_jax`, with its
+parameters in another order, no free redshift and Villar's default prior instead of the prior
+above. On these 53 SDSS g points the likelihood maxima are ln L 22.46 for this page's `mcmc` fit
+(AIC −26.92, 9 parameters) and 27.79 for an `emcee_jax` fit of `kilonova_two_jax` at Part 2's
+settings (AIC −39.57, 8 parameters), both measured on a CPU. That gap does not show that the
+implementations disagree: the two fits search different prior boxes with different parameters (a
+free redshift on one side only), so their peaks need not coincide. To check that two implementations
+compute the same light curve, compare them at the
+same parameters, `wp.check_parity(model_a, model_b, params, times, bands)`
+([`API_REFERENCE.md` A11](API_REFERENCE.md#a11-check-that-two-models-agree)); compare their fits
+only under the same prior.
 
 ### 4. Compare against a simpler model
 
@@ -181,19 +269,21 @@ Measured:
 
 | model | k | AIC | BIC | wall clock |
 |---|---:|---:|---:|---:|
-| `two_component_kilonova` | 9 | **−3.06** | 14.67 | 230.5 s |
-| `gaussian_rise` | 4 | 275.51 | 283.39 | 1.9 s |
-| `bazin` | 4 | 491.22 | 499.11 | 3.4 s |
+| `two_component_kilonova` | 9 | **−26.22** | **−8.49** | 222.8 s |
+| `gaussian_rise` | 4 | 275.51 | 283.39 | 3.3 s |
+| `bazin` | 4 | 277.52 | 285.40 | 3.1 s |
 
-ΔAIC ≈ **279** in favour of the physical model over the best empirical one — decisive, and it earns
-its five extra parameters many times over. It also costs about 100× more wall clock, which is the
+ΔAIC ≈ **302** in favour of the physical model over the best empirical one — decisive, and it earns
+its five extra parameters many times over. It also costs about 70× more wall clock, which is the
 real trade.
 
-> **A caution this table earned the hard way.** `bazin` scores 491.22 at `nsteps=1500` and 279.3 at
-> `nsteps=2000` — the same model on the same data, moving by 212 AIC units purely with budget,
-> because the fit has not converged and AIC is taken from the best draw. `gaussian_rise` was stable
-> across the same change (275.51 vs 275.5). **An AIC from an unconverged fit is not a property of
-> the model.** Check `r.info["converged"]` before you compare anything.
+> **An AIC from the best draw depends on where the chain stopped.** None of these fits passed its
+> convergence report at this budget. Here the best draws came close to the peak — `bazin` scores
+> 277.52 at `nsteps=1500` and 277.49 at `nsteps=2000`, and its optimised likelihood maximum is
+> 277.42 at both — but a chain that has not reached the peak gives an AIC that is not a property of
+> the model. Check `r.diagnostics()` before you compare anything, and take AIC and BIC from the
+> likelihood maximum (`wp.likelihood_max_opt`, or `wp.compare`, Part 0), which does not depend on where the chain happened to
+> stop.
 
 ---
 
@@ -230,22 +320,37 @@ float64 is *mandatory* for the TDE and every supernova; for the kilonova it is s
 | `pymc_jax_gpu_vectorized` | NUTS through a PyMC front end, `vmap` over chains. |
 | `pymc_jax_gpu_parallelized` | the same, with true `pmap` — fastest per chain across several cards. |
 | `abc_gpu` / `abc_smc_gpu` | ABC with simulation batched on the GPU; enormous simulation counts become cheap. |
-| `nuts_gpu` | NumPyro NUTS directly. **See the warning below.** |
+| `nuts_gpu` | NumPyro NUTS directly. **Read the caveat below.** |
 | `snpe` | neural simulation-based inference (needs `[sbi]`); `device="cuda"` to train on the GPU. |
 
-> ### Warning: `nuts_gpu` is not currently trustworthy
+> ### Caveat: local samplers and local optima — check `r.info["converged"]`
 >
-> On simulated kilonovae where the true parameters are known, `nuts_gpu` returned posteriors that
-> excluded the truth entirely — the true value fell below *every* posterior draw on nearly every
-> parameter — while reporting `r-hat ≈ 1.03`, **zero divergences**, and in one case
-> `converged=True`. The chains settled roughly 2×10⁵ log-units below the likelihood at the true
-> parameters, welded against a prior bound.
+> NUTS (`nuts_gpu`, `pymc_jax_gpu_*`) and emcee only move locally, and these likelihoods have
+> optima a chain cannot leave: on the one-component kilonova, chains parked on a corner of the prior
+> box (typically `mej` at its upper bound and `vej` at its lower) 972-65 618 log-units below the
+> best chain; on flux models, a chain shrank the model until it hid between the epochs. This is a
+> property of local samplers on these likelihoods, on CPU and GPU alike, not a `nuts_gpu` coding
+> bug — `pymc_jax_gpu_vectorized` and `emcee_jax` failed the same way on the same mock problems.
+> (This caveat replaces a warning that `nuts_gpu` returned "confidently wrong" kilonova
+> posteriors — the truth outside the whole posterior, R-hat ≈ 1, no divergences — for an unknown
+> reason. The cause was most likely a log-uniform parameter walked in linear coordinates, so no
+> chain could start near a low truth: 42ea833 fixed that and reproduced the signature on the GPU,
+> but the report's own simulations were not re-run, so the link is likely rather than proven.)
 >
-> Two other NUTS front ends (`pymc_jax_gpu_vectorized`) and `snpe` handled the identical datasets
-> correctly, so this is specific to that sampler, not to NUTS or to the model.
->
-> **Use `pymc_jax_gpu_vectorized` instead** until this is resolved. If you do run `nuts_gpu`, check
-> that the posterior is not pinned to a prior edge before believing anything.
+> What changed: each chain now **starts** at a distinct prior draw that was scored and climbed
+> into the best basin found (`init_strategy="prior_scan"`, the default; `init=` for `emcee_jax`),
+> and each fit **checks itself** — stranded, frozen or stuck chains, rank-normalised R-hat on
+> every parameter and on the log-likelihood, ESS, divergences, and whether any chain reached the
+> best optimum the scan found. On the one-component kilonova mocks, broken runs fell from 7 / 13
+> to 0 on the CPU and from 3 / 4 to 0 / 13 on the GPU (`nuts_gpu`), and from 3 / 3 to 0 / 13
+> for `pymc_jax_gpu_vectorized` on the same GPU simulations, whose posteriors then agree with
+> `nuts_gpu`'s to 0.07 sd (median; at most 0.25 sd). With the old start every broken run was
+> flagged. At the reduced 500 / 500 budget of that test 9 of 13 fits of each sampler still read
+> `converged=False` — for R-hat and divergences, which a longer run and a higher
+> `target_accept_prob` address — and say so. In float32 (JAX's default) an MJD-scale clock or
+> prior bound freezes chains; the samplers warn before sampling, and float64 as above avoids it. A
+> start can still miss a basin no prior draw reached, so **read `r.info["convergence_problems"]`**
+> (empty when `converged` is `True`) before believing a posterior, from any of these samplers.
 
 ### 1. Register the JAX models
 
@@ -409,7 +514,9 @@ Measured on this dataset, searching 400 random draws from each box:
 
 A factor of 24, and only the Villar box reaches the observed brightness. redback's prior is still
 available as `kilonova_two.default_prior()` — it is the right choice for one job only, an
-apples-to-apples comparison against redback itself.
+apples-to-apples comparison against redback itself:
+`kilonova_two_model(..., prior=kilonova_two.default_prior())`. Its names are redback's
+(`mej_1 … kappa_2`); the factory maps them onto its own through `Model.param_aliases`.
 
 #### Check whether the posterior is railed
 
@@ -476,7 +583,12 @@ models, check that each can actually reach the solution.
 
 * **AIC / BIC — lower is better.** BIC penalises extra parameters harder, so it favours simpler
   models more aggressively than AIC. A two-component kilonova has 9 parameters against `bazin`'s 4;
-  BIC will make it earn them.
+  BIC will make it earn them. Both are defined at the likelihood peak: take them from
+  `wp.likelihood_max_opt(r, lc)` (or `wp.compare`), not from the sampler's best draw, which falls further short
+  of the peak for the model with more parameters.
+* **Weights and grades.** `exp(-dBIC/2)`, normalised, is each model's weight; `dBIC/2` is the log
+  Bayes factor BIC approximates, graded on Jeffreys' scale (1.15 / 2.30 / 4.61 for substantial /
+  strong / decisive). `wp.compare` reports both.
 * **Log-evidence — higher is better.** Only `nested` returns it, in
   `r.info["log_evidence"]` with `r.info["log_evidence_err"]`. The difference between two models'
   `ln Z` is the log Bayes factor.
@@ -510,12 +622,18 @@ that is worth more than any AIC.
 ### Checks worth doing before you believe it
 
 ```python
+print(r.diagnostics())                             # every check, pass or fail, and why
 print(r.info["converged"], r.info.get("max_rhat"), r.info.get("n_divergences"))
+print(r.info.get("convergence_problems"))          # one sentence per failed check
 ```
 
 * **`converged`** — `False` means the rank statistic and the credible intervals are not
-  interpretable, whatever the AIC says. `None` means the sampler has no such diagnostic (SNPE has no
-  chains, so nothing to converge).
+  interpretable, whatever the AIC says. For `nuts_gpu`, `pymc_jax_gpu_*`, `emcee_jax` and `mcmc`,
+  `convergence_problems` names the reason — a stranded or frozen chain, stuck walkers, R-hat, ESS,
+  divergences, too short a chain — and the fit warned with the same text. For `snpe` / `snpe_gpu`
+  it means the final posterior draw needed no MCMC fallback (`info["leakage"]` says whether the flow
+  put its mass outside the prior box); for `nested`, that the run stopped before its iteration cap.
+  The ABC samplers have no such diagnostic and record no `converged` (use `r.info.get(...)`).
 * **Divergences** — for the NUTS-family samplers, a nonzero count means the geometry defeated the
   integrator somewhere. Curiously, zero divergences with a high `r-hat` is worse news than a few
   divergences: it usually means the chains never explored at all.

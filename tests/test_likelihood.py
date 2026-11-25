@@ -87,28 +87,29 @@ def test_upper_limits_survival_term_is_not_flat_in_the_tail():
 
 
 def test_upper_limits_refuses_magnitude_space():
-    """The magnitude branch was REMOVED, so this has to fail loudly rather than fall back.
+    """The magnitude branch was REMOVED, so an explicit ``space="magnitude"`` fails loudly.
 
     A non-detection is a statement about flux; the magnitude of zero flux is undefined. The old
     branch widened every limit by the Pogson constant instead of by the data, and it had no JAX
-    twin — one density, two backends, is the point.
+    twin — one density, two backends, is the point. ``"auto"`` resolves to flux space for a light
+    curve with limits, so the default fit uses them.
     """
     mlc = LightCurve(time=[1.0, 2.0], band=["r", "r"], magnitude=[20.0, 22.0],
                      magnitude_err=[0.1, np.nan], upper_limit=[False, True])
-    for space in ("magnitude", "auto"):          # 'auto' resolves to magnitude for magnitude data
-        with pytest.raises(ValueError, match="flux-only"):
-            GaussianLikelihoodWithUpperLimits(mlc, space=space)
+    with pytest.raises(ValueError, match="flux-only"):
+        GaussianLikelihoodWithUpperLimits(mlc, space="magnitude")
+    assert GaussianLikelihoodWithUpperLimits(mlc, space="auto").space == "flux"
     # ... and the same data IS fittable once it is in flux space.
     lik = GaussianLikelihoodWithUpperLimits(mlc.add_flux(), space="flux")
     assert np.isfinite(lik.log_likelihood(np.array([1e-8, 1e-11])))
 
 
-def test_make_likelihood_auto_refuses_magnitude_upper_limits():
-    """``kind='auto'`` must not route magnitude data with non-detections into the removed branch."""
+def test_make_likelihood_auto_fits_magnitude_upper_limits_in_flux_space():
+    """``kind='auto'`` routes magnitude data with non-detections to the censored flux likelihood."""
     mlc = LightCurve(time=[1.0, 2.0], band=["r", "r"], magnitude=[20.0, 22.0],
                      magnitude_err=[0.1, np.nan], upper_limit=[False, True])
-    with pytest.raises(ValueError, match="flux-only"):
-        make_likelihood(mlc)
+    lik = make_likelihood(mlc)
+    assert isinstance(lik, GaussianLikelihoodWithUpperLimits) and lik.space == "flux"
 
 
 def test_gaussian_on_upper_limits_fails_loudly_instead_of_returning_nan():

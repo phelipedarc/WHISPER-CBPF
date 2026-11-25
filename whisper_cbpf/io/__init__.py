@@ -1,9 +1,10 @@
 """Data ingestion: canonical light-curve container, CSV loader, band/photometry/unit helpers."""
-from . import svo
+from . import surveys, svo
 from .bands import (
     DEFAULT_BAND_ALIASES,
     FILTER_LOOKUP,
     LSST_BAND_INFO,
+    SURVEY_BANDS,
     group_bands,
     normalize_band,
     normalize_bands,
@@ -18,7 +19,7 @@ from .photometry import (
     mag_err_to_snr,
     mag_to_flux_density,
 )
-from .schema import VALID_DATA_MODES, LightCurve
+from .schema import VALID_DATA_MODES, LightCurve, default_t_exp_prior
 from .svo import (
     SvoUnavailable,
     clear_manual_bands,
@@ -31,6 +32,7 @@ from .units import to_canonical
 
 __all__ = [
     "LightCurve",
+    "default_t_exp_prior",
     "VALID_DATA_MODES",
     "load_lightcurve",
     "normalize_band",
@@ -42,6 +44,9 @@ __all__ = [
     "DEFAULT_BAND_ALIASES",
     "FILTER_LOOKUP",
     "LSST_BAND_INFO",
+    # survey ingest presets: load_lightcurve(x, survey="ztf" | "lsst")
+    "surveys",
+    "SURVEY_BANDS",
     "mag_to_flux_density",
     "flux_density_to_mag",
     "mag_err_to_snr",

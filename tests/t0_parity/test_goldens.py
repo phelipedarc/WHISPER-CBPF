@@ -472,7 +472,9 @@ def test_precision_matrix_kilonova_float32_clean_on_16_draws(tmp_path):
     P = gk["params"][:16]
     out = tmp_path / "f32.npz"
     probe = Path(__file__).with_name("_f32_probe.py")
-    pkg_root = Path(kn.__file__).resolve().parents[2]
+    # the directory that holds whisper_cbpf/ (kn is whisper_cbpf/models/jax/kilonova.py), so the
+    # probe imports this package even where it is not pip-installed
+    pkg_root = Path(kn.__file__).resolve().parents[3]
     env = {**os.environ, "JAX_ENABLE_X64": "0", "JAX_PLATFORMS": "cpu",
            "PYTHONPATH": str(pkg_root)}
     res = subprocess.run([sys.executable, str(probe), str(GOLDENS), str(out)],
